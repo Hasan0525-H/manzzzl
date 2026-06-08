@@ -103,6 +103,11 @@ android {
     }
     lint {
         baseline = file("lint-baseline.xml")
+        // targetSdk = 28 is intentional (see defaultConfig comment) — the
+        // on-device exec pipeline depends on the untrusted_app_28 SELinux
+        // domain. Suppressing the Play-policy lint so release builds can
+        // still be produced; the APK is distributed outside Play.
+        disable += "ExpiredTargetSdkVersion"
     }
 
     androidResources {
@@ -193,7 +198,19 @@ val copyBootstrapArtifacts by tasks.registering(Copy::class) {
     onlyIf { artifactDir.asFile.isDirectory && artifactDir.asFile.list()?.isNotEmpty() == true }
 }
 
-tasks.matching { it.name.startsWith("merge") && it.name.endsWith("Assets") }.configureEach {
+// Any AGP task that reads `src/main/assets` must run after our copy tasks.
+// `merge*Assets` is the obvious consumer; `lint*Analyze*` also reads the
+// source asset dir directly and Gradle 8.x validation fails the build when
+// that implicit dependency isn't declared (e.g. `lintVitalAnalyzeRelease`).
+tasks.matching { task ->
+    val n = task.name
+    (n.startsWith("merge") && n.endsWith("Assets")) ||
+        // Any lint task that reads `src/main/assets`: analyze tasks,
+        // and the `generate*Lint{,Vital}{,Report}Model` metadata writers.
+        n.startsWith("lintAnalyze") ||
+        n.startsWith("lintVitalAnalyze") ||
+        n.startsWith("generate") && n.contains("Lint") && n.endsWith("Model")
+}.configureEach {
     dependsOn(copyGradleHostJar)
     dependsOn(copyShadowApks)
     dependsOn(copyShadowPluginRepo)
