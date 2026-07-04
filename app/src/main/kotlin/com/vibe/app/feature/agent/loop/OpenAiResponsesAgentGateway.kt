@@ -52,10 +52,10 @@ class OpenAiResponsesAgentGateway @Inject constructor(
     override suspend fun streamTurn(request: AgentModelRequest): Flow<AgentModelEvent> = flow {
         val trace = ModelExecutionTrace()
 
+        val selectedInput = selectResponsesInput(request.previousResponseId, request.conversation, request.fullConversation)
         val responseRequest = ResponsesRequest(
             model = request.platform.model,
-            input = selectResponsesInput(request.previousResponseId, request.conversation, request.fullConversation)
-                .map(::toResponseInputItem),
+            input = selectedInput.map(::toResponseInputItem),
             previousResponseId = request.previousResponseId,
             stream = true,
             instructions = request.instructions,
@@ -79,7 +79,7 @@ class OpenAiResponsesAgentGateway @Inject constructor(
                 stream = true,
                 reasoningEnabled = request.platform.reasoning,
                 estimatedContextTokens = request.estimateContextTokensForDiagnostics(),
-                messageCount = request.conversation.size,
+                messageCount = selectedInput.size,
                 toolCount = request.tools.size.takeIf { it > 0 },
                 toolChoiceMode = request.policy.toolChoiceMode.name.lowercase(),
                 systemPromptPresent = !request.instructions.isNullOrBlank(),
