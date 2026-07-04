@@ -5,7 +5,9 @@ import com.vibe.app.data.dto.openai.request.ChatCompletionRequest
 import com.vibe.app.data.dto.openai.request.ResponsesRequest
 import com.vibe.app.data.dto.openai.response.ChatCompletionChunk
 import com.vibe.app.data.dto.openai.response.ErrorDetail
+import com.vibe.app.data.dto.openai.response.ResponseCompletedEvent
 import com.vibe.app.data.dto.openai.response.ResponseErrorEvent
+import com.vibe.app.data.dto.openai.response.ResponseFailedEvent
 import com.vibe.app.data.dto.openai.response.ResponsesStreamEvent
 import com.vibe.app.data.dto.openai.response.UnknownEvent
 import com.vibe.app.data.dto.qwen.request.QwenChatCompletionRequest
@@ -103,19 +105,40 @@ class OpenAIAPIImpl @Inject constructor(
 
                 val channel = response.bodyAsChannel()
                 val eventLines = mutableListOf<String>()
+                var sawTerminal = false
+                val trackingEmit: suspend (ChatCompletionChunk) -> Unit = { chunk ->
+                    // A non-null finish_reason is the normal terminator. A decoded inline `error`
+                    // object (some OpenAI-compatible endpoints, e.g. Ollama, can send one as the
+                    // final chunk on a 200 response) also legitimately ends the stream — treat it
+                    // as terminal so it isn't masked by a spurious stream_interrupted after it.
+                    if (chunk.choices?.firstOrNull()?.finishReason != null || chunk.error != null) sawTerminal = true
+                    emit(chunk)
+                }
                 while (!channel.isClosedForRead) {
                     val line = channel.readUTF8Line() ?: break
                     if (line.isBlank()) {
-                        val shouldStop = handleChatCompletionSseEvent(endpoint, eventLines) { emit(it) }
+                        val shouldStop = handleChatCompletionSseEvent(endpoint, eventLines, trackingEmit)
                         eventLines.clear()
-                        if (shouldStop) break
+                        if (shouldStop) {
+                            sawTerminal = true
+                            break
+                        }
                         continue
                     }
                     eventLines += line
                 }
-
                 if (eventLines.isNotEmpty()) {
-                    handleChatCompletionSseEvent(endpoint, eventLines) { emit(it) }
+                    handleChatCompletionSseEvent(endpoint, eventLines, trackingEmit)
+                }
+                if (!sawTerminal) {
+                    emit(
+                        ChatCompletionChunk(
+                            error = ErrorDetail(
+                                message = "SSE stream ended without [DONE]/finish_reason — response was truncated.",
+                                type = "stream_interrupted",
+                            ),
+                        ),
+                    )
                 }
             }
         } catch (e: Exception) {
@@ -331,19 +354,40 @@ class OpenAIAPIImpl @Inject constructor(
                 // Success - read SSE stream
                 val channel = response.bodyAsChannel()
                 val eventLines = mutableListOf<String>()
+                var sawTerminal = false
+                val trackingEmit: suspend (ChatCompletionChunk) -> Unit = { chunk ->
+                    // A non-null finish_reason is the normal terminator. A decoded inline `error`
+                    // object (some OpenAI-compatible endpoints, e.g. Ollama, can send one as the
+                    // final chunk on a 200 response) also legitimately ends the stream — treat it
+                    // as terminal so it isn't masked by a spurious stream_interrupted after it.
+                    if (chunk.choices?.firstOrNull()?.finishReason != null || chunk.error != null) sawTerminal = true
+                    emit(chunk)
+                }
                 while (!channel.isClosedForRead) {
                     val line = channel.readUTF8Line() ?: break
                     if (line.isBlank()) {
-                        val shouldStop = handleChatCompletionSseEvent(endpoint, eventLines) { emit(it) }
+                        val shouldStop = handleChatCompletionSseEvent(endpoint, eventLines, trackingEmit)
                         eventLines.clear()
-                        if (shouldStop) break
+                        if (shouldStop) {
+                            sawTerminal = true
+                            break
+                        }
                         continue
                     }
                     eventLines += line
                 }
-
                 if (eventLines.isNotEmpty()) {
-                    handleChatCompletionSseEvent(endpoint, eventLines) { emit(it) }
+                    handleChatCompletionSseEvent(endpoint, eventLines, trackingEmit)
+                }
+                if (!sawTerminal) {
+                    emit(
+                        ChatCompletionChunk(
+                            error = ErrorDetail(
+                                message = "SSE stream ended without [DONE]/finish_reason — response was truncated.",
+                                type = "stream_interrupted",
+                            ),
+                        ),
+                    )
                 }
             }
         } catch (e: Exception) {
@@ -433,19 +477,40 @@ class OpenAIAPIImpl @Inject constructor(
                 // Success - read SSE stream
                 val channel = response.bodyAsChannel()
                 val eventLines = mutableListOf<String>()
+                var sawTerminal = false
+                val trackingEmit: suspend (ResponsesStreamEvent) -> Unit = { chunk ->
+                    // response.completed is the normal terminator; response.failed and a
+                    // server-sent error event also legitimately end the stream — treat them as
+                    // terminal so a real failure isn't masked by a spurious stream_interrupted
+                    // emitted after it.
+                    if (chunk is ResponseCompletedEvent || chunk is ResponseFailedEvent || chunk is ResponseErrorEvent) {
+                        sawTerminal = true
+                    }
+                    emit(chunk)
+                }
                 while (!channel.isClosedForRead) {
                     val line = channel.readUTF8Line() ?: break
                     if (line.isBlank()) {
-                        val shouldStop = handleResponsesSseEvent(endpoint, eventLines) { emit(it) }
+                        val shouldStop = handleResponsesSseEvent(endpoint, eventLines, trackingEmit)
                         eventLines.clear()
-                        if (shouldStop) break
+                        if (shouldStop) {
+                            sawTerminal = true
+                            break
+                        }
                         continue
                     }
                     eventLines += line
                 }
-
                 if (eventLines.isNotEmpty()) {
-                    handleResponsesSseEvent(endpoint, eventLines) { emit(it) }
+                    handleResponsesSseEvent(endpoint, eventLines, trackingEmit)
+                }
+                if (!sawTerminal) {
+                    emit(
+                        ResponseErrorEvent(
+                            message = "SSE stream ended without response.completed — response was truncated.",
+                            code = "stream_interrupted",
+                        ),
+                    )
                 }
             }
         } catch (e: Exception) {
