@@ -214,6 +214,11 @@ class DefaultAgentLoopCoordinator @Inject constructor(
                             itemsAfter = compactionResult.items.size,
                         )
                     }
+                    if (previousResponseId != null) {
+                        // The server-side Responses chain still holds the uncompacted history.
+                        // Drop it so the compacted fullConversation is sent fresh this iteration.
+                        previousResponseId = null
+                    }
                 }
 
                 // Retry ring: a transient model failure (rate limit, 5xx, dropped connection)

@@ -54,7 +54,8 @@ class OpenAiResponsesAgentGateway @Inject constructor(
 
         val responseRequest = ResponsesRequest(
             model = request.platform.model,
-            input = request.conversation.map(::toResponseInputItem),
+            input = selectResponsesInput(request.previousResponseId, request.conversation, request.fullConversation)
+                .map(::toResponseInputItem),
             previousResponseId = request.previousResponseId,
             stream = true,
             instructions = request.instructions,
@@ -218,3 +219,15 @@ private fun OutputItemDoneEvent.toToolCallOrNull(json: Json): AgentToolCall? {
         arguments = arguments,
     )
 }
+
+/**
+ * Stateful Responses sessions accumulate history server-side, which client-side
+ * compaction cannot touch. Whenever the coordinator resets the response chain
+ * (previousResponseId == null), send the full — already compacted — history
+ * so the new chain starts from the compacted state.
+ */
+internal fun selectResponsesInput(
+    previousResponseId: String?,
+    delta: List<AgentConversationItem>,
+    full: List<AgentConversationItem>,
+): List<AgentConversationItem> = if (previousResponseId == null) full else delta
