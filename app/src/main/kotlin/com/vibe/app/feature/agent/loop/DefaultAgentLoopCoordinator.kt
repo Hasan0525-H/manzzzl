@@ -31,9 +31,11 @@ import com.vibe.app.feature.project.snapshot.SnapshotManager
 import com.vibe.app.feature.project.snapshot.SnapshotType
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.withContext
 import com.vibe.app.feature.agent.AgentPlan
 import com.vibe.app.feature.agent.AgentPlanStep
 import com.vibe.app.feature.agent.PlanStepStatus
@@ -570,83 +572,87 @@ class DefaultAgentLoopCoordinator @Inject constructor(
             }
         } finally {
             // ─── FINALIZE ─────────────────────────────────────────────────────────
+            // Must survive job.cancel() from stopSession — the turn's file mutations
+            // already happened, so the snapshot MUST be committed or undo breaks.
             if (turnContext != null) {
-                runCatching {
-                    // A turn "succeeded" if at least one run_build_pipeline tool call returned
-                    // isError=false. If no build tool was called, buildSucceeded=false so the
-                    // snapshot is still finalized (for edit-only turns) but memo is not updated.
-                    val buildSucceeded = collectedToolResults.any {
-                        it.toolName == "run_build_pipeline" && !it.isError
-                    }
-                    if (buildSucceeded) {
-                        outlineGenerator.regenerate(
-                            turnContext.projectId,
-                            turnContext.workspaceRoot,
-                            turnContext.vibeDirs,
+                withContext(NonCancellable) {
+                    runCatching {
+                        // A turn "succeeded" if at least one run_build_pipeline tool call returned
+                        // isError=false. If no build tool was called, buildSucceeded=false so the
+                        // snapshot is still finalized (for edit-only turns) but memo is not updated.
+                        val buildSucceeded = collectedToolResults.any {
+                            it.toolName == "run_build_pipeline" && !it.isError
+                        }
+                        if (buildSucceeded) {
+                            outlineGenerator.regenerate(
+                                turnContext.projectId,
+                                turnContext.workspaceRoot,
+                                turnContext.vibeDirs,
+                            )
+                            request.diagnosticContext?.copy(platformUid = request.platform.uid)?.let { ctx ->
+                                diagnosticLogger.logAgentLoopEvent(
+                                    context = ctx,
+                                    action = "turn_outline_regenerated",
+                                    summary = "Outline regenerated for project ${turnContext.projectId}",
+                                    payload = buildJsonObject {
+                                        put("action", "turn_outline_regenerated")
+                                        put("projectId", turnContext.projectId)
+                                    },
+                                )
+                            }
+                        }
+                        // Capture the POST-turn workspace state so the snapshot labeled "turn N"
+                        // represents the result of turn N. Skip for edit-free turns — finalize()
+                        // is a no-op when nothing was committed.
+                        if (turnContext.firstWriteDone) {
+                            runCatching { turnContext.snapshotHandle.commit() }
+                                .onFailure { e ->
+                                    request.diagnosticContext?.copy(platformUid = request.platform.uid)?.let { ctx ->
+                                        diagnosticLogger.logAgentLoopEvent(
+                                            context = ctx,
+                                            action = "turn_snapshot_commit_failed",
+                                            level = DiagnosticLevels.WARN,
+                                            summary = "Snapshot commit failed at finalize: ${e.message?.take(120)}",
+                                            payload = buildJsonObject {
+                                                put("action", "turn_snapshot_commit_failed")
+                                                put("error", e.message.orEmpty().take(500))
+                                            },
+                                        )
+                                    }
+                                }
+                        }
+                        turnContext.snapshotHandle.finalize(
+                            buildSucceeded = buildSucceeded,
+                            affectedFiles = turnContext.writtenFiles.toList(),
+                            deletedFiles = turnContext.deletedFiles.toList(),
                         )
+                        snapshotManager.enforceRetention(turnContext.projectId, turnContext.vibeDirs)
                         request.diagnosticContext?.copy(platformUid = request.platform.uid)?.let { ctx ->
                             diagnosticLogger.logAgentLoopEvent(
                                 context = ctx,
-                                action = "turn_outline_regenerated",
-                                summary = "Outline regenerated for project ${turnContext.projectId}",
+                                action = "turn_snapshot_finalized",
+                                summary = "Snapshot ${turnContext.snapshotHandle.id} finalized (build=$buildSucceeded)",
                                 payload = buildJsonObject {
-                                    put("action", "turn_outline_regenerated")
-                                    put("projectId", turnContext.projectId)
+                                    put("action", "turn_snapshot_finalized")
+                                    put("snapshotId", turnContext.snapshotHandle.id)
+                                    put("buildSucceeded", buildSucceeded)
+                                    put("turnIndex", turnContext.turnIndex)
                                 },
                             )
                         }
-                    }
-                    // Capture the POST-turn workspace state so the snapshot labeled "turn N"
-                    // represents the result of turn N. Skip for edit-free turns — finalize()
-                    // is a no-op when nothing was committed.
-                    if (turnContext.firstWriteDone) {
-                        runCatching { turnContext.snapshotHandle.commit() }
-                            .onFailure { e ->
-                                request.diagnosticContext?.copy(platformUid = request.platform.uid)?.let { ctx ->
-                                    diagnosticLogger.logAgentLoopEvent(
-                                        context = ctx,
-                                        action = "turn_snapshot_commit_failed",
-                                        level = DiagnosticLevels.WARN,
-                                        summary = "Snapshot commit failed at finalize: ${e.message?.take(120)}",
-                                        payload = buildJsonObject {
-                                            put("action", "turn_snapshot_commit_failed")
-                                            put("error", e.message.orEmpty().take(500))
-                                        },
-                                    )
-                                }
-                            }
-                    }
-                    turnContext.snapshotHandle.finalize(
-                        buildSucceeded = buildSucceeded,
-                        affectedFiles = turnContext.writtenFiles.toList(),
-                        deletedFiles = turnContext.deletedFiles.toList(),
-                    )
-                    snapshotManager.enforceRetention(turnContext.projectId, turnContext.vibeDirs)
-                    request.diagnosticContext?.copy(platformUid = request.platform.uid)?.let { ctx ->
-                        diagnosticLogger.logAgentLoopEvent(
-                            context = ctx,
-                            action = "turn_snapshot_finalized",
-                            summary = "Snapshot ${turnContext.snapshotHandle.id} finalized (build=$buildSucceeded)",
-                            payload = buildJsonObject {
-                                put("action", "turn_snapshot_finalized")
-                                put("snapshotId", turnContext.snapshotHandle.id)
-                                put("buildSucceeded", buildSucceeded)
-                                put("turnIndex", turnContext.turnIndex)
-                            },
-                        )
-                    }
-                }.onFailure { e ->
-                    request.diagnosticContext?.copy(platformUid = request.platform.uid)?.let { ctx ->
-                        diagnosticLogger.logAgentLoopEvent(
-                            context = ctx,
-                            action = "iteration_finalize_failed",
-                            level = DiagnosticLevels.WARN,
-                            summary = "FINALIZE failed: ${e.message?.take(120)}",
-                            payload = buildJsonObject {
-                                put("action", "iteration_finalize_failed")
-                                put("error", e.message.orEmpty().take(500))
-                            },
-                        )
+                    }.onFailure { e ->
+                        request.diagnosticContext?.copy(platformUid = request.platform.uid)?.let { ctx ->
+                            diagnosticLogger.logAgentLoopEvent(
+                                context = ctx,
+                                action = "iteration_finalize_failed",
+                                level = DiagnosticLevels.WARN,
+                                summary = "FINALIZE failed: ${e.message?.take(120)}",
+                                payload = buildJsonObject {
+                                    put("action", "iteration_finalize_failed")
+                                    put("error", e.message.orEmpty().take(500))
+                                },
+                            )
+                        }
                     }
                 }
             }
