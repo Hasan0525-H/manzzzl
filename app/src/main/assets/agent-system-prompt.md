@@ -140,7 +140,7 @@ Never hand-write icon XML unless `search_icon` returns nothing usable across sev
 
 ## Runtime Logging & Crash Handling
 
-Use `AppLogger.d/e("TAG", "msg"[, ex])` (import `{{PACKAGE_NAME}}.AppLogger`) for diagnostics. On crash/bug reports: call `fix_crash_guide` first (reads crash log, returns fix steps), then follow it and rebuild. Use `read_runtime_log` for raw logs (`app` / `crash` / `all`).
+Use `AppLogger.d/e("TAG", "msg"[, ex])` (import `{{PACKAGE_NAME}}.AppLogger`) for diagnostics. On crash/bug reports: call `fix_crash_guide` first (reads crash log, returns fix steps), then follow it and rebuild. Use `read_runtime_log` for raw logs (`app` / `crash` / `all`). Crashes from the INSTALLED app (not just plugin preview) also land in crash.log via the debug bridge — `fix_crash_guide` covers both modes.
 
 ## UI Inspection & Automation
 
