@@ -35,7 +35,7 @@
 
 **接口(供后续使用):** `internal fun selectResponsesInput(previousResponseId: String?, delta: List<AgentConversationItem>, full: List<AgentConversationItem>): List<AgentConversationItem>`(顶层函数,置于 OpenAiResponsesAgentGateway.kt)。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```kotlin
 package com.vibe.app.feature.agent.loop
@@ -67,12 +67,12 @@ class OpenAiResponsesInputSelectionTest {
 
 注:`AgentConversationItem` 构造参数以实际类为准(grep `data class AgentConversationItem`),缺省参数应可只填 role/text/toolName/toolCallId。
 
-- [ ] **Step 2: 跑测试确认编译失败**
+- [x] **Step 2: 跑测试确认编译失败**
 
 Run: `./gradlew :app:testDebugUnitTest --tests "*.OpenAiResponsesInputSelectionTest"`
 Expected: FAIL(`selectResponsesInput` 未定义)
 
-- [ ] **Step 3: 实现 gateway 侧选择函数并接线**
+- [x] **Step 3: 实现 gateway 侧选择函数并接线**
 
 在 `OpenAiResponsesAgentGateway.kt` 文件末尾(类外)添加:
 
@@ -103,7 +103,7 @@ input = selectResponsesInput(request.previousResponseId, request.conversation, r
     .map(::toResponseInputItem),
 ```
 
-- [ ] **Step 4: coordinator 在压缩生效时重置会话链**
+- [x] **Step 4: coordinator 在压缩生效时重置会话链**
 
 `DefaultAgentLoopCoordinator.kt` 中,`conversationCompactor.compact(...)` 调用之后、`agentModelGateway.streamTurn(...)` 之前(现有诊断日志块 :199-211 内部或紧后)加入:
 
@@ -117,12 +117,12 @@ if (compactionResult.strategyUsed != CompactionStrategyType.NONE && previousResp
 
 同时确认 wind-down 收尾请求(grep `AgentModelRequest(` 的第二处构造,约 :440-455)同样传了 `previousResponseId` 与 `fullConversation` —— gateway 侧的 `selectResponsesInput` 对它自动生效,无需额外改动;若发现该处没传压缩结果,在实施记录中注明并同步修复。
 
-- [ ] **Step 5: 跑测试与全量编译**
+- [x] **Step 5: 跑测试与全量编译**
 
 Run: `./gradlew :app:testDebugUnitTest --tests "*.OpenAiResponsesInputSelectionTest" && ./gradlew :app:compileDebugKotlin`
 Expected: PASS + 编译通过
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add app/src/main/kotlin/com/vibe/app/feature/agent/loop/OpenAiResponsesAgentGateway.kt \
@@ -149,7 +149,7 @@ git commit -m "fix(agent): route compacted history to OpenAI Responses on chain 
 
 **接口:** `internal fun clampFileContent(content: String, maxLines: Int = MAX_READ_LINES, maxChars: Int = MAX_READ_CHARS): ClampResult`;`internal data class ClampResult(val content: String, val truncated: Boolean, val totalLines: Int)`(顶层,置于 FileTools.kt,与 `sliceByLines` 并列)。常量 `MAX_READ_LINES = 2000`、`MAX_READ_CHARS = 50_000`。
 
-- [ ] **Step 1: 写失败测试(clamp 纯函数)**
+- [x] **Step 1: 写失败测试(clamp 纯函数)**
 
 ```kotlin
 package com.vibe.app.feature.agent.tool
@@ -190,12 +190,12 @@ class FileContentClampTest {
 }
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `./gradlew :app:testDebugUnitTest --tests "*.FileContentClampTest"`
 Expected: FAIL(`clampFileContent` 未定义)
 
-- [ ] **Step 3: 实现 clamp 并接入工具**
+- [x] **Step 3: 实现 clamp 并接入工具**
 
 FileTools.kt 顶层添加:
 
@@ -248,7 +248,7 @@ internal fun clampFileContent(
 
 行区间分支(`useRange == true`)在 `sliceByLines` 结果上同样套 `clampFileContent`(超大区间也要被夹住),truncated 时输出同样的三个字段。批量 `paths` 分支对每个文件的 `content.getOrThrow()` 同样套 clamp,truncated 时在该文件对象内加 `truncated`/`total_lines` 字段。
 
-- [ ] **Step 4: build 输出截断 + 测试**
+- [x] **Step 4: build 输出截断 + 测试**
 
 `AgentToolExtensions.kt` `toFilteredJson` 中:
 
@@ -306,12 +306,12 @@ class BuildResultJsonTest {
 }
 ```
 
-- [ ] **Step 5: 跑测试**
+- [x] **Step 5: 跑测试**
 
 Run: `./gradlew :app:testDebugUnitTest --tests "*.FileContentClampTest" --tests "*.BuildResultJsonTest"`
 Expected: PASS
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add app/src/main/kotlin/com/vibe/app/feature/agent/tool/FileTools.kt \
@@ -333,7 +333,7 @@ git commit -m "fix(agent): clamp read_project_file and build output sizes (opt t
 - Modify: `app/src/main/kotlin/com/vibe/app/feature/agent/loop/compaction/ConversationCompactor.kt`
 - Create: `app/src/test/kotlin/com/vibe/app/feature/agent/loop/compaction/ConversationCompactorBudgetTest.kt`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 `OpenAIAPI` 是接口(`data/network/OpenAIAPI.kt:13`,4 个方法 + 2 个 setter),手写 Fake 只实现 `completeQwenChatCompletion`。`PlatformV2` 必填参数为 `name/compatibleType/apiUrl/model`(已核实)。KIMI 预算 24_000 token、recentTurns 3(`ProviderContextBudget.kt`)。
 
@@ -416,12 +416,12 @@ class ConversationCompactorBudgetTest {
 
 注:第一个测试是本 Task 的核心断言;若 `assertTrue(estimatedTokens <= 24_000)` 因 recent 回合过大而失败,把该断言放宽为 `assertNotEquals(MODEL_SUMMARY, ...)` 并在实施记录注明(recent 回合超限是 Phase 4/Task 4.1 的问题域)。
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `./gradlew :app:testDebugUnitTest --tests "*.ConversationCompactorBudgetTest"`
 Expected: 第一个测试 FAIL(oversized summary 被原样返回,strategyUsed == MODEL_SUMMARY)
 
-- [ ] **Step 3: 实现预算检查**
+- [x] **Step 3: 实现预算检查**
 
 `ConversationCompactor.kt` :74-84 改为:
 
@@ -444,12 +444,12 @@ if (modelSummaryStrategy.isSupported(clientType) && platform != null) {
 val bestResult = modelResult ?: structuralResult ?: trimResult
 ```
 
-- [ ] **Step 4: 跑测试**
+- [x] **Step 4: 跑测试**
 
 Run: `./gradlew :app:testDebugUnitTest --tests "*.ConversationCompactorBudgetTest" --tests "*.ToolResultTrimStrategyTest"`
 Expected: 全部 PASS(存量测试不回归)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add app/src/main/kotlin/com/vibe/app/feature/agent/loop/compaction/ConversationCompactor.kt \
@@ -479,7 +479,7 @@ git commit -m "fix(compaction): enforce budget on model summary results (opt tas
 
 **接口:** `internal fun mergeConsecutiveSameRole(messages: List<InputMessage>): List<InputMessage>`(顶层,置于 AnthropicMessagesAgentGateway.kt)。
 
-- [ ] **Step 1: 写失败测试(splitIntoTurns 前导项保留 + 摘要角色 + 结构化策略透传)**
+- [x] **Step 1: 写失败测试(splitIntoTurns 前导项保留 + 摘要角色 + 结构化策略透传)**
 
 ```kotlin
 package com.vibe.app.feature.agent.loop.compaction
@@ -522,12 +522,12 @@ class SummaryRoleAndPreambleTest {
 }
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `./gradlew :app:testDebugUnitTest --tests "*.SummaryRoleAndPreambleTest"`
 Expected: 三个测试全 FAIL
 
-- [ ] **Step 3: 实现压缩侧修改**
+- [x] **Step 3: 实现压缩侧修改**
 
 `ToolResultTrimStrategy.splitIntoTurns`(:168-178)改为保留前导组:
 
@@ -578,7 +578,7 @@ val summaryItem = AgentConversationItem(
 
 注意:`StructuralSummaryStrategy` 内部还有超限丢弃循环(:37-42,`mutableResult.removeAt(0)`)——保持不动,它现在丢的是 ASSISTANT 摘要,行为不变。
 
-- [ ] **Step 4: 写失败测试(gateway 合并)并实现**
+- [x] **Step 4: 写失败测试(gateway 合并)并实现**
 
 `AnthropicMessageMergeTest.kt`(InputMessage/MessageRole/TextContent 为 Anthropic DTO,以 `data/dto/anthropic` 实际包路径为准,grep `class InputMessage`):
 
@@ -643,12 +643,12 @@ internal fun mergeConsecutiveSameRole(messages: List<InputMessage>): List<InputM
 
 `buildMessages`(:217)返回处改为 `return mergeConsecutiveSameRole(messages)`。若 `InputMessage` 不是 data class(无 copy),改用手动重建并在实施记录注明。
 
-- [ ] **Step 5: 跑测试**
+- [x] **Step 5: 跑测试**
 
 Run: `./gradlew :app:testDebugUnitTest --tests "*.SummaryRoleAndPreambleTest" --tests "*.AnthropicMessageMergeTest" --tests "*.ToolResultTrimStrategyTest"`
 Expected: 全部 PASS
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add app/src/main/kotlin/com/vibe/app/feature/agent/loop/compaction/ \
@@ -669,7 +669,7 @@ git commit -m "fix(compaction): assistant-role summaries, preamble preservation,
 - Modify: `app/src/main/kotlin/com/vibe/app/feature/agent/loop/compaction/ToolResultTrimStrategy.kt`
 - Modify: `app/src/test/kotlin/com/vibe/app/feature/agent/loop/compaction/ToolResultTrimStrategyTest.kt`
 
-- [ ] **Step 1: 写失败测试(追加到既有测试类,沿用其 helper 风格)**
+- [x] **Step 1: 写失败测试(追加到既有测试类,沿用其 helper 风格)**
 
 ```kotlin
 @Test
@@ -728,12 +728,12 @@ fun `fetch_web_page content in older turns is replaced, title and url kept`() = 
 
 (测试文件需补 import:`kotlinx.serialization.json.buildJsonArray`。)
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `./gradlew :app:testDebugUnitTest --tests "*.ToolResultTrimStrategyTest"`
 Expected: 两个新测试 FAIL(payload 原样保留)
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 `trimToolPayload` 重构(web_search 提到 JsonObject 守卫之前):
 
@@ -768,12 +768,12 @@ private fun trimFetchPagePayload(payload: JsonObject): JsonElement {
 }
 ```
 
-- [ ] **Step 4: 跑测试**
+- [x] **Step 4: 跑测试**
 
 Run: `./gradlew :app:testDebugUnitTest --tests "*.ToolResultTrimStrategyTest"`
 Expected: 全部 PASS(含存量用例)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add app/src/main/kotlin/com/vibe/app/feature/agent/loop/compaction/ToolResultTrimStrategy.kt \
@@ -806,7 +806,7 @@ class WebHttpBlockedException(val statusCode: Int) : RuntimeException(...)
 object BlockedPageDetector { fun isBlockedPage(html: String): Boolean }
 ```
 
-- [ ] **Step 1: 写失败测试(检测器纯函数)**
+- [x] **Step 1: 写失败测试(检测器纯函数)**
 
 ```kotlin
 package com.vibe.app.feature.agent.tool.web
@@ -844,12 +844,12 @@ class BlockedPageDetectorTest {
 }
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `./gradlew :app:testDebugUnitTest --tests "*.BlockedPageDetectorTest"`
 Expected: FAIL(类不存在)
 
-- [ ] **Step 3: 实现 WebFailure.kt 与 BlockedPageDetector.kt**
+- [x] **Step 3: 实现 WebFailure.kt 与 BlockedPageDetector.kt**
 
 ```kotlin
 // WebFailure.kt
@@ -910,7 +910,7 @@ object BlockedPageDetector {
 }
 ```
 
-- [ ] **Step 4: Extractor 感知 HTTP 错误**
+- [x] **Step 4: Extractor 感知 HTTP 错误**
 
 `WebViewContentExtractor.loadAndEvaluate` 的 WebViewClient 增加(与 `onReceivedError` 并列;import `android.webkit.WebResourceResponse` 与 `kotlin.coroutines.resumeWithException`):
 
@@ -933,7 +933,7 @@ override fun onReceivedHttpError(
 
 同时把 `onReceivedError` 的 `cont.resume("")`(:120)改为 `cont.resumeWithException(java.io.IOException(error?.description?.toString() ?: "WebView network error"))`,让 NETWORK_ERROR 可分类(`extractRawHtml`/`extract` 外层 `runCatching` 会把它变成 `Result.failure`,调用方语义不变——空串本来也走失败分支)。
 
-- [ ] **Step 5: Executor 结构化失败分类**
+- [x] **Step 5: Executor 结构化失败分类**
 
 `WebSearchExecutor.search` 重写循环体(`kotlinx.coroutines.TimeoutCancellationException` 需要显式识别;非超时的 `CancellationException` 必须重新抛出,不得吞掉协程取消):
 
@@ -981,12 +981,12 @@ suspend fun search(query: String): Result<List<SearchResult>> {
 
 `WebSearchTool` 的 `onFailure` 分支无需改动(`e.message` 现在是可行动的结构化描述)。
 
-- [ ] **Step 6: 跑测试与编译**
+- [x] **Step 6: 跑测试与编译**
 
 Run: `./gradlew :app:testDebugUnitTest --tests "*.BlockedPageDetectorTest" && ./gradlew :app:compileDebugKotlin`
 Expected: PASS + 编译通过
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add app/src/main/kotlin/com/vibe/app/feature/agent/tool/web/ \
@@ -1011,7 +1011,7 @@ git commit -m "feat(web): detect blocked pages and report structured search fail
 
 **接口(00-progress.md §4 已注册):** `class EngineCircuitBreaker(cooldownMs, clock)`;`WebSearchEngine` 接口新增 `val resultsSelector: String`;`WebViewContentExtractor.extractRawHtml(url, waitForSelector: String? = null)`。
 
-- [ ] **Step 1: 写失败测试(熔断器,注入时钟)**
+- [x] **Step 1: 写失败测试(熔断器,注入时钟)**
 
 ```kotlin
 package com.vibe.app.feature.agent.tool.web
@@ -1038,12 +1038,12 @@ class EngineCircuitBreakerTest {
 }
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `./gradlew :app:testDebugUnitTest --tests "*.EngineCircuitBreakerTest"`
 Expected: FAIL(类不存在)
 
-- [ ] **Step 3: 实现熔断器并接入 Executor**
+- [x] **Step 3: 实现熔断器并接入 Executor**
 
 ```kotlin
 // EngineCircuitBreaker.kt
@@ -1079,7 +1079,7 @@ for (engine in eligible) {
 
 并在 Task 2.6 产生 `WebFailureKind.BLOCKED` 的两处(HTTP blocked、验证码页)后追加 `circuitBreaker.recordBlocked(engine.name)`。
 
-- [ ] **Step 4: 渲染等待(选择器轮询)**
+- [x] **Step 4: 渲染等待(选择器轮询)**
 
 `WebSearchEngine` 接口加字段,三个实现补值:
 
@@ -1131,12 +1131,12 @@ override fun onPageFinished(view: WebView?, finishedUrl: String?) {
 
 其中 `grabResult()` 是把现有"evaluateJavascript(javascript) → unescape → destroy → resume"逻辑提取成的局部函数;常量 `MAX_SELECTOR_POLLS = 10`、`SELECTOR_POLL_INTERVAL_MS = 300L` 放 companion。Executor 调用处改为 `webViewExtractor.extractRawHtml(url, engine.resultsSelector)`。`fetch_web_page` 路径(`extract()`)不传选择器,行为不变。
 
-- [ ] **Step 5: 跑测试与编译**
+- [x] **Step 5: 跑测试与编译**
 
 Run: `./gradlew :app:testDebugUnitTest --tests "*.EngineCircuitBreakerTest" && ./gradlew :app:compileDebugKotlin`
 Expected: PASS + 编译通过
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add app/src/main/kotlin/com/vibe/app/feature/agent/tool/web/ \
@@ -1150,20 +1150,21 @@ git commit -m "feat(web): engine cooldown circuit breaker and render-wait pollin
 
 ## Phase 完成检查
 
-- [ ] 全部 7 个 Task 的 checkbox 已勾选,每个 Task 至少一个独立 commit
-- [ ] `./gradlew test` 通过(重点:compaction 包全部测试)
-- [ ] `./gradlew assembleDebug` 通过
-- [ ] **人工验证清单**(Android 10+ 真机/模拟器):
+- [x] 全部 7 个 Task 的 checkbox 已勾选,每个 Task 至少一个独立 commit(9 个 Task commit + 2 个终审修复 commit,详见"实施记录")
+- [x] 测试通过(重点:compaction 包全部测试)—— `./gradlew test`(全模块)在 vendored `build-tools/android-common-resources` **早于本分支既有**地编译失败,与 Phase 1 同因;本 phase 以 `:app:testDebugUnitTest`(含 compaction 包全部测试)+ `:build-engine:test` 为准,`--rerun-tasks` 强制全量重跑全绿
+- [x] `./gradlew assembleDebug` 通过(`:app:assembleDebug` BUILD SUCCESSFUL)
+- [ ] **人工验证清单**(Android 10+ 真机/模拟器)—— **待用户在真机执行**,不可自动化:
   - [ ] 配置任一 OpenAI 兼容 provider,连续多轮长对话(读大文件 + build 数次),诊断日志确认:压缩触发后下一次请求不带 `previous_response_id`,请求体为压缩后历史;
   - [ ] 让 agent 读取一个 >2000 行的文件(可先让它生成),确认返回带 `truncated/hint`,agent 能用 start_line/end_line 续读;
   - [ ] 让 agent 连续 web_search 数次直至某引擎被拦,确认错误消息逐引擎给出原因(blocked/no results/timeout),且被拦引擎在 5 分钟内不再被首选;
   - [ ] fetch_web_page 一个正常网页,功能不回归。
-- [ ] 更新 `00-progress.md`:Phase 2 状态 → ✅ 已完成,填完成日期
-- [ ] 在下方"实施记录"追加总结行
-- [ ] `git commit -m "docs: mark optimization phase 2 complete"`
+- [ ] 更新 `00-progress.md`:Phase 2 状态 → ✅ 已完成,填完成日期 —— **待真机 4 项验证后**;当前已更新为"代码完成·已审查·PR→dev,待真机验证"(比照 Phase 1)
+- [x] 在下方"实施记录"追加总结行
+- [x] docs commit(代码完成·已审查·待真机验证;非"mark complete",因设备验证未过)
 
 ## 实施记录(执行时追加)
 
 | 日期 | 执行者 | 完成内容 | 偏离/备注 |
 |------|--------|----------|-----------|
-| | | | |
+| 2026-07-04 | Claude Opus 4.8(subagent-driven-development 编排) | 7 个 Task 全部实现+逐 Task 审查通过,分支 `opt/phase-2-context-web-hotfix`(基线 dev@66fac86)。2.1 Responses 压缩路由(含收尾请求);2.2 read_project_file 三分支夹取+build 输出截断;2.3 模型摘要预算门控;2.4 ASSISTANT 角色摘要+前导组保留+同角色合并;2.5 web_search/fetch_web_page 裁剪;2.6 拦截识别+结构化失败;2.7 引擎熔断+渲染等待。 | **漂移修正(动手前 grep 重定位,均记录在案)**:(a) Phase 1 已删除 `OpenAIAPI.setToken/setAPIUrl` 并给 4 方法加 `token/apiUrl` 参数 → Task 2.3 的 Fake 按当前接口重写;(b) `MessageRole`/`TextContent` 实为 `...anthropic.common` 包,brief 写成 `.request` → Task 2.4 测试 import 已改。**计划外补强(合并前)**:2.1 收尾请求同步重置 previousResponseId;2.2 修复 `range.end` 在夹取后谎报(抽 `deliveredRangeEnd`/`logicalLineCount` 纯函数+5 测试)。 |
+| 2026-07-04 | Claude Opus 4.8(整支终审+修复) | 整支 whole-branch review(Opus)= Ready to merge **With fixes**。修复 1 个合并前回归 + 1 个 Minor,复审 Approved。最终 HEAD `3411fb5`(11 commits)。 | **终审发现的跨任务回归(已修 @fe266e0)**:Task 2.4 改摘要为 ASSISTANT 角色后,压缩后 fullConversation 可能以 assistant 开头 → Anthropic "首条须 user" 400(本分支引入,恰背离 2.4 初衷);修法:`AnthropicMessagesAgentGateway.ensureLeadingUserMessage` 守卫(merge 后)+ 3 测试。**Minor(已修 @3411fb5)**:Responses 诊断 `messageCount` 在发送全量历史时少报 → 复用 `selectResponsesInput` 结果计数。其余 roll-up 项(见 SDD 账本)终审判 follow-up/won't-fix,非阻塞。**验证**:`:app:testDebugUnitTest`+`:build-engine:test`+`:app:assembleDebug` 全绿(`--rerun-tasks` 强制)。**待办**:真机 4 项人工清单(用户执行)。 |

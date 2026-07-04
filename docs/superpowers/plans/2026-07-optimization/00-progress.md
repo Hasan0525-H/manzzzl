@@ -44,7 +44,7 @@
 | Phase | 文档 | 主题 | 前置依赖 | 预估 | 状态 | 当前位置 | 完成日期 |
 |-------|------|------|----------|------|------|----------|----------|
 | 1 | [phase-1](./phase-1-agent-loop-reliability.md) | Agent Loop 可靠性止血 | 无 | ~1 周 | 🔵 进行中 | 代码完成·9 Task 全审查通过·PR→dev,待真机 5 项验证 | — |
-| 2 | [phase-2](./phase-2-context-web-hotfix.md) | Context 与 Web 止血包 | 无 | ~1 周 | ⬜ 未开始 | — | — |
+| 2 | [phase-2](./phase-2-context-web-hotfix.md) | Context 与 Web 止血包 | 无 | ~1 周 | 🔵 进行中 | 代码完成·7 Task 全审查通过·整支终审 With fixes(1 回归+1 Minor 已修复复核)·PR→dev,待真机 4 项验证 | — |
 | 3 | [phase-3](./phase-3-debug-experience.md) | 调试体验强化(截图/崩溃推送/DebugBridge) | 无 | ~1.5 周 | ⬜ 未开始 | — | — |
 | 4 | [phase-4](./phase-4-context-refactor.md) | Context 核心重构(淘汰/持久化/校准/预算) | Phase 2 | ~2 周 | ⬜ 未开始 | — | — |
 | 5 | [phase-5](./phase-5-web-search-providers.md) | Web 搜索 Provider 化与内容管理 | Phase 2 | ~1.5 周 | ⬜ 未开始 | — | — |
@@ -62,6 +62,17 @@
 - **可选硬化**:`RETRY_DELAYS_MS.getOrElse(...)` 解耦 `MAX_MODEL_RETRIES`;Responses gateway 补 `truncatedByMaxTokens`;分类器把已知瞬时 SSE 错误类型(如 `overloaded_error`)也视为可重试。
 - **待真机验证(标 ✅ 前必做)**:见 phase-1 文档"Phase 完成检查"的 5 项人工清单。
 - **既有环境问题(与 Phase 1 无关)**:`./gradlew test`(全模块)在 vendored `build-tools/android-common-resources` 因 `getModuleSourceSets()` 符号不匹配编译失败,该模块本分支未碰、早于本分支存在。Phase 1 交付以 `:app:testDebugUnitTest` + `:build-engine:test` + `assembleDebug` 为准(全绿)。
+
+### Phase 2 遗留跟进(整支终审产出,2026-07-04)
+
+> Phase 2 代码已完成并通过逐 Task + 整支终审(Opus:With fixes → 已修复复核 Approved)。合并前回归已在分支内修复;以下为终审分诊为**非阻塞**的跟进项(follow-up/won't-fix),合并后按需处理:
+
+- **已在分支内修复(非遗留,供追溯)**:(1) Task 2.4 ASSISTANT 角色摘要引入的 Anthropic「首条须 user」400 回归 → `AnthropicMessagesAgentGateway.ensureLeadingUserMessage` 守卫(@fe266e0);(2) Responses 诊断 `messageCount` 少报(@3411fb5)。
+- **测试补齐(follow-up)**:coordinator 级 Responses 重置(主循环+收尾)无自动化测试(本项目无 coordinator 单测 harness,2.1 仅测纯函数 `selectResponsesInput`);web-trim 仅 happy-path 测试(未测"近期回合不动"/畸形 payload)。
+- **死代码(follow-up)**:废弃类 `ConversationContextManager.splitIntoTurns/summarizeTurn` 仍有与 2.4 同类的头部丢弃 bug,本次未动(疑似死代码);若该路径复活需修,或直接删除。
+- **cosmetic(won't-fix / 择机)**:`deliveredRangeEnd` 在 char 截断跨行时 `range.end` 至多多算一行(保守、已封顶);`clampFileContent` 两次 `lines()`;2.7 选择器轮询探测 11 次 vs 名义 10(延迟界仍 3s);`EngineCircuitBreaker.blockedUntil` 不清理过期项(仅 3 引擎)。
+- **共享接口(Phase 5 复用)**:`WebFailureKind` / `EngineFailure` / `WebSearchFailedException` / `EngineCircuitBreaker` 已就绪,终审确认公共面设计良好。
+- **待真机验证(标 ✅ 前必做)**:见 phase-2 文档"Phase 完成检查"的 4 项人工清单。
 
 ---
 
