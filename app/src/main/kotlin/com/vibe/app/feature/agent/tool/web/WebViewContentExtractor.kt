@@ -6,6 +6,7 @@ import android.graphics.Bitmap
 import android.util.Log
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -19,6 +20,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 data class WebViewExtractionResult(
     val title: String,
@@ -117,7 +119,24 @@ class WebViewContentExtractor @Inject constructor(
                         if (request?.isForMainFrame == true && !finished) {
                             finished = true
                             webView.destroy()
-                            cont.resume("")
+                            cont.resumeWithException(
+                                java.io.IOException(error?.description?.toString() ?: "WebView network error"),
+                            )
+                        }
+                    }
+
+                    override fun onReceivedHttpError(
+                        view: WebView?,
+                        request: WebResourceRequest?,
+                        errorResponse: WebResourceResponse?,
+                    ) {
+                        if (request?.isForMainFrame == true && !finished) {
+                            val status = errorResponse?.statusCode ?: return
+                            if (status == 403 || status == 429 || status == 503) {
+                                finished = true
+                                webView.destroy()
+                                cont.resumeWithException(WebHttpBlockedException(status))
+                            }
                         }
                     }
                 }
