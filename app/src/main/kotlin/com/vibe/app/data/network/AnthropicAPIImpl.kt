@@ -32,9 +32,6 @@ class AnthropicAPIImpl @Inject constructor(
     private val diagnosticLogger: ChatDiagnosticLogger,
 ) : AnthropicAPI {
 
-    private var token: String? = null
-    private var apiUrl: String = ModelConstants.ANTHROPIC_API_URL
-
     private val json = Json {
         ignoreUnknownKeys = true
         isLenient = true
@@ -42,20 +39,15 @@ class AnthropicAPIImpl @Inject constructor(
         explicitNulls = false
     }
 
-    override fun setToken(token: String?) {
-        this.token = token
-    }
-
-    override fun setAPIUrl(url: String) {
-        this.apiUrl = url
-    }
-
     override fun streamChatMessage(
         messageRequest: MessageRequest,
+        token: String?,
+        apiUrl: String,
         diagnosticContext: ModelRequestDiagnosticContext?,
         trace: ModelExecutionTrace?,
     ): Flow<MessageResponseChunk> = flow {
-        val endpoint = if (apiUrl.endsWith("/")) "${apiUrl}v1/messages" else "$apiUrl/v1/messages"
+        val baseUrl = apiUrl.ifBlank { ModelConstants.ANTHROPIC_API_URL }
+        val endpoint = if (baseUrl.endsWith("/")) "${baseUrl}v1/messages" else "$baseUrl/v1/messages"
         val requestBody = json.encodeToJsonElement(messageRequest).toString()
         val requestStartedAt = System.currentTimeMillis()
         trace?.markRequestStarted(requestStartedAt)

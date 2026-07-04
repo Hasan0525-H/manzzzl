@@ -55,8 +55,6 @@ class KimiChatCompletionsAgentGateway @Inject constructor(
     }
 
     override suspend fun streamTurn(request: AgentModelRequest): Flow<AgentModelEvent> = flow {
-        openAIAPI.setToken(request.platform.token)
-        openAIAPI.setAPIUrl(request.platform.apiUrl.toKimiBaseUrl())
         val trace = ModelExecutionTrace()
 
         val messages = buildMessages(request)
@@ -107,6 +105,8 @@ class KimiChatCompletionsAgentGateway @Inject constructor(
                 toolChoice = if (request.tools.isNotEmpty()) "auto" else null,
                 stream = true,
             ),
+            token = request.platform.token,
+            apiUrl = request.platform.apiUrl.toKimiBaseUrl(),
             diagnosticContext = requestContext,
             trace = trace,
         ).collect { chunk ->

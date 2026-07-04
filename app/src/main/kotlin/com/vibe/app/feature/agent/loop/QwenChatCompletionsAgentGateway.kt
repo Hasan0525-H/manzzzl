@@ -42,8 +42,6 @@ class QwenChatCompletionsAgentGateway @Inject constructor(
     }
 
     override suspend fun streamTurn(request: AgentModelRequest): Flow<AgentModelEvent> = flow {
-        openAIAPI.setToken(request.platform.token)
-        openAIAPI.setAPIUrl(request.platform.apiUrl.toQwenChatCompletionsBaseUrl())
         val trace = ModelExecutionTrace()
         val effectiveToolChoice = request.toQwenToolChoice()
 
@@ -91,6 +89,8 @@ class QwenChatCompletionsAgentGateway @Inject constructor(
                 toolChoice = effectiveToolChoice,
                 stream = true,
             ),
+            token = request.platform.token,
+            apiUrl = request.platform.apiUrl.toQwenChatCompletionsBaseUrl(),
             diagnosticContext = requestContext,
             trace = trace,
         ).collect { chunk ->

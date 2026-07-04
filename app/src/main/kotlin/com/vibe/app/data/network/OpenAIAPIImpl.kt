@@ -38,23 +38,15 @@ class OpenAIAPIImpl @Inject constructor(
     private val diagnosticLogger: ChatDiagnosticLogger,
 ) : OpenAIAPI {
 
-    private var token: String? = null
-    private var apiUrl: String = ModelConstants.OPENAI_API_URL
-
-    override fun setToken(token: String?) {
-        this.token = token
-    }
-
-    override fun setAPIUrl(url: String) {
-        this.apiUrl = url
-    }
-
     override fun streamQwenChatCompletion(
         request: QwenChatCompletionRequest,
+        token: String?,
+        apiUrl: String,
         diagnosticContext: ModelRequestDiagnosticContext?,
         trace: ModelExecutionTrace?,
     ): Flow<ChatCompletionChunk> = flow {
-        val endpoint = if (apiUrl.endsWith("/")) "${apiUrl}v1/chat/completions" else "$apiUrl/v1/chat/completions"
+        val baseUrl = apiUrl.ifBlank { ModelConstants.OPENAI_API_URL }
+        val endpoint = if (baseUrl.endsWith("/")) "${baseUrl}v1/chat/completions" else "$baseUrl/v1/chat/completions"
         val requestBody = NetworkClient.json.encodeToJsonElement(request).toString()
         val requestStartedAt = System.currentTimeMillis()
         trace?.markRequestStarted(requestStartedAt)
@@ -66,7 +58,7 @@ class OpenAIAPIImpl @Inject constructor(
                 startedAt = requestStartedAt,
             )
         }
-        logOpenAiRequest(endpoint, requestBody)
+        logOpenAiRequest(endpoint, requestBody, token)
 
         try {
             val startTime = requestStartedAt
@@ -162,10 +154,13 @@ class OpenAIAPIImpl @Inject constructor(
 
     override suspend fun completeQwenChatCompletion(
         request: QwenChatCompletionRequest,
+        token: String?,
+        apiUrl: String,
         diagnosticContext: ModelRequestDiagnosticContext?,
         trace: ModelExecutionTrace?,
     ): QwenChatCompletionResponse {
-        val endpoint = if (apiUrl.endsWith("/")) "${apiUrl}v1/chat/completions" else "$apiUrl/v1/chat/completions"
+        val baseUrl = apiUrl.ifBlank { ModelConstants.OPENAI_API_URL }
+        val endpoint = if (baseUrl.endsWith("/")) "${baseUrl}v1/chat/completions" else "$baseUrl/v1/chat/completions"
         val requestBody = NetworkClient.json.encodeToJsonElement(request).toString()
         val requestStartedAt = System.currentTimeMillis()
         trace?.markRequestStarted(requestStartedAt)
@@ -283,10 +278,13 @@ class OpenAIAPIImpl @Inject constructor(
 
     override fun streamChatCompletion(
         request: ChatCompletionRequest,
+        token: String?,
+        apiUrl: String,
         diagnosticContext: ModelRequestDiagnosticContext?,
         trace: ModelExecutionTrace?,
     ): Flow<ChatCompletionChunk> = flow {
-        val endpoint = if (apiUrl.endsWith("/")) "${apiUrl}v1/chat/completions" else "$apiUrl/v1/chat/completions"
+        val baseUrl = apiUrl.ifBlank { ModelConstants.OPENAI_API_URL }
+        val endpoint = if (baseUrl.endsWith("/")) "${baseUrl}v1/chat/completions" else "$baseUrl/v1/chat/completions"
         val requestBody = NetworkClient.openAIJson.encodeToJsonElement(request).toString()
         val requestStartedAt = System.currentTimeMillis()
         trace?.markRequestStarted(requestStartedAt)
@@ -298,7 +296,7 @@ class OpenAIAPIImpl @Inject constructor(
                 startedAt = requestStartedAt,
             )
         }
-        logOpenAiRequest(endpoint, requestBody)
+        logOpenAiRequest(endpoint, requestBody, token)
 
         try {
             val startTime = requestStartedAt
@@ -415,10 +413,13 @@ class OpenAIAPIImpl @Inject constructor(
 
     override fun streamResponses(
         request: ResponsesRequest,
+        token: String?,
+        apiUrl: String,
         diagnosticContext: ModelRequestDiagnosticContext?,
         trace: ModelExecutionTrace?,
     ): Flow<ResponsesStreamEvent> = flow {
-        val endpoint = if (apiUrl.endsWith("/")) "${apiUrl}v1/responses" else "$apiUrl/v1/responses"
+        val baseUrl = apiUrl.ifBlank { ModelConstants.OPENAI_API_URL }
+        val endpoint = if (baseUrl.endsWith("/")) "${baseUrl}v1/responses" else "$baseUrl/v1/responses"
         val requestBody = NetworkClient.openAIJson.encodeToJsonElement(request).toString()
         val requestStartedAt = System.currentTimeMillis()
         trace?.markRequestStarted(requestStartedAt)
@@ -430,7 +431,7 @@ class OpenAIAPIImpl @Inject constructor(
                 startedAt = requestStartedAt,
             )
         }
-        logOpenAiRequest(endpoint, requestBody)
+        logOpenAiRequest(endpoint, requestBody, token)
 
         try {
             val startTime = requestStartedAt
@@ -537,6 +538,7 @@ class OpenAIAPIImpl @Inject constructor(
     private fun logOpenAiRequest(
         endpoint: String,
         requestBody: String,
+        token: String?,
     ) {
         NetworkLogcatLogger.logRequest(
             method = "POST",

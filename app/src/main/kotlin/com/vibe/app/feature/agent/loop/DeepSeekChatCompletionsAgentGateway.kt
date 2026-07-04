@@ -52,8 +52,6 @@ class DeepSeekChatCompletionsAgentGateway @Inject constructor(
     }
 
     override suspend fun streamTurn(request: AgentModelRequest): Flow<AgentModelEvent> = flow {
-        openAIAPI.setToken(request.platform.token)
-        openAIAPI.setAPIUrl(request.platform.apiUrl.toDeepSeekBaseUrl())
         val trace = ModelExecutionTrace()
         val isReasoning = request.platform.reasoning
 
@@ -103,6 +101,8 @@ class DeepSeekChatCompletionsAgentGateway @Inject constructor(
                 stream = true,
                 thinking = if (isReasoning) QwenThinkingParam(type = "enabled") else null,
             ),
+            token = request.platform.token,
+            apiUrl = request.platform.apiUrl.toDeepSeekBaseUrl(),
             diagnosticContext = requestContext,
             trace = trace,
         ).collect { chunk ->

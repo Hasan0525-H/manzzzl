@@ -98,10 +98,6 @@ class ModelSummaryStrategy(
     }
 
     private suspend fun callSummarizationAPI(text: String): String? {
-        // Configure API credentials for the summarization call
-        openAIAPI.setToken(token)
-        openAIAPI.setAPIUrl(apiUrl)
-
         val response = openAIAPI.completeQwenChatCompletion(
             QwenChatCompletionRequest(
                 model = model,
@@ -117,6 +113,8 @@ class ModelSummaryStrategy(
                 ),
                 stream = false,
             ),
+            token = token,
+            apiUrl = apiUrl,
         )
         return response.choices?.firstOrNull()?.message?.content?.trim()
     }

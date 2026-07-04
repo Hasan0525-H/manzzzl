@@ -73,8 +73,6 @@ class AnthropicMessagesAgentGateway @Inject constructor(
     }
 
     override suspend fun streamTurn(request: AgentModelRequest): Flow<AgentModelEvent> = flow {
-        anthropicAPI.setToken(request.platform.token)
-        anthropicAPI.setAPIUrl(request.platform.apiUrl)
         val trace = ModelExecutionTrace()
 
         val messages = buildMessages(request.fullConversation)
@@ -117,7 +115,13 @@ class AnthropicMessagesAgentGateway @Inject constructor(
         val activeToolBlocks = mutableMapOf<Int, ToolUseBlock>()
         var stopReason: StopReason? = null
 
-        anthropicAPI.streamChatMessage(messageRequest, requestContext, trace).collect { chunk ->
+        anthropicAPI.streamChatMessage(
+            messageRequest,
+            token = request.platform.token,
+            apiUrl = request.platform.apiUrl,
+            diagnosticContext = requestContext,
+            trace = trace,
+        ).collect { chunk ->
             when (chunk) {
                 is MessageStartResponseChunk -> {
                     trace.markInputTokens(

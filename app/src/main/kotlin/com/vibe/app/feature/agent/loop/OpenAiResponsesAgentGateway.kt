@@ -50,8 +50,6 @@ class OpenAiResponsesAgentGateway @Inject constructor(
     }
 
     override suspend fun streamTurn(request: AgentModelRequest): Flow<AgentModelEvent> = flow {
-        openAIAPI.setToken(request.platform.token)
-        openAIAPI.setAPIUrl(request.platform.apiUrl)
         val trace = ModelExecutionTrace()
 
         val responseRequest = ResponsesRequest(
@@ -90,7 +88,13 @@ class OpenAiResponsesAgentGateway @Inject constructor(
 
         var lastResponseId: String? = request.previousResponseId
 
-        openAIAPI.streamResponses(responseRequest, requestContext, trace).collect { event ->
+        openAIAPI.streamResponses(
+            responseRequest,
+            token = request.platform.token,
+            apiUrl = request.platform.apiUrl,
+            diagnosticContext = requestContext,
+            trace = trace,
+        ).collect { event ->
             when (event) {
                 is ReasoningSummaryTextDeltaEvent -> {
                     trace.markThinking(event.delta)
