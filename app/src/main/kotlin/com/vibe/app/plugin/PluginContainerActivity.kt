@@ -196,13 +196,71 @@ open class PluginContainerActivity : AppCompatActivity(), HostActivityDelegator 
         }
     }
 
+    override fun onStart() {
+        super.onStart()
+        try {
+            pluginActivity?.performStart()
+        } catch (e: Exception) {
+            Log.e(TAG, "Plugin crashed during onStart", e)
+            writeCrashLog(e)
+            finish()
+        }
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        try {
+            pluginActivity?.performSaveInstanceState(outState)
+        } catch (e: Exception) {
+            Log.e(TAG, "Plugin crashed during onSaveInstanceState", e)
+            writeCrashLog(e)
+        }
+    }
+
+    override fun onRestoreInstanceState(savedInstanceState: Bundle) {
+        super.onRestoreInstanceState(savedInstanceState)
+        try {
+            pluginActivity?.performRestoreInstanceState(savedInstanceState)
+        } catch (e: Exception) {
+            Log.e(TAG, "Plugin crashed during onRestoreInstanceState", e)
+            writeCrashLog(e)
+        }
+    }
+
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        try {
+            pluginActivity?.performConfigurationChanged(newConfig)
+        } catch (e: Exception) {
+            Log.e(TAG, "Plugin crashed during onConfigurationChanged", e)
+            writeCrashLog(e)
+        }
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        try {
+            pluginActivity?.performRequestPermissionsResult(requestCode, permissions.map { it }.toTypedArray(), grantResults)
+        } catch (e: Exception) {
+            Log.e(TAG, "Plugin crashed during onRequestPermissionsResult", e)
+            writeCrashLog(e)
+        }
+    }
+
     @SuppressLint("MissingSuperCall")
     @Suppress("DEPRECATION")
     override fun onBackPressed() {
-        // Don't call super.onBackPressed() — it accesses FragmentManager
-        // which is not initialized (plugin is not a real system Activity).
-        // Just finish the container.
-        finish()
+        // Never call super.onBackPressed() — it touches the host FragmentManager.
+        // Dispatch to the plugin first; finish only if it requested default behavior
+        // (i.e. the plugin's onBackPressed called super, or it didn't override it).
+        val wantsDefault = try {
+            pluginActivity?.performBackPressed() ?: true
+        } catch (e: Exception) {
+            Log.e(TAG, "Plugin crashed during onBackPressed", e)
+            writeCrashLog(e)
+            true
+        }
+        if (wantsDefault) finish()
     }
 
     // --- HostActivityDelegator ---
