@@ -15,20 +15,25 @@ class WebSearchExecutor @Inject constructor(
         GoogleSearchEngine(),
     )
 
+    private val circuitBreaker = EngineCircuitBreaker()
+
     suspend fun search(query: String): Result<List<SearchResult>> {
         val failures = mutableListOf<EngineFailure>()
 
-        for (engine in engines) {
+        val eligible = engines.filterNot { circuitBreaker.isOpen(it.name) }.ifEmpty { engines }
+        for (engine in eligible) {
             val url = engine.buildSearchUrl(query)
-            val htmlResult = webViewExtractor.extractRawHtml(url)
+            val htmlResult = webViewExtractor.extractRawHtml(url, engine.resultsSelector)
             val error = htmlResult.exceptionOrNull()
             if (error != null) {
                 if (error is kotlinx.coroutines.CancellationException &&
                     error !is kotlinx.coroutines.TimeoutCancellationException
                 ) throw error
                 failures += when (error) {
-                    is WebHttpBlockedException ->
+                    is WebHttpBlockedException -> {
+                        circuitBreaker.recordBlocked(engine.name)
                         EngineFailure(engine.name, WebFailureKind.BLOCKED, "HTTP ${error.statusCode}")
+                    }
                     is kotlinx.coroutines.TimeoutCancellationException ->
                         EngineFailure(engine.name, WebFailureKind.TIMEOUT, "${WebConstants.WEBVIEW_TIMEOUT_MS / 1000}s")
                     else ->
@@ -46,6 +51,7 @@ class WebSearchExecutor @Inject constructor(
                 return Result.success(results.take(MAX_RESULTS))
             }
             failures += if (BlockedPageDetector.isBlockedPage(html)) {
+                circuitBreaker.recordBlocked(engine.name)
                 EngineFailure(engine.name, WebFailureKind.BLOCKED, "captcha/anti-bot page")
             } else {
                 EngineFailure(engine.name, WebFailureKind.NO_RESULTS, "no results parsed")

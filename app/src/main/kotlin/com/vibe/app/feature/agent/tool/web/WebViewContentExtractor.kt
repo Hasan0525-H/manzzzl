@@ -65,18 +65,27 @@ class WebViewContentExtractor @Inject constructor(
     /**
      * Load [url] in a hidden WebView and return the raw outer HTML.
      * Useful for search-engine result pages that need engine-specific parsing.
+     *
+     * If [waitForSelector] is given, the page is polled (up to
+     * [MAX_SELECTOR_POLLS] times, every [SELECTOR_POLL_INTERVAL_MS]) after
+     * `onPageFinished` until the selector appears in the DOM, so JS-rendered
+     * results are not missed.
      */
-    suspend fun extractRawHtml(url: String): Result<String> = runCatching {
+    suspend fun extractRawHtml(url: String, waitForSelector: String? = null): Result<String> = runCatching {
         withTimeout(WebConstants.WEBVIEW_TIMEOUT_MS) {
             val script = "(function() { return document.documentElement.outerHTML; })();"
-            loadAndEvaluate(url, script)
+            loadAndEvaluate(url, script, waitForSelector)
         }
     }
 
     // ── internal helpers ────────────────────────────────────────────────
 
     @SuppressLint("SetJavaScriptEnabled")
-    private suspend fun loadAndEvaluate(url: String, javascript: String): String =
+    private suspend fun loadAndEvaluate(
+        url: String,
+        javascript: String,
+        waitForSelector: String? = null,
+    ): String =
         withContext(Dispatchers.Main) {
             suspendCancellableCoroutine { cont ->
                 val webView = WebView(context).apply {
@@ -94,6 +103,16 @@ class WebViewContentExtractor @Inject constructor(
 
                 var finished = false
 
+                fun grabResult() {
+                    webView.evaluateJavascript(javascript) { rawValue ->
+                        if (finished) return@evaluateJavascript
+                        finished = true
+                        val unescaped = unescapeJsString(rawValue)
+                        webView.destroy()
+                        cont.resume(unescaped)
+                    }
+                }
+
                 webView.webViewClient = object : WebViewClient() {
                     override fun onPageStarted(view: WebView?, requestUrl: String?, favicon: Bitmap?) {
                         // no-op
@@ -101,13 +120,24 @@ class WebViewContentExtractor @Inject constructor(
 
                     override fun onPageFinished(view: WebView?, finishedUrl: String?) {
                         if (finished) return
-                        webView.evaluateJavascript(javascript) { rawValue ->
-                            if (finished) return@evaluateJavascript
-                            finished = true
-                            val unescaped = unescapeJsString(rawValue)
-                            webView.destroy()
-                            cont.resume(unescaped)
+                        if (waitForSelector == null) {
+                            grabResult()
+                            return
                         }
+                        fun poll(attempt: Int) {
+                            if (finished) return
+                            val probe =
+                                "document.querySelector(${org.json.JSONObject.quote(waitForSelector)}) != null"
+                            webView.evaluateJavascript(probe) { present ->
+                                if (finished) return@evaluateJavascript
+                                if (present == "true" || attempt >= MAX_SELECTOR_POLLS) {
+                                    grabResult()
+                                } else {
+                                    webView.postDelayed({ poll(attempt + 1) }, SELECTOR_POLL_INTERVAL_MS)
+                                }
+                            }
+                        }
+                        poll(0)
                     }
 
                     override fun onReceivedError(
@@ -200,6 +230,12 @@ class WebViewContentExtractor @Inject constructor(
 
     companion object {
         private const val TAG = "WebViewExtractor"
+
+        /** Max number of selector-presence probes before giving up and grabbing HTML anyway. */
+        private const val MAX_SELECTOR_POLLS = 10
+
+        /** Delay between selector-presence probes. */
+        private const val SELECTOR_POLL_INTERVAL_MS = 300L
 
         /**
          * WebView's `evaluateJavascript` returns strings wrapped in double quotes
