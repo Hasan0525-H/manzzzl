@@ -31,4 +31,33 @@ class AnthropicMessageMergeTest {
         )
         assertEquals(messages, mergeConsecutiveSameRole(messages))
     }
+
+    @Test
+    fun `leading assistant message gets a synthetic user message prepended`() {
+        val messages = listOf(
+            InputMessage(role = MessageRole.ASSISTANT, content = listOf(TextContent("compacted summary"))),
+            InputMessage(role = MessageRole.USER, content = listOf(TextContent("hi"))),
+        )
+        val result = ensureLeadingUserMessage(messages)
+        assertEquals(3, result.size)
+        assertEquals(MessageRole.USER, result[0].role)
+        assertEquals(listOf(TextContent("(conversation continues)")), result[0].content)
+        assertEquals(messages[0], result[1])
+        assertEquals(messages[1], result[2])
+    }
+
+    @Test
+    fun `leading user message is returned unchanged`() {
+        val messages = listOf(
+            InputMessage(role = MessageRole.USER, content = listOf(TextContent("hi"))),
+            InputMessage(role = MessageRole.ASSISTANT, content = listOf(TextContent("hello"))),
+        )
+        assertEquals(messages, ensureLeadingUserMessage(messages))
+    }
+
+    @Test
+    fun `empty list is returned unchanged`() {
+        val messages = emptyList<InputMessage>()
+        assertEquals(messages, ensureLeadingUserMessage(messages))
+    }
 }
