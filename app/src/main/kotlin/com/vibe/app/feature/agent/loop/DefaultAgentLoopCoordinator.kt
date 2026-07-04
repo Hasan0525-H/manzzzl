@@ -14,6 +14,7 @@ import com.vibe.app.feature.agent.AgentModelRequest
 import com.vibe.app.feature.agent.AgentToolChoiceMode
 import com.vibe.app.feature.agent.AgentToolRegistry
 import com.vibe.app.feature.agent.AgentToolResult
+import com.vibe.app.feature.agent.INVALID_TOOL_ARGUMENTS_KEY
 import com.vibe.app.feature.agent.loop.compaction.CompactionStrategyType
 import com.vibe.app.feature.agent.loop.compaction.ConversationCompactor
 import com.vibe.app.feature.agent.loop.compaction.ProviderContextBudget
@@ -40,6 +41,7 @@ import com.vibe.app.feature.agent.AgentPlan
 import com.vibe.app.feature.agent.AgentPlanStep
 import com.vibe.app.feature.agent.PlanStepStatus
 import com.vibe.app.feature.agent.tool.requireString
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.int
@@ -184,6 +186,7 @@ class DefaultAgentLoopCoordinator @Inject constructor(
                 val outputBuilder = StringBuilder()
                 var failure: AgentModelEvent.Failed? = null
                 var turnReasoningContent: String? = null
+                var completedTruncated = false
 
                 // Force tool use on the first iteration so the model cannot skip directly to
                 // a text-only answer (which happens on turn 3+ when it has seen prior exchanges).
@@ -227,6 +230,7 @@ class DefaultAgentLoopCoordinator @Inject constructor(
                     outputBuilder.clear()
                     failure = null
                     turnReasoningContent = null
+                    completedTruncated = false
 
                     agentModelGateway.streamTurn(
                         AgentModelRequest(
@@ -260,6 +264,7 @@ class DefaultAgentLoopCoordinator @Inject constructor(
                                 if (event.reasoningContent != null) {
                                     turnReasoningContent = event.reasoningContent
                                 }
+                                completedTruncated = event.truncatedByMaxTokens
                             }
 
                             is AgentModelEvent.Failed -> {
@@ -322,6 +327,23 @@ class DefaultAgentLoopCoordinator @Inject constructor(
                     return@flow
                 }
 
+                if (completedTruncated && pendingCalls.isEmpty() && iteration < request.policy.maxIterations) {
+                    // Text-only response cut off by max_tokens: keep the partial text in
+                    // history and ask the model to continue instead of ending the loop.
+                    fullConversation += AgentConversationItem(
+                        role = AgentMessageRole.ASSISTANT,
+                        text = outputBuilder.toString().trim().takeIf { it.isNotEmpty() },
+                    )
+                    val continueMessage = AgentConversationItem(
+                        role = AgentMessageRole.USER,
+                        text = "[System] Your previous response was cut off by the output token limit. " +
+                            "Continue exactly where you stopped. Do not repeat content you already produced.",
+                    )
+                    fullConversation += continueMessage
+                    conversationDelta = listOf(continueMessage)
+                    continue
+                }
+
                 if (pendingCalls.isEmpty()) {
                     request.diagnosticContext?.copy(platformUid = request.platform.uid)?.let { ctx ->
                         diagnosticLogger.logAgentLoopEvent(
@@ -357,6 +379,27 @@ class DefaultAgentLoopCoordinator @Inject constructor(
                 )
 
                 pendingCalls.forEach { call ->
+                    val invalidRaw = (call.arguments as? JsonObject)?.get(INVALID_TOOL_ARGUMENTS_KEY)
+                    if (invalidRaw != null) {
+                        val result = AgentToolResult(
+                            toolCallId = call.id,
+                            toolName = call.name,
+                            output = buildJsonObject {
+                                put(
+                                    "error",
+                                    JsonPrimitive(
+                                        "Tool call arguments were not valid JSON (likely truncated by the output token limit). " +
+                                            "Re-issue this tool call with complete, valid JSON arguments.",
+                                    ),
+                                )
+                            },
+                            isError = true,
+                        )
+                        pendingToolResults += result
+                        collectedToolResults += result
+                        emit(AgentLoopEvent.ToolExecutionFinished(iteration, result))
+                        return@forEach
+                    }
                     val tool = agentToolRegistry.findTool(call.name)
                     if (tool == null) {
                         val result = AgentToolResult(

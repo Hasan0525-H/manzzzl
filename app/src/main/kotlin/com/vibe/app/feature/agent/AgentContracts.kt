@@ -58,6 +58,7 @@ sealed interface AgentModelEvent {
         val finalText: String? = null,
         val responseId: String? = null,
         val reasoningContent: String? = null,
+        val truncatedByMaxTokens: Boolean = false,
     ) : AgentModelEvent
 
     data class Failed(

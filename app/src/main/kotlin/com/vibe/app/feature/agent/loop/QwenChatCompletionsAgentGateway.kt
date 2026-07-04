@@ -15,6 +15,7 @@ import com.vibe.app.feature.agent.AgentModelGateway
 import com.vibe.app.feature.agent.AgentModelRequest
 import com.vibe.app.feature.agent.AgentToolCall
 import com.vibe.app.feature.agent.AgentToolChoiceMode
+import com.vibe.app.feature.agent.INVALID_TOOL_ARGUMENTS_KEY
 import com.vibe.app.feature.diagnostic.ChatDiagnosticLogger
 import com.vibe.app.feature.diagnostic.ModelExecutionTrace
 import com.vibe.app.feature.diagnostic.ModelRequestDiagnosticContext
@@ -145,7 +146,7 @@ class QwenChatCompletionsAgentGateway @Inject constructor(
             val arguments = runCatching {
                 json.parseToJsonElement(acc.arguments.toString())
             }.getOrElse {
-                buildJsonObject { put("raw", JsonPrimitive(acc.arguments.toString())) }
+                buildJsonObject { put(INVALID_TOOL_ARGUMENTS_KEY, JsonPrimitive(acc.arguments.toString().take(2000))) }
             }
             emit(
                 AgentModelEvent.ToolCallReady(
@@ -160,7 +161,7 @@ class QwenChatCompletionsAgentGateway @Inject constructor(
             diagnosticLogger.logModelResponse(requestContext, trace, success = true)
             diagnosticLogger.logLatencyBreakdown(requestContext, trace)
         }
-        emit(AgentModelEvent.Completed())
+        emit(AgentModelEvent.Completed(truncatedByMaxTokens = finishReason == "length"))
     }
 
     private fun buildMessages(request: AgentModelRequest): List<QwenChatMessage> {
@@ -277,7 +278,7 @@ private fun QwenToolCall.toAgentToolCall(json: Json): AgentToolCall {
         json.parseToJsonElement(function.arguments)
     }.getOrElse {
         buildJsonObject {
-            put("raw", JsonPrimitive(function.arguments))
+            put(INVALID_TOOL_ARGUMENTS_KEY, JsonPrimitive(function.arguments.take(2000)))
         }
     }
 

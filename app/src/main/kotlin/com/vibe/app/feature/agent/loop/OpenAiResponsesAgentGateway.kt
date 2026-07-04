@@ -21,6 +21,7 @@ import com.vibe.app.feature.agent.AgentModelEvent
 import com.vibe.app.feature.agent.AgentModelGateway
 import com.vibe.app.feature.agent.AgentModelRequest
 import com.vibe.app.feature.agent.AgentToolCall
+import com.vibe.app.feature.agent.INVALID_TOOL_ARGUMENTS_KEY
 import com.vibe.app.feature.diagnostic.ChatDiagnosticLogger
 import com.vibe.app.feature.diagnostic.ModelExecutionTrace
 import com.vibe.app.feature.diagnostic.ModelRequestDiagnosticContext
@@ -198,10 +199,10 @@ private fun OutputItemDoneEvent.toToolCallOrNull(json: Json): AgentToolCall? {
 
     val arguments = item.arguments
         ?.takeIf { it.isNotBlank() }
-        ?.let {
-            runCatching { json.parseToJsonElement(it) }.getOrElse {
+        ?.let { raw ->
+            runCatching { json.parseToJsonElement(raw) }.getOrElse {
                 buildJsonObject {
-                    put("raw", JsonPrimitive(item.arguments))
+                    put(INVALID_TOOL_ARGUMENTS_KEY, JsonPrimitive(raw.take(2000)))
                 }
             }
         }

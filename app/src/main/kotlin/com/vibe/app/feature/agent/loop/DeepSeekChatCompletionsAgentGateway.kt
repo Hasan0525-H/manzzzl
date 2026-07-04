@@ -16,6 +16,7 @@ import com.vibe.app.feature.agent.AgentModelGateway
 import com.vibe.app.feature.agent.AgentModelRequest
 import com.vibe.app.feature.agent.AgentToolCall
 import com.vibe.app.feature.agent.AgentToolChoiceMode
+import com.vibe.app.feature.agent.INVALID_TOOL_ARGUMENTS_KEY
 import com.vibe.app.feature.diagnostic.ChatDiagnosticLogger
 import com.vibe.app.feature.diagnostic.ModelExecutionTrace
 import com.vibe.app.feature.diagnostic.ModelRequestDiagnosticContext
@@ -158,7 +159,7 @@ class DeepSeekChatCompletionsAgentGateway @Inject constructor(
             val arguments = runCatching {
                 json.parseToJsonElement(acc.arguments.toString())
             }.getOrElse {
-                buildJsonObject { put("raw", JsonPrimitive(acc.arguments.toString())) }
+                buildJsonObject { put(INVALID_TOOL_ARGUMENTS_KEY, JsonPrimitive(acc.arguments.toString().take(2000))) }
             }
             emit(
                 AgentModelEvent.ToolCallReady(
@@ -175,7 +176,12 @@ class DeepSeekChatCompletionsAgentGateway @Inject constructor(
             diagnosticLogger.logModelResponse(requestContext, trace, success = true)
             diagnosticLogger.logLatencyBreakdown(requestContext, trace)
         }
-        emit(AgentModelEvent.Completed(reasoningContent = reasoningContent))
+        emit(
+            AgentModelEvent.Completed(
+                reasoningContent = reasoningContent,
+                truncatedByMaxTokens = finishReason == "length",
+            ),
+        )
     }
 
     private fun buildMessages(request: AgentModelRequest): List<QwenChatMessage> {
