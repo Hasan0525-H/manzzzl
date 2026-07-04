@@ -16,6 +16,7 @@ import com.vibe.app.feature.diagnostic.ChatDiagnosticLogger
 import com.vibe.app.feature.diagnostic.ModelExecutionTrace
 import com.vibe.app.feature.diagnostic.ModelRequestDiagnosticContext
 import io.ktor.client.call.body
+import io.ktor.client.plugins.timeout
 import io.ktor.client.request.accept
 import io.ktor.client.request.bearerAuth
 import io.ktor.client.request.preparePost
@@ -193,6 +194,7 @@ class OpenAIAPIImpl @Inject constructor(
         return try {
             val startTime = requestStartedAt
             networkClient().preparePost(endpoint) {
+                timeout { requestTimeoutMillis = 300_000 }
                 contentType(ContentType.Application.Json)
                 accept(ContentType.Application.Json)
                 setBody(requestBody)
