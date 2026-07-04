@@ -43,7 +43,7 @@
 
 | Phase | 文档 | 主题 | 前置依赖 | 预估 | 状态 | 当前位置 | 完成日期 |
 |-------|------|------|----------|------|------|----------|----------|
-| 1 | [phase-1](./phase-1-agent-loop-reliability.md) | Agent Loop 可靠性止血 | 无 | ~1 周 | ⬜ 未开始 | — | — |
+| 1 | [phase-1](./phase-1-agent-loop-reliability.md) | Agent Loop 可靠性止血 | 无 | ~1 周 | 🔵 进行中 | 代码完成·9 Task 全审查通过·PR→dev,待真机 5 项验证 | — |
 | 2 | [phase-2](./phase-2-context-web-hotfix.md) | Context 与 Web 止血包 | 无 | ~1 周 | ⬜ 未开始 | — | — |
 | 3 | [phase-3](./phase-3-debug-experience.md) | 调试体验强化(截图/崩溃推送/DebugBridge) | 无 | ~1.5 周 | ⬜ 未开始 | — | — |
 | 4 | [phase-4](./phase-4-context-refactor.md) | Context 核心重构(淘汰/持久化/校准/预算) | Phase 2 | ~2 周 | ⬜ 未开始 | — | — |
@@ -52,6 +52,16 @@
 | 7 | [phase-7](./phase-7-plugin-and-engineering-debt.md) | 插件根治与工程还债(ASM/多 Activity/重构) | 无(7.2 依赖 7.1) | ~3 周 | ⬜ 未开始 | — | — |
 
 **推荐执行顺序**:1 → 2 → 3 → 4 → 5 → 6 → 7。Phase 1/2/3 相互独立,可并行;Phase 4/5 依赖 Phase 2 的接口;Phase 6 的 Room 任务(6.3)在 Phase 4.3 之后收益最大但不硬依赖;Phase 7 独立可穿插,但 7.3 建议在 Phase 1 完成后执行(改同一批 gateway 文件)。
+
+### Phase 1 遗留跟进(整支审查产出,2026-07-04)
+
+> Phase 1 代码已完成并通过逐 Task + 整支审查(Opus:Ready to merge)。以下为审查确认的**非阻塞跟进项**,合并后处理:
+
+- **Task 1.8b(建议新增)**:`ModelSummaryStrategy`/`ConversationCompactor`(`ModelSummaryStrategy.kt:36-38` 的 `var apiUrl/token/model`)存在与 Task 1.8 同类的凭证竞态,只是上移一层(压缩摘要路径)。Task 1.8 范围未含,未被其引入/恶化。仿 1.8 把 `compact()`/`callSummarizationAPI` 的 token/apiUrl/model 改为逐调用参数。
+- **集成测试补齐(建议)**:Phase 1 最高风险控制流仅由编译+人工审查覆盖。建议补 3 个测试:(a) coordinator retry 环——429→2 次重试→LoopFailed / 401→0 重试 / delay 期间取消可传播;(b) 截断续写——`Completed(truncatedByMaxTokens=true)` 且无 pendingCalls 时注入续写消息并只推进一次迭代;(c) SSE 终止检测——伪 channel 发 delta 后无终止信号收尾→恰好一个 stream_interrupted,错误事件后收尾→零。
+- **可选硬化**:`RETRY_DELAYS_MS.getOrElse(...)` 解耦 `MAX_MODEL_RETRIES`;Responses gateway 补 `truncatedByMaxTokens`;分类器把已知瞬时 SSE 错误类型(如 `overloaded_error`)也视为可重试。
+- **待真机验证(标 ✅ 前必做)**:见 phase-1 文档"Phase 完成检查"的 5 项人工清单。
+- **既有环境问题(与 Phase 1 无关)**:`./gradlew test`(全模块)在 vendored `build-tools/android-common-resources` 因 `getModuleSourceSets()` 符号不匹配编译失败,该模块本分支未碰、早于本分支存在。Phase 1 交付以 `:app:testDebugUnitTest` + `:build-engine:test` + `assembleDebug` 为准(全绿)。
 
 ---
 

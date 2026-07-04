@@ -32,6 +32,7 @@ import com.vibe.app.feature.agent.AgentModelGateway
 import com.vibe.app.feature.agent.AgentModelRequest
 import com.vibe.app.feature.agent.AgentToolCall
 import com.vibe.app.feature.agent.AgentToolChoiceMode
+import com.vibe.app.feature.agent.INVALID_TOOL_ARGUMENTS_KEY
 import com.vibe.app.feature.diagnostic.ChatDiagnosticLogger
 import com.vibe.app.feature.diagnostic.ModelExecutionTrace
 import com.vibe.app.feature.diagnostic.ModelRequestDiagnosticContext
@@ -43,6 +44,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 
 /**
@@ -71,8 +73,6 @@ class AnthropicMessagesAgentGateway @Inject constructor(
     }
 
     override suspend fun streamTurn(request: AgentModelRequest): Flow<AgentModelEvent> = flow {
-        anthropicAPI.setToken(request.platform.token)
-        anthropicAPI.setAPIUrl(request.platform.apiUrl)
         val trace = ModelExecutionTrace()
 
         val messages = buildMessages(request.fullConversation)
@@ -115,7 +115,13 @@ class AnthropicMessagesAgentGateway @Inject constructor(
         val activeToolBlocks = mutableMapOf<Int, ToolUseBlock>()
         var stopReason: StopReason? = null
 
-        anthropicAPI.streamChatMessage(messageRequest, requestContext, trace).collect { chunk ->
+        anthropicAPI.streamChatMessage(
+            messageRequest,
+            token = request.platform.token,
+            apiUrl = request.platform.apiUrl,
+            diagnosticContext = requestContext,
+            trace = trace,
+        ).collect { chunk ->
             when (chunk) {
                 is MessageStartResponseChunk -> {
                     trace.markInputTokens(
@@ -166,7 +172,11 @@ class AnthropicMessagesAgentGateway @Inject constructor(
                     activeToolBlocks.remove(chunk.index)?.let { block ->
                         val arguments = block.inputBuilder.toString()
                             .takeIf { it.isNotBlank() }
-                            ?.let { runCatching { json.parseToJsonElement(it) }.getOrElse { buildJsonObject {} } }
+                            ?.let { raw ->
+                                runCatching { json.parseToJsonElement(raw) }.getOrElse {
+                                    buildJsonObject { put(INVALID_TOOL_ARGUMENTS_KEY, JsonPrimitive(raw.take(2000))) }
+                                }
+                            }
                             ?: buildJsonObject {}
                         emit(
                             AgentModelEvent.ToolCallReady(
@@ -187,12 +197,19 @@ class AnthropicMessagesAgentGateway @Inject constructor(
 
                 is MessageStopResponseChunk -> {
                     trace.markCompleted(stopReason?.name?.lowercase())
-                    emit(AgentModelEvent.Completed())
+                    emit(AgentModelEvent.Completed(truncatedByMaxTokens = stopReason == StopReason.MAX_TOKENS))
                 }
 
                 is ErrorResponseChunk -> {
                     trace.markFailed("provider_error", chunk.error.message)
-                    emit(AgentModelEvent.Failed(chunk.error.message))
+                    emit(
+                        AgentModelEvent.Failed(
+                            message = chunk.error.message,
+                            statusCode = chunk.error.statusCode,
+                            retryable = ModelFailureClassifier.isRetryable(chunk.error.statusCode, chunk.error.type),
+                            retryAfterSeconds = chunk.error.retryAfterSeconds,
+                        ),
+                    )
                 }
 
                 else -> Unit
