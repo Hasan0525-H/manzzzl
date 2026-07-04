@@ -44,7 +44,7 @@
 | Phase | 文档 | 主题 | 前置依赖 | 预估 | 状态 | 当前位置 | 完成日期 |
 |-------|------|------|----------|------|------|----------|----------|
 | 1 | [phase-1](./phase-1-agent-loop-reliability.md) | Agent Loop 可靠性止血 | 无 | ~1 周 | 🔵 进行中 | 代码完成·9 Task 全审查通过·PR→dev,待真机 5 项验证 | — |
-| 2 | [phase-2](./phase-2-context-web-hotfix.md) | Context 与 Web 止血包 | 无 | ~1 周 | 🔵 进行中 | 代码完成·7 Task 全审查通过·整支终审 With fixes(1 回归+1 Minor 已修复复核)·PR→dev,待真机 4 项验证 | — |
+| 2 | [phase-2](./phase-2-context-web-hotfix.md) | Context 与 Web 止血包 | 无 | ~1 周 | 🔵 进行中 | 代码完成·7 Task 全审查通过·整支终审 With fixes(1 回归+1 Minor 已修复复核)·[PR #26](https://github.com/Skykai521/VibeApp/pull/26)→dev,待真机 4 项验证 | — |
 | 3 | [phase-3](./phase-3-debug-experience.md) | 调试体验强化(截图/崩溃推送/DebugBridge) | 无 | ~1.5 周 | ⬜ 未开始 | — | — |
 | 4 | [phase-4](./phase-4-context-refactor.md) | Context 核心重构(淘汰/持久化/校准/预算) | Phase 2 | ~2 周 | ⬜ 未开始 | — | — |
 | 5 | [phase-5](./phase-5-web-search-providers.md) | Web 搜索 Provider 化与内容管理 | Phase 2 | ~1.5 周 | ⬜ 未开始 | — | — |
