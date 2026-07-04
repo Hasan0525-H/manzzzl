@@ -571,6 +571,11 @@ class DefaultAgentLoopCoordinator @Inject constructor(
                 clientType = request.platform.compatibleType,
                 platform = request.platform,
             )
+            if (windDownCompaction.strategyUsed != CompactionStrategyType.NONE && previousResponseId != null) {
+                // Same D1 fix as the main loop: drop the stale server-side Responses chain
+                // so the compacted wind-down history is sent fresh instead of a delta.
+                previousResponseId = null
+            }
             agentModelGateway.streamTurn(
                 AgentModelRequest(
                     platform = request.platform,
