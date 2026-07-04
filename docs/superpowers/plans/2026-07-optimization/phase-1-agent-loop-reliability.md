@@ -1214,4 +1214,4 @@ git commit -m "fix(network): gate verbose request/SSE logging behind BuildConfig
 
 | 日期 | 执行者 | 内容 | 偏离/备注 |
 |------|--------|------|-----------|
-| | | | |
+| 2026-07-04 | Claude (SDD:implementer+reviewer 子代理,Opus 控制) | Task 1.1–1.9 全部实现,每个走 TDD/实现→逐 Task 双重审查(规格+质量)→提交;9 独立 commit `e5fa43b..e74be7a`;整支审查(Opus)判 Ready to merge。验证:`:app:testDebugUnitTest`+`:build-engine:test`+`assembleDebug`+`compileReleaseKotlin` 全绿。 | 分支采用原地(非 worktree),因 332MB 未跟踪 `assets/bootstrap/`。**偏离**:1.2 额外把服务器错误/失败事件也计为 SSE 终止(防伪 stream_interrupted 覆盖真实 Failed,审查确认正确);1.7 顺手改 Kimi/Qwen 两个死代码 `toAgentToolCall`(零引用,行为中性);1.9 必须的 `app/build.gradle.kts` 启用 `buildConfig=true`(AGP 9.1 默认关,否则 BuildConfig 不生成)。**跟进(非阻塞,见 00-progress §3 后 Phase 1 遗留)**:Task 1.8b(ModelSummaryStrategy 残留竞态)、3 个集成测试、真机 5 项验证未做。 |
