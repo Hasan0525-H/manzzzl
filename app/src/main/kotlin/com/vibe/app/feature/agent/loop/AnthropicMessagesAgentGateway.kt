@@ -284,7 +284,7 @@ class AnthropicMessagesAgentGateway @Inject constructor(
                 }
             }
         }
-        return messages
+        return ensureLeadingUserMessage(mergeConsecutiveSameRole(messages))
     }
 
     private fun buildToolChoice(mode: AgentToolChoiceMode): AnthropicToolChoice {
@@ -317,3 +317,33 @@ class AnthropicMessagesAgentGateway @Inject constructor(
         private const val DEFAULT_MAX_TOKENS = 16000
     }
 }
+
+/**
+ * Anthropic Messages API requires alternating user/assistant roles.
+ * Compaction summaries can produce consecutive same-role messages —
+ * merge their content blocks into a single message defensively.
+ */
+internal fun mergeConsecutiveSameRole(messages: List<InputMessage>): List<InputMessage> {
+    val merged = mutableListOf<InputMessage>()
+    for (msg in messages) {
+        val last = merged.lastOrNull()
+        if (last != null && last.role == msg.role) {
+            merged[merged.size - 1] = last.copy(content = last.content + msg.content)
+        } else {
+            merged += msg
+        }
+    }
+    return merged
+}
+
+/**
+ * The Anthropic Messages API requires the first message to use the `user` role.
+ * Compaction can now emit an ASSISTANT-role summary at the head of the conversation,
+ * which would 400. Prepend a minimal synthetic user turn when that happens.
+ */
+internal fun ensureLeadingUserMessage(messages: List<InputMessage>): List<InputMessage> =
+    if (messages.firstOrNull()?.role == MessageRole.ASSISTANT) {
+        listOf(InputMessage(role = MessageRole.USER, content = listOf(TextContent("(conversation continues)")))) + messages
+    } else {
+        messages
+    }
