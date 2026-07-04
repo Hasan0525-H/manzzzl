@@ -20,6 +20,12 @@ internal const val MAX_READ_CHARS = 50_000
 
 internal data class ClampResult(val content: String, val truncated: Boolean, val totalLines: Int)
 
+/** Logical line count: a single trailing empty line (from a final newline) is not counted. */
+internal fun logicalLineCount(content: String): Int {
+    val lines = content.lines()
+    return if (lines.isNotEmpty() && lines.last().isEmpty()) lines.size - 1 else lines.size
+}
+
 /**
  * Clamp [content] to at most [maxLines] lines and [maxChars] characters, in that order,
  * so a single oversized file read can't blow up the model context.
@@ -30,7 +36,7 @@ internal fun clampFileContent(
     maxChars: Int = MAX_READ_CHARS,
 ): ClampResult {
     val lines = content.lines()
-    val totalLines = if (lines.isNotEmpty() && lines.last().isEmpty()) lines.size - 1 else lines.size
+    val totalLines = logicalLineCount(content)
     var clamped = content
     var truncated = false
     if (totalLines > maxLines) {
@@ -43,6 +49,15 @@ internal fun clampFileContent(
     }
     return ClampResult(clamped, truncated, totalLines)
 }
+
+/**
+ * When a sliced range is further clamped, the delivered content ends before the
+ * requested slice end. Report the line actually reached (capped at the slice end)
+ * so a resuming reader doesn't skip the truncated remainder.
+ */
+internal fun deliveredRangeEnd(rangeStart: Int, rangeEnd: Int, clamp: ClampResult): Int =
+    if (!clamp.truncated) rangeEnd
+    else minOf(rangeEnd, rangeStart + logicalLineCount(clamp.content) - 1)
 
 /**
  * Slice [content] by 1-based inclusive line numbers. `endLine = -1` means EOF.
@@ -135,16 +150,13 @@ class ReadProjectFileTool @Inject constructor(
                         val (sliced, range) = sliceByLines(fullContent, startLine, endLine)
                         val clamp = clampFileContent(sliced)
                         put("content", JsonPrimitive(clamp.content))
-                        val totalLines = fullContent.lines().let {
-                            if (it.isNotEmpty() && it.last().isEmpty()) it.size - 1 else it.size
-                        }
-                        put("total_lines", JsonPrimitive(totalLines))
+                        put("total_lines", JsonPrimitive(logicalLineCount(fullContent)))
                         if (range != IntRange.EMPTY) {
                             put(
                                 "range",
                                 buildJsonObject {
                                     put("start", JsonPrimitive(range.first))
-                                    put("end", JsonPrimitive(range.last))
+                                    put("end", JsonPrimitive(deliveredRangeEnd(range.first, range.last, clamp)))
                                 },
                             )
                         }

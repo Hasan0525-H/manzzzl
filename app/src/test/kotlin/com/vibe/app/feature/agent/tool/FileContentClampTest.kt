@@ -33,4 +33,42 @@ class FileContentClampTest {
         assertTrue(result.truncated)
         assertEquals(50_000, result.content.length)
     }
+
+    @Test
+    fun `logicalLineCount excludes trailing empty line from final newline`() {
+        assertEquals(3, logicalLineCount("a\nb\nc\n"))
+    }
+
+    @Test
+    fun `logicalLineCount counts all lines without trailing newline`() {
+        assertEquals(3, logicalLineCount("a\nb\nc"))
+    }
+
+    @Test
+    fun `deliveredRangeEnd returns requested end when clamp not truncated`() {
+        val clamp = ClampResult(content = "a\nb\nc", truncated = false, totalLines = 3)
+        assertEquals(50, deliveredRangeEnd(rangeStart = 10, rangeEnd = 50, clamp = clamp))
+    }
+
+    @Test
+    fun `deliveredRangeEnd reports last delivered line when clamp truncated`() {
+        // clamp only delivered 5 logical lines starting at rangeStart = 100
+        val clamp = ClampResult(
+            content = (1..5).joinToString("\n") { "line $it" },
+            truncated = true,
+            totalLines = 5,
+        )
+        assertEquals(104, deliveredRangeEnd(rangeStart = 100, rangeEnd = 500, clamp = clamp))
+    }
+
+    @Test
+    fun `deliveredRangeEnd never exceeds the requested rangeEnd`() {
+        // more delivered lines than the requested range span (defensive cap)
+        val clamp = ClampResult(
+            content = (1..10).joinToString("\n") { "line $it" },
+            truncated = true,
+            totalLines = 10,
+        )
+        assertEquals(105, deliveredRangeEnd(rangeStart = 100, rangeEnd = 105, clamp = clamp))
+    }
 }
