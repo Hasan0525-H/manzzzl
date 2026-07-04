@@ -15,6 +15,35 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
+internal const val MAX_READ_LINES = 2000
+internal const val MAX_READ_CHARS = 50_000
+
+internal data class ClampResult(val content: String, val truncated: Boolean, val totalLines: Int)
+
+/**
+ * Clamp [content] to at most [maxLines] lines and [maxChars] characters, in that order,
+ * so a single oversized file read can't blow up the model context.
+ */
+internal fun clampFileContent(
+    content: String,
+    maxLines: Int = MAX_READ_LINES,
+    maxChars: Int = MAX_READ_CHARS,
+): ClampResult {
+    val lines = content.lines()
+    val totalLines = if (lines.isNotEmpty() && lines.last().isEmpty()) lines.size - 1 else lines.size
+    var clamped = content
+    var truncated = false
+    if (totalLines > maxLines) {
+        clamped = lines.take(maxLines).joinToString("\n")
+        truncated = true
+    }
+    if (clamped.length > maxChars) {
+        clamped = clamped.take(maxChars)
+        truncated = true
+    }
+    return ClampResult(clamped, truncated, totalLines)
+}
+
 /**
  * Slice [content] by 1-based inclusive line numbers. `endLine = -1` means EOF.
  * Returns the sliced text and the (clamped) effective range, or empty + [IntRange.EMPTY]
@@ -104,7 +133,8 @@ class ReadProjectFileTool @Inject constructor(
                     put("path", JsonPrimitive(path))
                     if (useRange) {
                         val (sliced, range) = sliceByLines(fullContent, startLine, endLine)
-                        put("content", JsonPrimitive(sliced))
+                        val clamp = clampFileContent(sliced)
+                        put("content", JsonPrimitive(clamp.content))
                         val totalLines = fullContent.lines().let {
                             if (it.isNotEmpty() && it.last().isEmpty()) it.size - 1 else it.size
                         }
@@ -118,8 +148,30 @@ class ReadProjectFileTool @Inject constructor(
                                 },
                             )
                         }
+                        if (clamp.truncated) {
+                            put("truncated", JsonPrimitive(true))
+                            put(
+                                "hint",
+                                JsonPrimitive(
+                                    "Range truncated to the first $MAX_READ_LINES lines / $MAX_READ_CHARS chars. " +
+                                        "Narrow start_line/end_line further to read the remaining content.",
+                                ),
+                            )
+                        }
                     } else {
-                        put("content", JsonPrimitive(fullContent))
+                        val clamp = clampFileContent(fullContent)
+                        put("content", JsonPrimitive(clamp.content))
+                        if (clamp.truncated) {
+                            put("truncated", JsonPrimitive(true))
+                            put("total_lines", JsonPrimitive(clamp.totalLines))
+                            put(
+                                "hint",
+                                JsonPrimitive(
+                                    "File truncated to the first $MAX_READ_LINES lines / $MAX_READ_CHARS chars. " +
+                                        "Use start_line/end_line to read the remaining ranges.",
+                                ),
+                            )
+                        }
                     }
                 },
             )
@@ -136,7 +188,12 @@ class ReadProjectFileTool @Inject constructor(
                                 buildJsonObject {
                                     put("path", JsonPrimitive(path))
                                     if (content.isSuccess) {
-                                        put("content", JsonPrimitive(content.getOrThrow()))
+                                        val clamp = clampFileContent(content.getOrThrow())
+                                        put("content", JsonPrimitive(clamp.content))
+                                        if (clamp.truncated) {
+                                            put("truncated", JsonPrimitive(true))
+                                            put("total_lines", JsonPrimitive(clamp.totalLines))
+                                        }
                                     } else {
                                         put("error", JsonPrimitive(content.exceptionOrNull()?.message ?: "Read failed"))
                                     }
