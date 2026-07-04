@@ -388,22 +388,41 @@ class DefaultAgentLoopCoordinator @Inject constructor(
                     if (turnContext != null && call.name in WRITE_TOOL_NAMES && !turnContext.firstWriteDone) {
                         turnContext.firstWriteDone = true
                     }
-                    val result = runCatching {
-                        tool.execute(
-                            call = call,
-                            context = com.vibe.app.feature.agent.AgentToolContext(
-                                chatId = request.chatId,
-                                platformUid = request.platform.uid,
-                                iteration = iteration,
-                                projectId = request.projectId ?: "",
-                            ),
-                        )
-                    }.getOrElse { error ->
+                    val result = try {
+                        kotlinx.coroutines.withTimeout(toolTimeoutMillis(call.name)) {
+                            tool.execute(
+                                call = call,
+                                context = com.vibe.app.feature.agent.AgentToolContext(
+                                    chatId = request.chatId,
+                                    platformUid = request.platform.uid,
+                                    iteration = iteration,
+                                    projectId = request.projectId ?: "",
+                                ),
+                            )
+                        }
+                    } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
                         AgentToolResult(
                             toolCallId = call.id,
                             toolName = call.name,
                             output = buildJsonObject {
-                                put("error", JsonPrimitive(error.message ?: "Tool execution failed"))
+                                put(
+                                    "error",
+                                    JsonPrimitive(
+                                        "Tool '${call.name}' timed out after ${toolTimeoutMillis(call.name) / 1000}s. " +
+                                            "Do not immediately retry the same call — try a different approach.",
+                                    ),
+                                )
+                            },
+                            isError = true,
+                        )
+                    } catch (e: kotlin.coroutines.cancellation.CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        AgentToolResult(
+                            toolCallId = call.id,
+                            toolName = call.name,
+                            output = buildJsonObject {
+                                put("error", JsonPrimitive(e.message ?: "Tool execution failed"))
                             },
                             isError = true,
                         )
@@ -804,6 +823,26 @@ class DefaultAgentLoopCoordinator @Inject constructor(
         private const val MAX_MODEL_RETRIES = 2
         /** Backoff delay per retry attempt (index 0 = first retry), used as a floor under Retry-After. */
         private val RETRY_DELAYS_MS = listOf(1_000L, 4_000L)
+
+        /**
+         * Per-tool execution timeouts. Cross-process tools (AIDL-based `launch_app`/`inspect_ui`)
+         * and the build pipeline (which holds the global BuildMutex) can hang forever without
+         * one of these — freezing the whole turn. `Mutex.withLock` releases in a `finally` on
+         * cancellation, so timing out `run_build_pipeline` here is safe for the mutex.
+         */
+        private val TOOL_TIMEOUTS_MS: Map<String, Long> = mapOf(
+            "run_build_pipeline" to 10 * 60_000L,
+            "launch_app" to 45_000L,
+            "inspect_ui" to 20_000L,
+            "interact_ui" to 30_000L,
+            "close_app" to 15_000L,
+            "web_search" to 90_000L, // worst case: 3 engines x 20s + parsing
+            "fetch_web_page" to 40_000L,
+        )
+        private const val DEFAULT_TOOL_TIMEOUT_MS = 60_000L
+
+        private fun toolTimeoutMillis(toolName: String): Long =
+            TOOL_TIMEOUTS_MS[toolName] ?: DEFAULT_TOOL_TIMEOUT_MS
     }
 
     private fun MessageV2.toAgentConversationItem(): AgentConversationItem {
