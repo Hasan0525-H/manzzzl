@@ -278,7 +278,7 @@ public class ShadowActivity extends AppCompatActivity {
 
     @Override
     public Intent getIntent() {
-        if (hostDelegator != null) return hostDelegator.getHostIntent();
+        if (hostDelegator != null) return hostDelegator.getPluginIntent();
         return super.getIntent();
     }
 

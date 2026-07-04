@@ -37,6 +37,7 @@ open class PluginContainerActivity : AppCompatActivity(), HostActivityDelegator 
     private var pluginContext: Context? = null // ContextWrapper with plugin resources/theme/ClassLoader
     private var projectId: String? = null
     private var slotIndex: Int = -1
+    private var pluginLaunchIntent: Intent? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -315,6 +316,22 @@ open class PluginContainerActivity : AppCompatActivity(), HostActivityDelegator 
     override fun superFinish() = super.finish()
     override fun setPluginResult(resultCode: Int, data: Intent?) = setResult(resultCode, data)
     override fun getHostIntent(): Intent = intent
+
+    /**
+     * Synthetic MAIN/LAUNCHER intent targeting the plugin's own main component, so
+     * plugin code calling getIntent() sees a launch intent with its own semantics —
+     * not the container's intent that carries host extras like plugin_apk_path.
+     */
+    override fun getPluginIntent(): Intent {
+        pluginLaunchIntent?.let { return it }
+        val mainClass = intent.getStringExtra(EXTRA_MAIN_CLASS) ?: ""
+        val synthetic = Intent(Intent.ACTION_MAIN).apply {
+            addCategory(Intent.CATEGORY_LAUNCHER)
+            setClassName(mainClass.substringBeforeLast('.'), mainClass)
+        }
+        pluginLaunchIntent = synthetic
+        return synthetic
+    }
 
     private fun installCrashHandler() {
         val previousHandler = Thread.getDefaultUncaughtExceptionHandler()
