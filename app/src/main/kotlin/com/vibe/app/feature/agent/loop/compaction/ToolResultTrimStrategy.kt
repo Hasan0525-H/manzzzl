@@ -170,7 +170,10 @@ class ToolResultTrimStrategy : CompactionStrategy {
             for (item in items) {
                 if (item.role == AgentMessageRole.USER) {
                     turns.add(mutableListOf(item))
-                } else if (turns.isNotEmpty()) {
+                } else {
+                    // Leading non-USER items (e.g. compaction summaries) form a preamble
+                    // group so they are never silently dropped by re-compaction.
+                    if (turns.isEmpty()) turns.add(mutableListOf())
                     turns.last().add(item)
                 }
             }

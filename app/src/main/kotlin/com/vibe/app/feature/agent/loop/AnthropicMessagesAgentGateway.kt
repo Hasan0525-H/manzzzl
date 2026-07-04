@@ -284,7 +284,7 @@ class AnthropicMessagesAgentGateway @Inject constructor(
                 }
             }
         }
-        return messages
+        return mergeConsecutiveSameRole(messages)
     }
 
     private fun buildToolChoice(mode: AgentToolChoiceMode): AnthropicToolChoice {
@@ -316,4 +316,22 @@ class AnthropicMessagesAgentGateway @Inject constructor(
     companion object {
         private const val DEFAULT_MAX_TOKENS = 16000
     }
+}
+
+/**
+ * Anthropic Messages API requires alternating user/assistant roles.
+ * Compaction summaries can produce consecutive same-role messages —
+ * merge their content blocks into a single message defensively.
+ */
+internal fun mergeConsecutiveSameRole(messages: List<InputMessage>): List<InputMessage> {
+    val merged = mutableListOf<InputMessage>()
+    for (msg in messages) {
+        val last = merged.lastOrNull()
+        if (last != null && last.role == msg.role) {
+            merged[merged.size - 1] = last.copy(content = last.content + msg.content)
+        } else {
+            merged += msg
+        }
+    }
+    return merged
 }
