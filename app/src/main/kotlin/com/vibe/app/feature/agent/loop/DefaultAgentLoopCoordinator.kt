@@ -31,6 +31,7 @@ import com.vibe.app.feature.project.snapshot.SnapshotManager
 import com.vibe.app.feature.project.snapshot.SnapshotType
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import com.vibe.app.feature.agent.AgentPlan
@@ -179,7 +180,7 @@ class DefaultAgentLoopCoordinator @Inject constructor(
                 val pendingToolResults = mutableListOf<AgentToolResult>()
                 val pendingCalls = mutableListOf<com.vibe.app.feature.agent.AgentToolCall>()
                 val outputBuilder = StringBuilder()
-                var failureMessage: String? = null
+                var failure: AgentModelEvent.Failed? = null
                 var turnReasoningContent: String? = null
 
                 // Force tool use on the first iteration so the model cannot skip directly to
@@ -210,64 +211,112 @@ class DefaultAgentLoopCoordinator @Inject constructor(
                     }
                 }
 
-                agentModelGateway.streamTurn(
-                    AgentModelRequest(
-                        platform = request.platform,
-                        diagnosticContext = request.diagnosticContext?.copy(platformUid = request.platform.uid),
-                        conversation = conversationDelta,
-                        fullConversation = compactionResult.items,
-                        instructions = buildInstructions(request, currentPlan, mode, memo),
-                        tools = request.tools,
-                        policy = effectivePolicy,
-                        previousResponseId = previousResponseId,
-                    ),
-                ).collect { event ->
-                    when (event) {
-                        is AgentModelEvent.ThinkingDelta -> {
-                            emit(AgentLoopEvent.ThinkingDelta(iteration, event.delta))
-                        }
+                // Retry ring: a transient model failure (rate limit, 5xx, dropped connection)
+                // no longer kills the whole turn outright. We retry up to MAX_MODEL_RETRIES times
+                // with backoff, honoring Retry-After when the provider sends one.
+                // Known trade-off: if the model had already streamed partial output before the
+                // failure, a retry's regenerated output is appended after it, which can surface as
+                // a duplicated paragraph in the UI. That's an acceptable minor cost compared to
+                // discarding the whole turn; a proper fix needs a UI-side "reset current message"
+                // event, which is out of scope for this phase.
+                var attempt = 0
+                while (true) {
+                    pendingCalls.clear()
+                    outputBuilder.clear()
+                    failure = null
+                    turnReasoningContent = null
 
-                        is AgentModelEvent.OutputDelta -> {
-                            outputBuilder.append(event.delta)
-                            emit(AgentLoopEvent.OutputDelta(iteration, event.delta))
-                        }
+                    agentModelGateway.streamTurn(
+                        AgentModelRequest(
+                            platform = request.platform,
+                            diagnosticContext = request.diagnosticContext?.copy(platformUid = request.platform.uid),
+                            conversation = conversationDelta,
+                            fullConversation = compactionResult.items,
+                            instructions = buildInstructions(request, currentPlan, mode, memo),
+                            tools = request.tools,
+                            policy = effectivePolicy,
+                            previousResponseId = previousResponseId,
+                        ),
+                    ).collect { event ->
+                        when (event) {
+                            is AgentModelEvent.ThinkingDelta -> {
+                                emit(AgentLoopEvent.ThinkingDelta(iteration, event.delta))
+                            }
 
-                        is AgentModelEvent.ToolCallReady -> {
-                            pendingCalls += event.call
-                            emit(AgentLoopEvent.ToolCallDiscovered(iteration, event.call))
-                        }
+                            is AgentModelEvent.OutputDelta -> {
+                                outputBuilder.append(event.delta)
+                                emit(AgentLoopEvent.OutputDelta(iteration, event.delta))
+                            }
 
-                        is AgentModelEvent.Completed -> {
-                            previousResponseId = event.responseId ?: previousResponseId
-                            if (event.reasoningContent != null) {
-                                turnReasoningContent = event.reasoningContent
+                            is AgentModelEvent.ToolCallReady -> {
+                                pendingCalls += event.call
+                                emit(AgentLoopEvent.ToolCallDiscovered(iteration, event.call))
+                            }
+
+                            is AgentModelEvent.Completed -> {
+                                previousResponseId = event.responseId ?: previousResponseId
+                                if (event.reasoningContent != null) {
+                                    turnReasoningContent = event.reasoningContent
+                                }
+                            }
+
+                            is AgentModelEvent.Failed -> {
+                                failure = event
                             }
                         }
-
-                        is AgentModelEvent.Failed -> {
-                            failureMessage = event.message
-                        }
                     }
+
+                    val attemptFailure = failure
+                    if (attemptFailure == null || !attemptFailure.retryable || attempt >= MAX_MODEL_RETRIES) {
+                        break
+                    }
+
+                    attempt++
+                    val backoffMs = RETRY_DELAYS_MS[attempt - 1]
+                    val delayMs = maxOf(attemptFailure.retryAfterSeconds?.times(1000L) ?: 0L, backoffMs)
+                    emit(
+                        AgentLoopEvent.ThinkingDelta(
+                            iteration,
+                            "\n[Transient model error, retrying $attempt/$MAX_MODEL_RETRIES in ${delayMs / 1000}s: ${attemptFailure.message.take(120)}]\n",
+                        ),
+                    )
+                    request.diagnosticContext?.copy(platformUid = request.platform.uid)?.let { ctx ->
+                        diagnosticLogger.logAgentLoopEvent(
+                            context = ctx,
+                            action = "model_retry",
+                            level = DiagnosticLevels.WARN,
+                            summary = "Retry $attempt/$MAX_MODEL_RETRIES after: ${attemptFailure.message.take(120)}",
+                            payload = buildJsonObject {
+                                put("action", "model_retry")
+                                put("iteration", iteration)
+                                put("attempt", attempt)
+                                put("statusCode", attemptFailure.statusCode ?: -1)
+                                put("delayMs", delayMs)
+                            },
+                        )
+                    }
+                    delay(delayMs)
                 }
 
-                if (failureMessage != null) {
+                val finalFailure = failure
+                if (finalFailure != null) {
                     request.diagnosticContext?.copy(platformUid = request.platform.uid)?.let { ctx ->
                         diagnosticLogger.logAgentLoopEvent(
                             context = ctx,
                             action = "loop_failed",
                             level = DiagnosticLevels.ERROR,
-                            summary = "Agent loop failed at iteration $iteration: ${failureMessage.take(120)}",
+                            summary = "Agent loop failed at iteration $iteration: ${finalFailure.message.take(120)}",
                             payload = buildJsonObject {
                                 put("action", "loop_failed")
                                 put("reason", "model_error")
                                 put("iteration", iteration)
                                 put("totalToolCalls", collectedToolResults.size)
                                 put("durationMs", System.currentTimeMillis() - loopStartedAt)
-                                put("errorMessage", failureMessage.take(500))
+                                put("errorMessage", finalFailure.message.take(500))
                             },
                         )
                     }
-                    emit(AgentLoopEvent.LoopFailed(message = failureMessage, iteration = iteration))
+                    emit(AgentLoopEvent.LoopFailed(message = finalFailure.message, iteration = iteration))
                     return@flow
                 }
 
@@ -744,6 +793,11 @@ class DefaultAgentLoopCoordinator @Inject constructor(
         private const val MAX_OLDER_ASSISTANT_CHARS = 1500
         /** Older turns: summary-level only. */
         private const val MAX_SUMMARY_CHARS = 500
+
+        /** Max number of in-iteration retries for a retryable model failure. */
+        private const val MAX_MODEL_RETRIES = 2
+        /** Backoff delay per retry attempt (index 0 = first retry), used as a floor under Retry-After. */
+        private val RETRY_DELAYS_MS = listOf(1_000L, 4_000L)
     }
 
     private fun MessageV2.toAgentConversationItem(): AgentConversationItem {

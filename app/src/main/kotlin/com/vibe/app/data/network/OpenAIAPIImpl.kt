@@ -94,6 +94,7 @@ class OpenAIAPIImpl @Inject constructor(
                                 message = errorBody,
                                 type = "http_error",
                                 code = response.status.value.toString(),
+                                retryAfterSeconds = response.headers["Retry-After"]?.toIntOrNull(),
                             ),
                         ),
                     )
@@ -319,7 +320,8 @@ class OpenAIAPIImpl @Inject constructor(
                             error = ErrorDetail(
                                 message = errorMessage,
                                 type = "http_error",
-                                code = response.status.value.toString()
+                                code = response.status.value.toString(),
+                                retryAfterSeconds = response.headers["Retry-After"]?.toIntOrNull(),
                             )
                         )
                     )

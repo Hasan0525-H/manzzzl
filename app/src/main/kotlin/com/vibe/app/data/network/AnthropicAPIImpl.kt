@@ -122,7 +122,16 @@ class AnthropicAPIImpl @Inject constructor(
                         "HTTP ${response.status.value}: $errorBody"
                     }
 
-                    emit(ErrorResponseChunk(error = ErrorDetail(type = "api_error", message = errorMessage)))
+                    emit(
+                        ErrorResponseChunk(
+                            error = ErrorDetail(
+                                type = "api_error",
+                                message = errorMessage,
+                                statusCode = response.status.value,
+                                retryAfterSeconds = response.headers["Retry-After"]?.toIntOrNull(),
+                            ),
+                        ),
+                    )
                     return@execute
                 }
 

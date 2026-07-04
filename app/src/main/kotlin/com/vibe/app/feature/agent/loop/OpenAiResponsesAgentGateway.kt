@@ -115,9 +115,12 @@ class OpenAiResponsesAgentGateway @Inject constructor(
 
                 is ResponseFailedEvent -> {
                     trace.markFailed("provider_error", event.response.error?.message)
+                    val status = event.response.error?.code?.toIntOrNull()
                     emit(
                         AgentModelEvent.Failed(
-                            event.response.error?.message ?: "OpenAI Responses request failed",
+                            message = event.response.error?.message ?: "OpenAI Responses request failed",
+                            statusCode = status,
+                            retryable = ModelFailureClassifier.isRetryable(status, event.response.error?.code),
                         ),
                     )
                 }
@@ -127,7 +130,14 @@ class OpenAiResponsesAgentGateway @Inject constructor(
                         errorKind = if (event.code == "network_error") "network_error" else "provider_error",
                         errorMessage = event.message,
                     )
-                    emit(AgentModelEvent.Failed(event.message))
+                    val status = event.code?.toIntOrNull()
+                    emit(
+                        AgentModelEvent.Failed(
+                            message = event.message,
+                            statusCode = status,
+                            retryable = ModelFailureClassifier.isRetryable(status, event.code),
+                        ),
+                    )
                 }
                 else -> Unit
             }

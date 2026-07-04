@@ -2,6 +2,7 @@ package com.vibe.app.feature.agent.loop
 
 import android.content.Context
 import dagger.hilt.android.qualifiers.ApplicationContext
+import com.vibe.app.data.dto.openai.response.ErrorDetail
 import com.vibe.app.data.dto.qwen.request.QwenChatCompletionRequest
 import com.vibe.app.data.dto.qwen.request.QwenChatMessage
 import com.vibe.app.data.dto.qwen.request.QwenFunctionCall
@@ -87,7 +88,7 @@ class KimiChatCompletionsAgentGateway @Inject constructor(
         val toolCallAccumulators = mutableMapOf<Int, ToolCallAccumulator>()
         var finishReason: String? = null
         val reasoningBuilder = StringBuilder()
-        var streamError: String? = null
+        var streamError: ErrorDetail? = null
 
         openAIAPI.streamQwenChatCompletion(
             QwenChatCompletionRequest(
@@ -109,7 +110,7 @@ class KimiChatCompletionsAgentGateway @Inject constructor(
             trace = trace,
         ).collect { chunk ->
             if (chunk.error != null) {
-                streamError = chunk.error.message
+                streamError = chunk.error
                 trace.markFailed(chunk.error.type ?: "provider_error", chunk.error.message)
                 return@collect
             }
@@ -143,7 +144,15 @@ class KimiChatCompletionsAgentGateway @Inject constructor(
                 diagnosticLogger.logModelResponse(requestContext, trace, success = false)
                 diagnosticLogger.logLatencyBreakdown(requestContext, trace)
             }
-            emit(AgentModelEvent.Failed(error))
+            val status = error.code?.toIntOrNull()
+            emit(
+                AgentModelEvent.Failed(
+                    message = error.message,
+                    statusCode = status,
+                    retryable = ModelFailureClassifier.isRetryable(status, error.type),
+                    retryAfterSeconds = error.retryAfterSeconds,
+                ),
+            )
             return@flow
         }
 

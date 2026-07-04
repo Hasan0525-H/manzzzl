@@ -192,7 +192,14 @@ class AnthropicMessagesAgentGateway @Inject constructor(
 
                 is ErrorResponseChunk -> {
                     trace.markFailed("provider_error", chunk.error.message)
-                    emit(AgentModelEvent.Failed(chunk.error.message))
+                    emit(
+                        AgentModelEvent.Failed(
+                            message = chunk.error.message,
+                            statusCode = chunk.error.statusCode,
+                            retryable = ModelFailureClassifier.isRetryable(chunk.error.statusCode, chunk.error.type),
+                            retryAfterSeconds = chunk.error.retryAfterSeconds,
+                        ),
+                    )
                 }
 
                 else -> Unit

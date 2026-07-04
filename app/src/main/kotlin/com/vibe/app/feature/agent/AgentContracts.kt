@@ -62,6 +62,9 @@ sealed interface AgentModelEvent {
 
     data class Failed(
         val message: String,
+        val statusCode: Int? = null,
+        val retryable: Boolean = false,
+        val retryAfterSeconds: Int? = null,
     ) : AgentModelEvent
 }
 
