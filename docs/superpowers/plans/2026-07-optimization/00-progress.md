@@ -1,0 +1,117 @@
+# 2026-07 全局优化 · 进度总控(所有执行者从这里开始)
+
+> **本文件是整个优化工程的唯一进度权威。**
+> 任何模型/任何会话接手开发时,第一步永远是读本文件;每完成一个 Task 或 Phase,最后一步永远是更新本文件。
+> 需求与诊断依据:`docs/optimization-review-2026-07.md`(下称"评审文档")。
+> 代码基线:`dev` 分支 `be1f944`。各 phase 文档中的 `file:line` 引用基于该基线,**动手前必须用 grep 重新定位**,不要盲信行号。
+
+---
+
+## 1. 接力协议(必须遵守)
+
+### 新会话开工流程
+
+1. 读本文件 §2 状态总表,找到"进行中"或下一个"未开始"且前置已满足的 Phase;
+2. 读对应的 `phase-N-*.md` 全文,从第一个未勾选的 Task 开始;
+3. 用 grep/read 核实该 Task 引用的代码现状(可能已漂移),如与计划描述不符,先在该 phase 文档的"实施记录"中说明,再决定是否调整方案;
+4. 建议用 `superpowers:executing-plans` 或 `superpowers:subagent-driven-development` 技能执行。
+
+### 每完成一个 Task
+
+1. 勾选 phase 文档中该 Task 的所有 checkbox;
+2. 按 Task 的"验证"节运行命令,确认通过(**没有跑验证不允许勾选**);
+3. 独立 commit(提交规范见 §5);
+4. 更新本文件 §2 状态表的"当前位置"列。
+
+### 每完成一个 Phase
+
+1. 运行全量验证:`./gradlew test && ./gradlew :build-engine:test && ./gradlew assembleDebug`;
+2. 涉及 UI/设备行为的 phase,按 phase 文档"人工验证清单"在 Android 10+ 真机/模拟器过一遍;
+3. 在 phase 文档末尾"实施记录"表中追加一行总结(日期、执行者、偏离说明);
+4. 更新本文件 §2 状态表:状态改为 `✅ 已完成`,填写完成日期;
+5. commit 消息:`docs: mark optimization phase N complete`。
+
+### 偏离处理
+
+计划不是圣旨,代码现实优先。但**禁止静默偏离**:任何与计划不一致的实现(改了方案、跳过了步骤、发现计划错误),都必须写进该 phase 文档的"实施记录"表,一句话说清"计划怎么说、实际怎么做、为什么"。
+
+---
+
+## 2. 状态总表
+
+> 状态取值:`⬜ 未开始` / `🔵 进行中` / `✅ 已完成` / `⏸ 暂停(备注写原因)`
+
+| Phase | 文档 | 主题 | 前置依赖 | 预估 | 状态 | 当前位置 | 完成日期 |
+|-------|------|------|----------|------|------|----------|----------|
+| 1 | [phase-1](./phase-1-agent-loop-reliability.md) | Agent Loop 可靠性止血 | 无 | ~1 周 | ⬜ 未开始 | — | — |
+| 2 | [phase-2](./phase-2-context-web-hotfix.md) | Context 与 Web 止血包 | 无 | ~1 周 | ⬜ 未开始 | — | — |
+| 3 | [phase-3](./phase-3-debug-experience.md) | 调试体验强化(截图/崩溃推送/DebugBridge) | 无 | ~1.5 周 | ⬜ 未开始 | — | — |
+| 4 | [phase-4](./phase-4-context-refactor.md) | Context 核心重构(淘汰/持久化/校准/预算) | Phase 2 | ~2 周 | ⬜ 未开始 | — | — |
+| 5 | [phase-5](./phase-5-web-search-providers.md) | Web 搜索 Provider 化与内容管理 | Phase 2 | ~1.5 周 | ⬜ 未开始 | — | — |
+| 6 | [phase-6](./phase-6-performance-and-cost.md) | 性能与成本(prompt cache/R.class 缓存/Room) | 无硬前置(6.3 与 4.3 有衔接) | ~1.5 周 | ⬜ 未开始 | — | — |
+| 7 | [phase-7](./phase-7-plugin-and-engineering-debt.md) | 插件根治与工程还债(ASM/多 Activity/重构) | 无(7.2 依赖 7.1) | ~3 周 | ⬜ 未开始 | — | — |
+
+**推荐执行顺序**:1 → 2 → 3 → 4 → 5 → 6 → 7。Phase 1/2/3 相互独立,可并行;Phase 4/5 依赖 Phase 2 的接口;Phase 6 的 Room 任务(6.3)在 Phase 4.3 之后收益最大但不硬依赖;Phase 7 独立可穿插,但 7.3 建议在 Phase 1 完成后执行(改同一批 gateway 文件)。
+
+---
+
+## 3. 各 Phase 一句话范围
+
+| Phase | 解决什么 | 评审文档章节 |
+|-------|----------|--------------|
+| 1 | 模型请求重试、SSE 截断检测、超时分级、快照 NonCancellable、工具超时、edit 语义、参数解析报错、API 单例竞态、日志门控 | §4 P0 全部 + §4-11/12 |
+| 2 | OpenAI 绕过压缩、read/build 输出无上限、摘要不验预算、摘要角色、web 结果不裁剪、搜索拦截不可感知、引擎熔断、渲染等待 | §3.3 第一步 + §2.2 B/C1 |
+| 3 | 崩溃主动推送、PixelCopy 截图、launch_app 前台限制、getIntent、生命周期补齐、安装模式调试回传通道(DebugBridge) | §1.3 方向一/方向二 |
+| 4 | 回合内工具结果淘汰(microcompact)、压缩缓存、结构化持久化、token usage 校准、预算随模型配置 | §3.3 第二/三/四步 |
+| 5 | 搜索后端 Provider 化(博查/Tavily/Brave/SearXNG + 内置爬取兜底)、设置 UI、fetch 落盘分页 | §2.2 A/C2/C3 |
+| 6 | Anthropic prompt caching、R.class 缓存、Room FTS5 + 大字段外置、会话节流落库 | §4-8/9/10/13 |
+| 7 | ASM AndroidX 改写(解锁 Fragment)、插件多 Activity、Gateway 基类合并 + 死代码清理、ScreenRouter 与新模板 | §1.3 方向三 + §4-14/15 |
+
+---
+
+## 4. 共享命名注册表(跨 phase 接口,先到先得,后续 phase 必须沿用)
+
+新建类型统一使用下列名称,避免两个 phase 各造一套:
+
+| 名称 | 定义于 | 被使用于 | 说明 |
+|------|--------|----------|------|
+| `WebFailureKind` | Phase 2(Task 2.6) | Phase 5 | 枚举:`BLOCKED` / `NO_RESULTS` / `TIMEOUT` / `NETWORK_ERROR`,web 工具结构化失败原因 |
+| `EngineCircuitBreaker` | Phase 2(Task 2.7) | Phase 5 | 搜索引擎失败冷却器 |
+| `CurrentRunToolResultEvictor` | Phase 4(Task 4.1) | — | 回合内工具结果淘汰(microcompact) |
+| `TurnArtifactEntity` / `TurnArtifactDao` | Phase 4(Task 4.3) | Phase 6(6.3) | 回合结构化产物(文件清单/build 状态/错误/plan)Room 表 |
+| `TokenRatioCalibrator` | Phase 4(Task 4.4) | — | 基于 API usage 回传的 token 估算校准器 |
+| `ContextBudgetResolver` | Phase 4(Task 4.5) | — | 预算解析:PlatformV2 配置 > provider 默认表 |
+| `WebSearchProvider` | Phase 5(Task 5.1) | — | 搜索后端接口;实现:`BuiltInSerpProvider` / `BochaSearchProvider` / `TavilySearchProvider` / `BraveSearchProvider` / `SearxngSearchProvider` |
+| `WebFetchCache` | Phase 5(Task 5.5) | — | fetch_web_page 落盘缓存(`.web-cache/<hash>.md`) |
+| `RClassCache` | Phase 6(Task 6.2) | — | R.class 编译产物缓存(key = 资源输入 hash) |
+| `DebugReportProvider` / `DebugReportValidator`(宿主) | Phase 3(Task 3.6/3.7) | — | 安装模式调试回传通道;exported provider + 调用方签名 SHA-256 校验(**不用** signature 权限,证书不同永不匹配);模板侧由 `CrashHandlerApp` 直接上报 |
+| `BaseChatCompletionsGateway` | Phase 7(Task 7.3) | — | Kimi/Qwen/DeepSeek gateway 公共基类 |
+
+---
+
+## 5. 提交与分支规范
+
+- 分支:从 `dev` 拉特性分支,命名 `opt/phase-N-<slug>`(如 `opt/phase-1-retry`);一个 phase 可以一个分支,也可以按 Task 拆,合回 `dev` 走 PR(见 `CONTRIBUTING.md`)。
+- Commit 前缀沿用仓库习惯:`feat:` / `fix:` / `refactor:` / `docs:` / `chore:` / `test:`;每个 Task 至少一个独立 commit,消息里带 Task 编号,如 `fix(agent): add model request retry with backoff (opt task 1.1)`。
+- **禁止**把多个 Task 揉进一个 commit——接力者需要靠 commit 历史对齐进度。
+
+## 6. 全局验证命令
+
+| 场景 | 命令 |
+|------|------|
+| 单元测试 | `./gradlew test` |
+| build-engine 测试 | `./gradlew :build-engine:test` |
+| 编译健全性 | `./gradlew assembleDebug` |
+| 设备验证 | Android 10+ 真机/模拟器,按各 phase"人工验证清单" |
+
+## 7. 背景阅读地图(接手前建议浏览)
+
+| 文档 | 用途 |
+|------|------|
+| `docs/optimization-review-2026-07.md` | 本工程的需求与全部问题诊断(含 file:line 证据) |
+| `docs/architecture.md` | 模块边界与运行时流程 |
+| `docs/context-compaction-redesign.md` | 上下文压缩现行设计(Phase 4 的前身) |
+| `docs/known-issues/fragment-in-plugin-mode.md` | Fragment 崩溃根因(Phase 7.1 的动机) |
+| `docs/superpowers/plans/2026-03-28-shadow-androidx-on-device-transform.md` | ASM 改写既有计划(Phase 7.1 直接执行它) |
+| `docs/webview-crawler-research.md` | WebView 爬虫调研(Phase 5 背景) |
+| `CLAUDE.md` | 仓库约定(SDK 版本、目录、测试命令) |
