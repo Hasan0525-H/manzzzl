@@ -51,6 +51,14 @@
                 android:resource="@xml/file_paths" />
         </provider>
 
+        <!-- Invisible trampoline: launched from the "tap to preview" notification so the
+             plugin container can start with foreground privileges from the main process. -->
+        <activity
+            android:name="com.vibe.app.plugin.PluginLaunchProxyActivity"
+            android:exported="false"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:excludeFromRecents="true" />
+
         <!-- Plugin process slots (0-4): each in its own process with separate task affinity -->
         <activity
             android:name="com.vibe.app.plugin.PluginSlot0"
