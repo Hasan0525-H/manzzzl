@@ -5,6 +5,8 @@ import android.opengl.GLES30
 import android.opengl.GLSurfaceView
 import android.opengl.Matrix
 import android.view.MotionEvent
+import com.manzl.app.design.HouseRenderProfile
+import com.manzl.app.design.ReferenceDrivenDesignEngine
 import com.manzl.app.model.FloorPlan
 import com.manzl.app.model.Vec2
 import java.nio.ByteBuffer
@@ -24,10 +26,9 @@ import kotlin.math.sqrt
 /**
  * Native first-person walkthrough renderer.
  *
- * Rendering, movement and collision all run locally on the phone. The left side of the surface is
- * a dynamic analog stick (touch and drag); the right side controls free-look. Two fingers can be
- * used simultaneously, matching modern mobile first-person controls. No network/runtime service is
- * involved in the walkthrough.
+ * Rendering, movement, collision and visual-profile synthesis all run locally on the phone. The
+ * left side of the surface is a dynamic analog stick (touch and drag); the right side controls
+ * free-look. Two fingers can be used simultaneously, matching modern mobile first-person controls.
  */
 class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Renderer {
 
@@ -36,6 +37,9 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
 
     @Volatile
     private var pendingSpawn: Vec2? = null
+
+    @Volatile
+    private var pendingDesign: HouseRenderProfile? = null
 
     @Volatile
     private var movementForward = 0f
@@ -49,6 +53,9 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
     private var shaderProgram = 0
     private var uMvp = -1
     private var uColor = -1
+
+    private var wallColor = floatArrayOf(0.94f, 0.92f, 0.87f)
+    private var floorColor = floatArrayOf(0.73f, 0.68f, 0.59f)
 
     private val projection = FloatArray(16)
     private val view = FloatArray(16)
@@ -80,9 +87,14 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
 
     fun setFloorPlan(plan: FloorPlan) {
         val world = CollisionWorld(plan)
+        val design = ReferenceDrivenDesignEngine.synthesize(plan)
         collisionWorld = world
         pendingSpawn = world.findSpawn(PLAYER_RADIUS)
-        pendingMesh = HouseMeshBuilder.build(plan)
+        pendingDesign = design
+        pendingMesh = HouseMeshBuilder.build(
+            plan = plan,
+            wallHeightOverride = design.wallHeightMeters,
+        )
     }
 
     /** Allows a Compose/custom overlay to drive the same analog movement pipeline if desired. */
@@ -143,6 +155,19 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
             walls = uploadMesh(mesh.wallVertices, mesh.wallIndices)
             floor = uploadMesh(mesh.floorVertices, mesh.floorIndices)
         }
+        pendingDesign?.let { design ->
+            pendingDesign = null
+            wallColor = floatArrayOf(
+                design.palette.wall.r,
+                design.palette.wall.g,
+                design.palette.wall.b,
+            )
+            floorColor = floatArrayOf(
+                design.palette.floor.r,
+                design.palette.floor.g,
+                design.palette.floor.b,
+            )
+        }
         pendingSpawn?.let { spawn ->
             pendingSpawn = null
             cameraX = spawn.x
@@ -192,11 +217,11 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
         GLES30.glUniformMatrix4fv(uMvp, 1, false, mvp, 0)
 
         floor?.let {
-            GLES30.glUniform4f(uColor, 0.72f, 0.72f, 0.70f, 1f)
+            GLES30.glUniform4f(uColor, floorColor[0], floorColor[1], floorColor[2], 1f)
             drawMesh(it)
         }
         walls?.let {
-            GLES30.glUniform4f(uColor, 0.96f, 0.955f, 0.94f, 1f)
+            GLES30.glUniform4f(uColor, wallColor[0], wallColor[1], wallColor[2], 1f)
             drawMesh(it)
         }
     }
