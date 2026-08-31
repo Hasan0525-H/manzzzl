@@ -18,6 +18,10 @@ import kotlin.math.sqrt
  * features, but cannot create topology. Geometry-only opening-sized gaps stay available internally
  * for room closure and symbol search, then are removed from the final user-visible plan unless an
  * independent semantic/user signal confirms that the gap is actually a door.
+ *
+ * A second reconstruction gate runs after semantics/topology. It blocks 3D when strong wall gaps are
+ * still unclassified or when trusted closed-room coverage is too sparse to construct real floors and
+ * ceilings without inventing a rectangular house footprint.
  */
 internal class HybridFloorPlanAnalyzer(
     private val structuralAnalyzer: FloorPlanAnalyzer = ClassicalFloorPlanAnalyzer(),
@@ -187,8 +191,16 @@ internal class HybridFloorPlanAnalyzer(
             // that merely has a door-like width receive frames, animated leaves or façade joinery.
             val finalPlan = DoorPresentationPolicy.stripUnclassifiedGaps(topologyEnriched)
 
+            progress.onUpdate(AnalysisUpdate(99, "فحص أن المنزل قابل للبناء بدون أرضيات أو فتحات مخترعة"))
+            ReconstructionReadinessGate.rejectionMessageArabic(finalPlan)?.let { rejection ->
+                val reviewPlan = ReconstructionReadinessGate.planForReview(finalPlan)
+                GeometryReviewStore.recordFinal(bitmap, reviewPlan)
+                GeometryReviewStore.commitFailure(reviewPlan)
+                throw GeometryQualityRejectedException(reviewPlan, rejection)
+            }
+
             GeometryReviewStore.recordFinal(bitmap, finalPlan)
-            progress.onUpdate(AnalysisUpdate(100, "اجتاز المخطط بوابة الجودة وتم تجهيز المنزل للجولة"))
+            progress.onUpdate(AnalysisUpdate(100, "اجتاز المخطط بوابة إعادة البناء وتم تجهيز المنزل للجولة"))
             finalPlan
         } catch (error: Throwable) {
             GeometryReviewStore.abortPending()
