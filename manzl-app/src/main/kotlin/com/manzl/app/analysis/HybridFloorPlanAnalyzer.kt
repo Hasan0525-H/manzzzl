@@ -22,9 +22,9 @@ import kotlin.math.sqrt
  * independent semantic/user signal confirms that the gap is actually a door.
  *
  * The ultra path can run a distilled Raster2Seq/RoomFormer student first, then an independent OpenCV
- * expert, then MobileSAM only as a boundary refiner. None becomes geometry authority: every novel
- * wall must improve independent source-raster fidelity, and MobileSAM may only move existing wall
- * faces within strict physical limits before the source raster independently verifies the result.
+ * expert, then MobileSAM only as a boundary refiner. The student's door/window/stair observations are
+ * reused from that same inference later as semantics; they cannot create an opening because fusion
+ * still requires a measured geometry host. None of the neural/CV experts becomes geometry authority.
  *
  * A second reconstruction gate runs after semantics/topology. It blocks 3D when strong wall gaps are
  * still unclassified or when trusted closed-room coverage is too sparse to construct real floors and
@@ -36,6 +36,7 @@ internal class HybridFloorPlanAnalyzer(
         RoomLabelEvidenceProvider(),
         StairPatternEvidenceProvider(),
         WindowSymbolEvidenceProvider(),
+        StudentSemanticEvidenceProvider,
         TinySemanticPatchEvidenceProvider(),
     ),
     private val onDeviceStudent: ManzlStudentFloorPlanExpert? = UltraReconstructionRuntime.createStudentExpertOrNull(),
@@ -115,7 +116,7 @@ internal class HybridFloorPlanAnalyzer(
             }
 
             onDeviceStudent?.let { student ->
-                progress.onUpdate(AnalysisUpdate(79, "خبير Manzl العصبي يراجع الجدران المقاسة بدون سلطة على الهندسة"))
+                progress.onUpdate(AnalysisUpdate(79, "خبير Manzl العصبي يفحص المخطط عالمياً وعلى قصاصات عالية الدقة"))
                 val studentResult = try {
                     withContext(Dispatchers.Default) {
                         student.refine(bitmap, structural)
@@ -127,18 +128,20 @@ internal class HybridFloorPlanAnalyzer(
                 } catch (_: RuntimeException) {
                     null
                 }
-                if (studentResult != null && studentResult.acceptedWalls > 0) {
-                    structural = studentResult.plan
-                    progress.onUpdate(
-                        AnalysisUpdate(
-                            79,
-                            "النموذج اقترح ${studentResult.proposedWalls} جداراً وقبل التحقق ${studentResult.acceptedWalls} فقط",
+                if (studentResult != null) {
+                    if (studentResult.acceptedWalls > 0) structural = studentResult.plan
+                    if (studentResult.inferenceRegions > 0) {
+                        progress.onUpdate(
+                            AnalysisUpdate(
+                                79,
+                                "Manzl فحص ${studentResult.inferenceRegions} مناطق، اقترح ${studentResult.proposedWalls} جداراً، قبل ${studentResult.acceptedWalls}، ورصد ${studentResult.semanticObservations} دلالة فتحات/سلالم",
+                            )
                         )
-                    )
+                    }
                 }
             }
 
-            progress.onUpdate(AnalysisUpdate(79, "خبير OpenCV مستقل يبحث عن جدران مفقودة ويعيد التحقق من الصورة"))
+            progress.onUpdate(AnalysisUpdate(79, "خبير OpenCV يقيس وجهي الجدار ثم يبحث عن الجدران المفقودة"))
             val openCvResult = try {
                 withContext(Dispatchers.Default) {
                     OpenCvWallExpert.refine(bitmap, structural)
@@ -155,7 +158,7 @@ internal class HybridFloorPlanAnalyzer(
                 progress.onUpdate(
                     AnalysisUpdate(
                         79,
-                        "OpenCV اقترح ${openCvResult.proposedCount} خطاً وقبل التحقق ${openCvResult.acceptedCount} جداراً فقط",
+                        "OpenCV اقترح ${openCvResult.proposedCount} مرشحاً وقبل التحقق ${openCvResult.acceptedCount} فقط",
                     )
                 )
             }
@@ -230,7 +233,7 @@ internal class HybridFloorPlanAnalyzer(
                 rooms = mergeRooms(withDoors.rooms, baselineRooms),
             )
 
-            progress.onUpdate(AnalysisUpdate(87, "قراءة الغرف والسلالم والفتحات والذكاء المحلي"))
+            progress.onUpdate(AnalysisUpdate(87, "دمج قراءة الغرف والسلالم والفتحات من الخبراء المحليين"))
             val semanticEvidence = ArrayList<SemanticEvidence>()
             semanticProviders.forEach { provider ->
                 val providerPlan = if (provider is WindowSymbolEvidenceProvider) {
@@ -245,7 +248,7 @@ internal class HybridFloorPlanAnalyzer(
             progress.onUpdate(AnalysisUpdate(91, "دمج أدلة CV والذكاء المحلي المتفقة"))
             val consensusEvidence = SemanticEvidenceConsensus.combine(semanticEvidence)
 
-            progress.onUpdate(AnalysisUpdate(93, "مطابقة الدلالات مع هندسة المخطط"))
+            progress.onUpdate(AnalysisUpdate(93, "مطابقة الدلالات مع هندسة المخطط المقاسة"))
             val reconciled = GeometryEvidenceFusion.fuse(baseline, consensusEvidence)
 
             progress.onUpdate(AnalysisUpdate(95, "مراجعة مرشحات الأبواب والنوافذ"))
