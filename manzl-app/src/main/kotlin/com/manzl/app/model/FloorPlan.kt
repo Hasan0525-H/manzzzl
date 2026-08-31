@@ -92,6 +92,11 @@ data class FloorPlan(
     val sourceHeightPx: Int,
     val scaleConfidence: Float = 0f,
     val scaleSource: String = "unknown",
+    /** Structural drawing envelope inside the uploaded raster; normalized to the original image. */
+    val contentLeftFraction: Float = 0f,
+    val contentTopFraction: Float = 0f,
+    val contentRightFraction: Float = 1f,
+    val contentBottomFraction: Float = 1f,
 )
 
 @Immutable
