@@ -40,3 +40,7 @@ app/build/**
 /.cache/manzl-teachers/
 /research/ultra-reconstruction/cache/
 /research/ultra-reconstruction/checkpoints/
+
+# Runtime ONNX binaries are generated/downloaded with verified hashes during the build pipeline.
+# Keep the human-readable manifest in git, never accidental large/restricted model blobs.
+/manzl-app/src/main/assets/models/*.onnx
