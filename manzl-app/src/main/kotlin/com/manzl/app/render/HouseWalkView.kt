@@ -50,12 +50,14 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
     private var collisionWorld: CollisionWorld? = null
     private var walls: GlMesh? = null
     private var floor: GlMesh? = null
+    private var trim: GlMesh? = null
     private var shaderProgram = 0
     private var uMvp = -1
     private var uColor = -1
 
     private var wallColor = floatArrayOf(0.94f, 0.92f, 0.87f)
     private var floorColor = floatArrayOf(0.73f, 0.68f, 0.59f)
+    private var trimColor = floatArrayOf(0.34f, 0.24f, 0.17f)
 
     private val projection = FloatArray(16)
     private val view = FloatArray(16)
@@ -94,6 +96,7 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
         pendingMesh = HouseMeshBuilder.build(
             plan = plan,
             wallHeightOverride = design.wallHeightMeters,
+            doorHeightOverride = design.doorHeightMeters,
         )
     }
 
@@ -152,8 +155,10 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
             pendingMesh = null
             walls?.destroy()
             floor?.destroy()
+            trim?.destroy()
             walls = uploadMesh(mesh.wallVertices, mesh.wallIndices)
             floor = uploadMesh(mesh.floorVertices, mesh.floorIndices)
+            trim = uploadMesh(mesh.trimVertices, mesh.trimIndices)
         }
         pendingDesign?.let { design ->
             pendingDesign = null
@@ -166,6 +171,11 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
                 design.palette.floor.r,
                 design.palette.floor.g,
                 design.palette.floor.b,
+            )
+            trimColor = floatArrayOf(
+                design.palette.wood.r,
+                design.palette.wood.g,
+                design.palette.wood.b,
             )
         }
         pendingSpawn?.let { spawn ->
@@ -222,6 +232,10 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
         }
         walls?.let {
             GLES30.glUniform4f(uColor, wallColor[0], wallColor[1], wallColor[2], 1f)
+            drawMesh(it)
+        }
+        trim?.let {
+            GLES30.glUniform4f(uColor, trimColor[0], trimColor[1], trimColor[2], 1f)
             drawMesh(it)
         }
     }
@@ -398,8 +412,10 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
         queueEvent {
             walls?.destroy()
             floor?.destroy()
+            trim?.destroy()
             walls = null
             floor = null
+            trim = null
             if (shaderProgram != 0) {
                 GLES30.glDeleteProgram(shaderProgram)
                 shaderProgram = 0
