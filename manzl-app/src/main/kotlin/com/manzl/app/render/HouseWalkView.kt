@@ -50,6 +50,7 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
     private var collisionWorld: CollisionWorld? = null
     private var walls: GlMesh? = null
     private var floor: GlMesh? = null
+    private var ceiling: GlMesh? = null
     private var trim: GlMesh? = null
     private var glass: GlMesh? = null
     private var shaderProgram = 0
@@ -58,6 +59,7 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
 
     private var wallColor = floatArrayOf(0.94f, 0.92f, 0.87f)
     private var floorColor = floatArrayOf(0.73f, 0.68f, 0.59f)
+    private var ceilingColor = floatArrayOf(0.98f, 0.975f, 0.96f)
     private var trimColor = floatArrayOf(0.34f, 0.24f, 0.17f)
     private var glassColor = floatArrayOf(0.68f, 0.78f, 0.80f)
 
@@ -157,10 +159,12 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
             pendingMesh = null
             walls?.destroy()
             floor?.destroy()
+            ceiling?.destroy()
             trim?.destroy()
             glass?.destroy()
             walls = uploadMesh(mesh.wallVertices, mesh.wallIndices)
             floor = uploadMesh(mesh.floorVertices, mesh.floorIndices)
+            ceiling = uploadMesh(mesh.ceilingVertices, mesh.ceilingIndices)
             trim = uploadMesh(mesh.trimVertices, mesh.trimIndices)
             glass = uploadMesh(mesh.glassVertices, mesh.glassIndices)
         }
@@ -175,6 +179,11 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
                 design.palette.floor.r,
                 design.palette.floor.g,
                 design.palette.floor.b,
+            )
+            ceilingColor = floatArrayOf(
+                design.palette.ceiling.r,
+                design.palette.ceiling.g,
+                design.palette.ceiling.b,
             )
             trimColor = floatArrayOf(
                 design.palette.wood.r,
@@ -241,6 +250,10 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
         }
         walls?.let {
             GLES30.glUniform4f(uColor, wallColor[0], wallColor[1], wallColor[2], 1f)
+            drawMesh(it)
+        }
+        ceiling?.let {
+            GLES30.glUniform4f(uColor, ceilingColor[0], ceilingColor[1], ceilingColor[2], 1f)
             drawMesh(it)
         }
         trim?.let {
@@ -425,10 +438,12 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
         queueEvent {
             walls?.destroy()
             floor?.destroy()
+            ceiling?.destroy()
             trim?.destroy()
             glass?.destroy()
             walls = null
             floor = null
+            ceiling = null
             trim = null
             glass = null
             if (shaderProgram != 0) {
@@ -587,12 +602,14 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
             out vec4 outColor;
 
             void main() {
+                vec3 n = normalize(vNormal);
                 vec3 lightDirection = normalize(vec3(-0.35, 0.88, 0.28));
-                float diffuse = max(dot(normalize(vNormal), lightDirection), 0.0);
+                float diffuse = max(dot(n, lightDirection), 0.0);
                 float ambient = 0.64;
                 float ceilingBounce = clamp(vHeight / 3.0, 0.0, 1.0) * 0.08;
-                vec3 lit = uColor.rgb * (ambient + diffuse * 0.34 + ceilingBounce);
-                outColor = vec4(lit, uColor.a);
+                float ceilingSoftLight = max(-n.y, 0.0) * 0.18;
+                vec3 lit = uColor.rgb * (ambient + diffuse * 0.34 + ceilingBounce + ceilingSoftLight);
+                outColor = vec4(min(lit, vec3(1.0)), uColor.a);
             }
         """
     }

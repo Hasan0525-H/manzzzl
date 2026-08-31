@@ -2,6 +2,7 @@ package com.manzl.app.render
 
 import com.manzl.app.model.DoorOpening
 import com.manzl.app.model.FloorPlan
+import com.manzl.app.model.RoomRegion
 import com.manzl.app.model.Vec2
 import com.manzl.app.model.WallSegment
 import com.manzl.app.model.WindowOpening
@@ -18,6 +19,8 @@ internal data class MeshData(
     val wallIndices: IntArray,
     val floorVertices: FloatArray,
     val floorIndices: IntArray,
+    val ceilingVertices: FloatArray,
+    val ceilingIndices: IntArray,
     val trimVertices: FloatArray,
     val trimIndices: IntArray,
     val glassVertices: FloatArray,
@@ -32,6 +35,10 @@ internal object HouseMeshBuilder {
         doorHeightOverride: Float? = null,
     ): MeshData {
         val doorHeight = doorHeightOverride ?: DEFAULT_DOOR_HEIGHT_METERS
+        val ceilingHeight = wallHeightOverride
+            ?: plan.walls.maxOfOrNull { it.heightMeters }
+            ?: DEFAULT_WALL_HEIGHT_METERS
+
         val wallBuilder = GeometryBuilder()
         for (sourceWall in plan.walls) {
             val wall = if (wallHeightOverride == null) {
@@ -59,6 +66,13 @@ internal object HouseMeshBuilder {
             normal = P3(0f, 1f, 0f),
         )
 
+        // Ceilings are generated only from validated room polygons. This intentionally avoids
+        // covering courtyards, double-height voids or uncertain open areas with one giant slab.
+        val ceilingBuilder = GeometryBuilder()
+        plan.rooms.forEach { room ->
+            addRoomCeiling(ceilingBuilder, room, ceilingHeight)
+        }
+
         val trimBuilder = GeometryBuilder()
         val glassBuilder = GeometryBuilder()
         for (door in plan.doors) {
@@ -74,6 +88,8 @@ internal object HouseMeshBuilder {
             wallIndices = wallBuilder.indices.toIntArray(),
             floorVertices = floorBuilder.vertices.toFloatArray(),
             floorIndices = floorBuilder.indices.toIntArray(),
+            ceilingVertices = ceilingBuilder.vertices.toFloatArray(),
+            ceilingIndices = ceilingBuilder.indices.toIntArray(),
             trimVertices = trimBuilder.vertices.toFloatArray(),
             trimIndices = trimBuilder.indices.toIntArray(),
             glassVertices = glassBuilder.vertices.toFloatArray(),
@@ -193,7 +209,6 @@ internal object HouseMeshBuilder {
         val centerAlong = projection * length
         val from = centerAlong - width / 2f
         val to = centerAlong + width / 2f
-        // Openings centred well outside a segment are usually already represented by a geometric gap.
         if (to < -OPENING_ASSOCIATION_METERS || from > length + OPENING_ASSOCIATION_METERS) return null
         return WallCutout(
             from = from.coerceIn(0f, length),
@@ -275,6 +290,45 @@ internal object HouseMeshBuilder {
             halfHeight = (top - bottom) * 0.5f,
             alongX = alongX,
             alongZ = alongZ,
+        )
+    }
+
+    private fun addRoomCeiling(builder: GeometryBuilder, room: RoomRegion, height: Float) {
+        if (room.confidence < MIN_CEILING_ROOM_CONFIDENCE || room.polygon.size < 4) return
+        val minX = room.polygon.minOf { it.x }
+        val maxX = room.polygon.maxOf { it.x }
+        val minZ = room.polygon.minOf { it.z }
+        val maxZ = room.polygon.maxOf { it.z }
+        val width = maxX - minX
+        val depth = maxZ - minZ
+        val area = width * depth
+        if (width < MIN_CEILING_SPAN_METERS || depth < MIN_CEILING_SPAN_METERS) return
+        if (area <= 0f || area > MAX_CEILING_AREA_SQ_METERS) return
+
+        // Only render polygons that are effectively axis-aligned rectangles. More complex semantic
+        // room polygons will later use the triangulation path instead of being approximated here.
+        val rectangular = room.polygon.all { point ->
+            val onXEdge = abs(point.x - minX) <= RECTANGLE_CORNER_TOLERANCE_METERS ||
+                abs(point.x - maxX) <= RECTANGLE_CORNER_TOLERANCE_METERS
+            val onZEdge = abs(point.z - minZ) <= RECTANGLE_CORNER_TOLERANCE_METERS ||
+                abs(point.z - maxZ) <= RECTANGLE_CORNER_TOLERANCE_METERS
+            onXEdge && onZEdge
+        }
+        if (!rectangular) return
+
+        val inset = min(CEILING_INSET_METERS, min(width, depth) * 0.04f)
+        val x0 = minX + inset
+        val x1 = maxX - inset
+        val z0 = minZ + inset
+        val z1 = maxZ - inset
+        if (x1 <= x0 || z1 <= z0) return
+
+        builder.addQuad(
+            a = P3(x0, height, z0),
+            b = P3(x0, height, z1),
+            c = P3(x1, height, z1),
+            d = P3(x1, height, z0),
+            normal = P3(0f, -1f, 0f),
         )
     }
 
@@ -452,6 +506,7 @@ internal object HouseMeshBuilder {
         val z: Float,
     )
 
+    private const val DEFAULT_WALL_HEIGHT_METERS = 3.0f
     private const val DEFAULT_DOOR_HEIGHT_METERS = 2.20f
     private const val DOOR_JAMB_WIDTH_METERS = 0.075f
     private const val DOOR_LINTEL_HEIGHT_METERS = 0.085f
@@ -463,6 +518,11 @@ internal object HouseMeshBuilder {
     private const val OPENING_ASSOCIATION_METERS = 0.30f
     private const val OPENING_EDGE_EPSILON = 0.001f
     private const val MIN_SOLID_SLICE_METERS = 0.012f
+    private const val MIN_CEILING_ROOM_CONFIDENCE = 0.68f
+    private const val MIN_CEILING_SPAN_METERS = 0.75f
+    private const val MAX_CEILING_AREA_SQ_METERS = 100f
+    private const val RECTANGLE_CORNER_TOLERANCE_METERS = 0.18f
+    private const val CEILING_INSET_METERS = 0.025f
     private const val EPSILON = 0.000001f
     private const val FLOATS_PER_VERTEX = 6
 }

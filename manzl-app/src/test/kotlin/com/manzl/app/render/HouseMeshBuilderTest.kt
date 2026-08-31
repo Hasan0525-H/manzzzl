@@ -2,6 +2,7 @@ package com.manzl.app.render
 
 import com.manzl.app.model.DoorOpening
 import com.manzl.app.model.FloorPlan
+import com.manzl.app.model.RoomRegion
 import com.manzl.app.model.Vec2
 import com.manzl.app.model.WallSegment
 import org.junit.Assert.assertEquals
@@ -11,7 +12,7 @@ import org.junit.Test
 class HouseMeshBuilderTest {
 
     @Test
-    fun `single wall extrudes into five visible quads`() {
+    fun `single wall extrudes into closed six face prism`() {
         val plan = FloorPlan(
             widthMeters = 6f,
             depthMeters = 4f,
@@ -28,12 +29,13 @@ class HouseMeshBuilderTest {
 
         val mesh = HouseMeshBuilder.build(plan)
 
-        assertEquals(5 * 4 * 6, mesh.wallVertices.size)
-        assertEquals(5 * 6, mesh.wallIndices.size)
+        assertEquals(6 * 4 * 6, mesh.wallVertices.size)
+        assertEquals(6 * 6, mesh.wallIndices.size)
         assertEquals(4 * 6, mesh.floorVertices.size)
         assertEquals(6, mesh.floorIndices.size)
         assertTrue(mesh.wallVertices.all { it.isFinite() })
         assertTrue(mesh.trimVertices.isEmpty())
+        assertTrue(mesh.ceilingVertices.isEmpty())
     }
 
     @Test
@@ -61,5 +63,34 @@ class HouseMeshBuilderTest {
         assertEquals(3 * 6 * 4 * 6, mesh.trimVertices.size)
         assertEquals(3 * 6 * 6, mesh.trimIndices.size)
         assertTrue(mesh.trimVertices.all { it.isFinite() })
+    }
+
+    @Test
+    fun `validated rectangular room creates one ceiling quad`() {
+        val room = RoomRegion(
+            id = "room-1",
+            polygon = listOf(
+                Vec2(-2f, -1.5f),
+                Vec2(2f, -1.5f),
+                Vec2(2f, 1.5f),
+                Vec2(-2f, 1.5f),
+            ),
+            confidence = 0.92f,
+        )
+        val plan = FloorPlan(
+            widthMeters = 6f,
+            depthMeters = 4f,
+            walls = emptyList(),
+            rooms = listOf(room),
+            analysisConfidence = 1f,
+            sourceWidthPx = 1000,
+            sourceHeightPx = 800,
+        )
+
+        val mesh = HouseMeshBuilder.build(plan, wallHeightOverride = 3.2f)
+
+        assertEquals(4 * 6, mesh.ceilingVertices.size)
+        assertEquals(6, mesh.ceilingIndices.size)
+        assertTrue(mesh.ceilingVertices.all { it.isFinite() })
     }
 }
