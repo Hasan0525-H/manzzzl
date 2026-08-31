@@ -28,6 +28,21 @@ internal object GeometryQualityGate {
             criticalLocalMismatch(plan) == null &&
             WallTopologyIntegrity.findNearMissJunctions(plan).isEmpty()
 
+    /**
+     * Review UI must never display a green PASS for a plan that this gate will reject. The aggregate
+     * fidelity metrics stay untouched, but PASS is downgraded to REVIEW_REQUIRED in the diagnostic
+     * copy whenever a severe local mismatch or topology crack blocks 3D. Canonical geometry is not
+     * changed and this method never upgrades a status.
+     */
+    fun planForReview(plan: FloorPlan): FloorPlan {
+        if (plan.geometryFidelity.status != GeometryFidelityStatus.PASS || isReadyFor3d(plan)) return plan
+        return plan.copy(
+            geometryFidelity = plan.geometryFidelity.copy(
+                status = GeometryFidelityStatus.REVIEW_REQUIRED,
+            )
+        )
+    }
+
     fun rejectionMessageArabic(plan: FloorPlan): String? {
         val report = plan.geometryFidelity
         val localMismatch = criticalLocalMismatch(plan)
