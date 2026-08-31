@@ -21,9 +21,9 @@ import kotlin.math.sqrt
  * for room closure and symbol search, then are removed from the final user-visible plan unless an
  * independent semantic/user signal confirms that the gap is actually a door.
  *
- * The ultra path also asks an independent OpenCV line expert for missing-wall proposals. OpenCV does
- * not become geometry authority: every proposal is accepted only when independent raster fidelity
- * improves without a material precision regression.
+ * The ultra path can run a distilled Raster2Seq/RoomFormer student first, then an independent OpenCV
+ * expert. Neither becomes geometry authority: every novel wall must improve independent source-raster
+ * fidelity without a material precision regression before it is admitted into the measured plan.
  *
  * A second reconstruction gate runs after semantics/topology. It blocks 3D when strong wall gaps are
  * still unclassified or when trusted closed-room coverage is too sparse to construct real floors and
@@ -37,6 +37,7 @@ internal class HybridFloorPlanAnalyzer(
         WindowSymbolEvidenceProvider(),
         TinySemanticPatchEvidenceProvider(),
     ),
+    private val onDeviceStudent: ManzlStudentFloorPlanExpert? = null,
 ) : FloorPlanAnalyzer {
 
     override suspend fun analyze(bitmap: Bitmap, progress: ProgressSink): FloorPlan {
@@ -108,6 +109,30 @@ internal class HybridFloorPlanAnalyzer(
                     retry != null -> retry
                     primaryVerifiedAtDenseRaster != null -> primaryVerifiedAtDenseRaster
                     else -> primaryStructural
+                }
+            }
+
+            onDeviceStudent?.let { student ->
+                progress.onUpdate(AnalysisUpdate(79, "خبير Manzl العصبي يراجع الجدران المقاسة بدون سلطة على الهندسة"))
+                val studentResult = try {
+                    withContext(Dispatchers.Default) {
+                        student.refine(bitmap, structural)
+                    }
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (_: OutOfMemoryError) {
+                    null
+                } catch (_: RuntimeException) {
+                    null
+                }
+                if (studentResult != null && studentResult.acceptedWalls > 0) {
+                    structural = studentResult.plan
+                    progress.onUpdate(
+                        AnalysisUpdate(
+                            79,
+                            "النموذج اقترح ${studentResult.proposedWalls} جداراً وقبل التحقق ${studentResult.acceptedWalls} فقط",
+                        )
+                    )
                 }
             }
 
