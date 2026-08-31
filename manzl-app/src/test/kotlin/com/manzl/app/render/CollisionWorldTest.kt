@@ -2,6 +2,7 @@ package com.manzl.app.render
 
 import com.manzl.app.model.DoorOpening
 import com.manzl.app.model.FloorPlan
+import com.manzl.app.model.RoomRegion
 import com.manzl.app.model.Vec2
 import com.manzl.app.model.WallSegment
 import com.manzl.app.model.WindowOpening
@@ -130,16 +131,78 @@ class CollisionWorldTest {
         assertTrue("spawn is colliding at $spawn", world.isClear(spawn))
     }
 
+    @Test
+    fun `trusted room geometry wins over clear drawing centre for spawn`() {
+        val room = RoomRegion(
+            id = "living-east",
+            polygon = rectangle(2.2f, -1.6f, 5.2f, 1.6f),
+            label = "صالة",
+            confidence = 0.95f,
+        )
+        val world = CollisionWorld(
+            plan(
+                walls = emptyList(),
+                rooms = listOf(room),
+                widthMeters = 12f,
+                depthMeters = 8f,
+            )
+        )
+
+        val spawn = world.findSpawn()
+
+        assertTrue("spawn ignored trusted room geometry: $spawn", spawn.x in 2.2f..5.2f)
+        assertTrue("room-derived spawn is not clear: $spawn", world.isClear(spawn))
+    }
+
+    @Test
+    fun `entrance room is preferred over service room when both are safe`() {
+        val bathroom = RoomRegion(
+            id = "bath",
+            polygon = rectangle(-4.5f, -1.5f, -1.5f, 1.5f),
+            label = "حمام",
+            confidence = 0.97f,
+        )
+        val entrance = RoomRegion(
+            id = "entry",
+            polygon = rectangle(1.5f, -1.5f, 4.5f, 1.5f),
+            label = "مدخل",
+            confidence = 0.90f,
+        )
+        val world = CollisionWorld(
+            plan(
+                walls = emptyList(),
+                rooms = listOf(bathroom, entrance),
+                widthMeters = 12f,
+                depthMeters = 8f,
+            )
+        )
+
+        val spawn = world.findSpawn()
+
+        assertTrue("tour started in service room instead of entrance: $spawn", spawn.x > 1.4f)
+    }
+
+    private fun rectangle(minX: Float, minZ: Float, maxX: Float, maxZ: Float): List<Vec2> = listOf(
+        Vec2(minX, minZ),
+        Vec2(maxX, minZ),
+        Vec2(maxX, maxZ),
+        Vec2(minX, maxZ),
+    )
+
     private fun plan(
         walls: List<WallSegment>,
         doors: List<DoorOpening> = emptyList(),
         windows: List<WindowOpening> = emptyList(),
+        rooms: List<RoomRegion> = emptyList(),
+        widthMeters: Float = 8f,
+        depthMeters: Float = 8f,
     ): FloorPlan = FloorPlan(
-        widthMeters = 8f,
-        depthMeters = 8f,
+        widthMeters = widthMeters,
+        depthMeters = depthMeters,
         walls = walls,
         doors = doors,
         windows = windows,
+        rooms = rooms,
         analysisConfidence = 1f,
         sourceWidthPx = 1000,
         sourceHeightPx = 1000,
