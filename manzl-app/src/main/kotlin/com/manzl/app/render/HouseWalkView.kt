@@ -28,10 +28,10 @@ import kotlin.math.sqrt
 /**
  * Native first-person walkthrough renderer.
  *
- * Rendering, movement, level-aware collision and visual-profile synthesis all run locally on the
- * phone. The left side of the surface is a dynamic analog stick (touch and drag); the right side
- * controls free-look. Two fingers can be used simultaneously, matching modern mobile first-person
- * controls.
+ * Rendering, movement, level-aware collision, animated doors and visual-profile synthesis all run
+ * locally on the phone. The left side of the surface is a dynamic analog stick (touch and drag);
+ * the right side controls free-look. Two fingers can be used simultaneously, matching modern mobile
+ * first-person controls.
  */
 class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Renderer {
 
@@ -45,18 +45,26 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
     private var pendingDesign: HouseRenderProfile? = null
 
     @Volatile
+    private var pendingDoorMeshRefresh = false
+
+    @Volatile
     private var movementForward = 0f
 
     @Volatile
     private var movementStrafe = 0f
 
     private var walkWorld: MultiLevelWalkWorld? = null
+
+    @Volatile
+    private var doorWorld: InteractiveDoorWorld? = null
+
     private var currentLevelId = ""
     private var walls: GlMesh? = null
     private var floor: GlMesh? = null
     private var ceiling: GlMesh? = null
     private var trim: GlMesh? = null
     private var glass: GlMesh? = null
+    private var doorLeaves: GlMesh? = null
     private var shaderProgram = 0
     private var uMvp = -1
     private var uColor = -1
@@ -108,8 +116,9 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
      * Loads a complete building without changing any measured floor geometry.
      *
      * When callers provide several floors without stair links, links are inferred conservatively
-     * from already-detected stair evidence. The renderer then stacks each floor at its declared
-     * elevation and MultiLevelWalkWorld owns both horizontal collision and stair transitions.
+     * from already-detected stair evidence. The renderer stacks each floor at its declared elevation,
+     * MultiLevelWalkWorld owns wall/stair collision, and InteractiveDoorWorld owns the exact moving
+     * leaf pose plus synchronized door collision.
      */
     fun setBuildingPlan(building: BuildingPlan) {
         if (building.levels.isEmpty()) return
@@ -124,6 +133,8 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
         val design = ReferenceDrivenDesignEngine.synthesize(firstLevel.plan)
 
         walkWorld = world
+        doorWorld = InteractiveDoorWorld(prepared)
+        pendingDoorMeshRefresh = true
         pendingSpawn = world.findInitialSpawn(PLAYER_RADIUS)
         pendingDesign = design
         pendingMesh = BuildingMeshBuilder.build(prepared)
@@ -177,6 +188,7 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
         uCameraPosition = GLES30.glGetUniformLocation(shaderProgram, "uCameraPosition")
         uMaterial = GLES30.glGetUniformLocation(shaderProgram, "uMaterial")
         lastFrameNanos = 0L
+        pendingDoorMeshRefresh = true
     }
 
     override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
@@ -244,7 +256,18 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
             ((now - lastFrameNanos) / NANOS_PER_SECOND).toFloat().coerceIn(0f, MAX_FRAME_STEP_SECONDS)
         }
         lastFrameNanos = now
+
+        val doorsChanged = doorWorld?.update(
+            currentLevelId = currentLevelId,
+            playerPosition = Vec2(cameraX, cameraZ),
+            deltaSeconds = deltaSeconds,
+            playerRadius = PLAYER_RADIUS,
+        ) == true
         updateMovement(deltaSeconds)
+        if (pendingDoorMeshRefresh || doorsChanged) {
+            pendingDoorMeshRefresh = false
+            refreshDoorLeafMesh()
+        }
 
         GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT or GLES30.GL_DEPTH_BUFFER_BIT)
         if (shaderProgram == 0) return
@@ -291,6 +314,10 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
         }
         trim?.let {
             applyMaterial(trimColor, alpha = 1f, roughness = 0.36f, metallic = 0.01f, ambientOcclusion = 0.88f)
+            drawMesh(it)
+        }
+        doorLeaves?.let {
+            applyMaterial(trimColor, alpha = 1f, roughness = 0.42f, metallic = 0.01f, ambientOcclusion = 0.90f)
             drawMesh(it)
         }
         glass?.let {
@@ -362,7 +389,14 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
             deltaZ = moveZ,
             radius = PLAYER_RADIUS,
         )
-        val moved = result?.position ?: Vec2(intendedX, intendedZ)
+        val wallResolved = result?.position ?: Vec2(intendedX, intendedZ)
+        val resultingLevelId = result?.levelId ?: currentLevelId
+        val moved = doorWorld?.resolveMove(
+            levelId = resultingLevelId,
+            from = from,
+            to = wallResolved,
+            radius = PLAYER_RADIUS,
+        ) ?: wallResolved
 
         if (abs(moved.x - intendedX) > COLLISION_VELOCITY_TOLERANCE) velocityX *= COLLISION_DAMPING
         if (abs(moved.z - intendedZ) > COLLISION_VELOCITY_TOLERANCE) velocityZ *= COLLISION_DAMPING
@@ -396,7 +430,14 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
             deltaZ = dz,
             radius = PLAYER_RADIUS,
         )
-        val moved = result?.position ?: Vec2(cameraX + dx, cameraZ + dz)
+        val wallResolved = result?.position ?: Vec2(cameraX + dx, cameraZ + dz)
+        val resultingLevelId = result?.levelId ?: currentLevelId
+        val moved = doorWorld?.resolveMove(
+            levelId = resultingLevelId,
+            from = from,
+            to = wallResolved,
+            radius = PLAYER_RADIUS,
+        ) ?: wallResolved
         cameraX = moved.x
         cameraZ = moved.z
         if (result != null) {
@@ -513,11 +554,13 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
             ceiling?.destroy()
             trim?.destroy()
             glass?.destroy()
+            doorLeaves?.destroy()
             walls = null
             floor = null
             ceiling = null
             trim = null
             glass = null
+            doorLeaves = null
             if (shaderProgram != 0) {
                 GLES30.glDeleteProgram(shaderProgram)
                 shaderProgram = 0
@@ -526,7 +569,50 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
         super.onDetachedFromWindow()
     }
 
-    private fun uploadMesh(vertices: FloatArray, indices: IntArray): GlMesh? {
+    /**
+     * Updates the animated door mesh without reallocating GPU buffers while the number of doors is
+     * unchanged. This keeps opening/closing animation cheap on mid-range phones.
+     */
+    private fun refreshDoorLeafMesh() {
+        val dynamic = DoorLeafMeshBuilder.build(doorWorld?.poses().orEmpty())
+        if (dynamic.vertices.isEmpty() || dynamic.indices.isEmpty()) {
+            doorLeaves?.destroy()
+            doorLeaves = null
+            return
+        }
+
+        val existing = doorLeaves
+        if (
+            existing != null &&
+            existing.vertexFloatCount == dynamic.vertices.size &&
+            existing.indexCount == dynamic.indices.size
+        ) {
+            val vertexBuffer = allocateFloatBuffer(dynamic.vertices.size)
+            vertexBuffer.put(dynamic.vertices).position(0)
+            GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, existing.vbo)
+            GLES30.glBufferSubData(
+                GLES30.GL_ARRAY_BUFFER,
+                0,
+                dynamic.vertices.size * Float.SIZE_BYTES,
+                vertexBuffer,
+            )
+            GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
+            return
+        }
+
+        existing?.destroy()
+        doorLeaves = uploadMesh(
+            vertices = dynamic.vertices,
+            indices = dynamic.indices,
+            usage = GLES30.GL_DYNAMIC_DRAW,
+        )
+    }
+
+    private fun uploadMesh(
+        vertices: FloatArray,
+        indices: IntArray,
+        usage: Int = GLES30.GL_STATIC_DRAW,
+    ): GlMesh? {
         if (vertices.isEmpty() || indices.isEmpty()) return null
 
         val vertexBuffer = allocateFloatBuffer(vertices.size)
@@ -544,19 +630,24 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
             GLES30.GL_ARRAY_BUFFER,
             vertices.size * Float.SIZE_BYTES,
             vertexBuffer,
-            GLES30.GL_STATIC_DRAW,
+            usage,
         )
         GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, ibo)
         GLES30.glBufferData(
             GLES30.GL_ELEMENT_ARRAY_BUFFER,
             indices.size * Int.SIZE_BYTES,
             indexBuffer,
-            GLES30.GL_STATIC_DRAW,
+            usage,
         )
         GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
         GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER, 0)
 
-        return GlMesh(vbo = vbo, ibo = ibo, indexCount = indices.size)
+        return GlMesh(
+            vbo = vbo,
+            ibo = ibo,
+            indexCount = indices.size,
+            vertexFloatCount = vertices.size,
+        )
     }
 
     private fun drawMesh(mesh: GlMesh) {
@@ -616,6 +707,7 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
         val vbo: Int,
         val ibo: Int,
         val indexCount: Int,
+        val vertexFloatCount: Int,
     ) {
         fun destroy() {
             GLES30.glDeleteBuffers(2, intArrayOf(vbo, ibo), 0)
