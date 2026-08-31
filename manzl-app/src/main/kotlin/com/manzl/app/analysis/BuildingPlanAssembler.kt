@@ -10,6 +10,7 @@ import com.manzl.app.model.FloorPlan
  * The list order is authoritative: index 0 is the lowest uploaded floor. Base elevations are
  * metadata only and never translate X/Z geometry. When trustworthy staircase evidence is available
  * it provides the floor-to-floor height; otherwise a conservative residential fallback is used.
+ * Cross-floor crop/origin mismatch is diagnosed separately and never auto-corrected.
  */
 internal object BuildingPlanAssembler {
 
@@ -30,8 +31,11 @@ internal object BuildingPlanAssembler {
             level
         }
 
-        val building = BuildingPlan(levels = levels)
-        return if (levels.size > 1) StairLevelLinker.link(building) else building
+        val baseBuilding = BuildingPlan(levels = levels)
+        val linked = if (levels.size > 1) StairLevelLinker.link(baseBuilding) else baseBuilding
+        return linked.copy(
+            registrationDiagnostics = FloorRegistrationDiagnostics.diagnose(linked),
+        )
     }
 
     private fun floorToFloorHeight(plan: FloorPlan): Float {
