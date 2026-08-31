@@ -1,7 +1,6 @@
 package com.manzl.app.analysis
 
 import android.graphics.Bitmap
-import android.graphics.Color
 import com.manzl.app.model.DoorOpening
 import com.manzl.app.model.FloorPlan
 import com.manzl.app.model.Vec2
@@ -131,16 +130,8 @@ internal class WindowSymbolEvidenceProvider : SemanticEvidenceProvider {
         val centerX = ((gap.center.x / plan.widthMeters) + 0.5f) * imageWidth
         val centerY = ((gap.center.z / plan.depthMeters) + 0.5f) * imageHeight
         val horizontal = gap.rotationDegrees < 45f || gap.rotationDegrees > 135f
-        val alongPixelsPerMeter = if (horizontal) {
-            imageWidth / plan.widthMeters
-        } else {
-            imageHeight / plan.depthMeters
-        }
-        val perpendicularPixelsPerMeter = if (horizontal) {
-            imageHeight / plan.depthMeters
-        } else {
-            imageWidth / plan.widthMeters
-        }
+        val alongPixelsPerMeter = if (horizontal) imageWidth / plan.widthMeters else imageHeight / plan.depthMeters
+        val perpendicularPixelsPerMeter = if (horizontal) imageHeight / plan.depthMeters else imageWidth / plan.widthMeters
         val halfAlong = (gap.widthMeters * alongPixelsPerMeter * WINDOW_SCAN_SPAN_FRACTION * 0.5f)
             .roundToInt()
             .coerceAtLeast(MIN_ALONG_HALF_SPAN_PX)
@@ -327,9 +318,9 @@ internal class WindowSymbolEvidenceProvider : SemanticEvidenceProvider {
     }
 
     private fun isArchitecturalInk(color: Int): Boolean {
-        val r = Color.red(color)
-        val g = Color.green(color)
-        val b = Color.blue(color)
+        val r = (color ushr 16) and 0xFF
+        val g = (color ushr 8) and 0xFF
+        val b = color and 0xFF
         val luminance = r * 0.2126f + g * 0.7152f + b * 0.0722f
         val maxChannel = max(r, max(g, b))
         val minChannel = min(r, min(g, b))
