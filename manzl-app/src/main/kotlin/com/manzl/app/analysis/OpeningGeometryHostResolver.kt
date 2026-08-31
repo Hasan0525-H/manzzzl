@@ -15,8 +15,8 @@ import kotlin.math.sqrt
  *
  * Semantic evidence is never allowed to punch a new opening through a continuous measured wall.
  * A valid host therefore requires two trusted, nearly-collinear wall runs on opposite sides of the
- * candidate, with a measured gap whose width agrees with the semantic observation. The returned
- * center and rotation come from those wall runs, not from AI/CV coordinates.
+ * candidate, with compatible measured wall faces and a gap whose width agrees with the semantic
+ * observation. The returned center and rotation come from those wall runs, not from AI/CV coordinates.
  *
  * This works for arbitrary-angle walls; no 0/90 degree snapping is used.
  */
@@ -46,6 +46,15 @@ internal object OpeningGeometryHostResolver {
                 val b = prepared[j]
                 val alignment = a.ux * b.ux + a.uz * b.uz
                 if (abs(alignment) < MIN_COLLINEAR_ALIGNMENT) continue
+
+                val maxThickness = max(a.wall.thicknessMeters, b.wall.thicknessMeters).coerceAtLeast(0.01f)
+                val thicknessDelta = abs(a.wall.thicknessMeters - b.wall.thicknessMeters)
+                if (
+                    thicknessDelta > max(
+                        MAX_THICKNESS_DELTA_METERS,
+                        maxThickness * MAX_THICKNESS_DELTA_RATIO,
+                    )
+                ) continue
 
                 val bux = if (alignment >= 0f) b.ux else -b.ux
                 val buz = if (alignment >= 0f) b.uz else -b.uz
@@ -111,10 +120,12 @@ internal object OpeningGeometryHostResolver {
                 )
 
                 val supportConfidence = min(a.wall.confidence, b.wall.confidence).coerceIn(0f, 1f)
+                val thicknessPenalty = thicknessDelta / maxThickness
                 val score =
                     abs(gap - candidateWidthMeters) * 1.45f +
                         lineSeparation * 1.20f +
                         candidatePerpendicular * 0.85f +
+                        thicknessPenalty * 0.24f +
                         (1f - supportConfidence) * 0.30f
                 val host = Host(
                     center = gapCenter,
@@ -200,4 +211,6 @@ internal object OpeningGeometryHostResolver {
     private const val MAX_MEASURED_OPENING_GAP_METERS = 4.35f
     private const val MIN_WIDTH_TOLERANCE_METERS = 0.20f
     private const val WIDTH_TOLERANCE_RATIO = 0.26f
+    private const val MAX_THICKNESS_DELTA_METERS = 0.08f
+    private const val MAX_THICKNESS_DELTA_RATIO = 0.42f
 }
