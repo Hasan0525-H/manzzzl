@@ -1,0 +1,44 @@
+{
+  "schema": 1,
+  "checkedAt": "2026-09-01",
+  "costPolicy": "zero-paid-services",
+  "teachers": [
+    {
+      "id": "raster2seq",
+      "repository": "https://github.com/Cornell-VAILab/Raster2Seq.git",
+      "modelHub": "https://huggingface.co/haopt/Raster2Seq",
+      "codeLicense": "MIT",
+      "role": "global raster-to-vector room/polygon teacher",
+      "shipInPublicApk": false,
+      "notes": "Teacher-only until checkpoint/dataset-derived redistribution rights are audited for the exact selected checkpoint."
+    },
+    {
+      "id": "roomformer",
+      "repository": "https://github.com/ywyue/RoomFormer.git",
+      "codeLicense": "MIT",
+      "role": "independent polygon/topology cross-check teacher",
+      "shipInPublicApk": false,
+      "notes": "Teacher-only; exact pretrained checkpoint dataset terms must be respected."
+    },
+    {
+      "id": "mobilesam",
+      "repository": "https://github.com/ChaoningZhang/MobileSAM.git",
+      "codeLicense": "Apache-2.0",
+      "role": "high-resolution boundary refiner",
+      "shipInPublicApk": true,
+      "notes": "Prefer a verified universal ONNX export and retain license/attribution with packaged assets."
+    }
+  ],
+  "runtimeLibraries": [
+    {
+      "id": "onnxruntime-android",
+      "coordinate": "com.microsoft.onnxruntime:onnxruntime-android:1.29.0",
+      "license": "MIT"
+    },
+    {
+      "id": "opencv-android",
+      "coordinate": "org.opencv:opencv:5.0.0.1",
+      "license": "Apache-2.0"
+    }
+  ]
+}
