@@ -2,6 +2,8 @@ package com.manzl.app.render
 
 import com.manzl.app.design.ReferenceDrivenDesignEngine
 import com.manzl.app.model.BuildingPlan
+import com.manzl.app.model.DoorHingeSide
+import com.manzl.app.model.DoorSwingSide
 
 /**
  * Stacks independently measured floor-plan meshes at their declared base elevations.
@@ -9,6 +11,10 @@ import com.manzl.app.model.BuildingPlan
  * No X/Z registration correction is applied here. If two source drawings disagree, their measured
  * geometry remains untouched; StairLevelLinker may describe a semantic connection but cannot move
  * either floor. This keeps the same geometry-authoritative rule used by the single-level pipeline.
+ *
+ * Door leaves are deliberately suppressed from the static mesh. Frames remain static, while known
+ * physical leaves are rendered by DoorLeafMeshBuilder from InteractiveDoorWorld so animation and
+ * collision share the exact same runtime pose.
  */
 internal object BuildingMeshBuilder {
 
@@ -16,8 +22,17 @@ internal object BuildingMeshBuilder {
         var combined = emptyMeshData()
         for (level in building.levels.sortedBy { it.levelIndex }) {
             val design = ReferenceDrivenDesignEngine.synthesize(level.plan)
+            val staticPlan = level.plan.copy(
+                doors = level.plan.doors.map { door ->
+                    door.copy(
+                        hingeSide = DoorHingeSide.UNKNOWN,
+                        swingSide = DoorSwingSide.UNKNOWN,
+                        swingConfidence = 0f,
+                    )
+                }
+            )
             val levelMesh = HouseMeshBuilder.build(
-                plan = level.plan,
+                plan = staticPlan,
                 wallHeightOverride = design.wallHeightMeters,
                 doorHeightOverride = design.doorHeightMeters,
             ).translatedY(level.baseElevationMeters)
