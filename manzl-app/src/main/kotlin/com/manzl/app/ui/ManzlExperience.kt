@@ -70,7 +70,10 @@ import com.manzl.app.analysis.BuildingPlanAssembler
 import com.manzl.app.analysis.HybridFloorPlanAnalyzer
 import com.manzl.app.analysis.ProgressSink
 import com.manzl.app.model.BuildingPlan
+import com.manzl.app.model.DoorHingeSide
+import com.manzl.app.model.DoorSwingSide
 import com.manzl.app.model.FloorPlan
+import com.manzl.app.model.FloorRegistrationStatus
 import com.manzl.app.recording.TourRecordingService
 import com.manzl.app.recording.TourRecordingState
 import com.manzl.app.render.HouseWalkView
@@ -84,8 +87,11 @@ private val ManzlSand = Color(0xFFB68B55)
 private val ManzlCanvas = Color(0xFFF7F5F1)
 private val ManzlGreen = Color(0xFF1F7A4D)
 private val ManzlRecord = Color(0xFFD63C32)
+private val ManzlAmberSurface = Color(0xFFFFF4DC)
+private val ManzlAmberInk = Color(0xFF7A5312)
 
 private const val MAX_FLOORS = 6
+private const val TRUSTED_DOOR_SWING_CONFIDENCE = 0.66f
 private enum class ManzlScreen { CREATE, WALK }
 private enum class PickerIntent { REPLACE_ALL, APPEND_FLOOR }
 
@@ -239,10 +245,13 @@ private fun ManzlExperienceContent() {
                     result.onSuccess { generatedBuilding ->
                         building = generatedBuilding
                         progress = 100
-                        stage = if (generatedBuilding.levels.size > 1) {
-                            "تم بناء ${generatedBuilding.levels.size} أدوار وربط السلالم الموثوقة"
-                        } else {
-                            "جاهز للجولة"
+                        val needsRegistrationReview = generatedBuilding.registrationDiagnostics.any {
+                            it.status != FloorRegistrationStatus.ALIGNED
+                        }
+                        stage = when {
+                            generatedBuilding.levels.size == 1 -> "جاهز للجولة"
+                            needsRegistrationReview -> "تم البناء • بعض محاذاة الأدوار تحتاج مراجعة"
+                            else -> "تم بناء ${generatedBuilding.levels.size} أدوار وربط السلالم الموثوقة"
                         }
                     }.onFailure {
                         error = it.message ?: "تعذر تحليل المخطط"
@@ -465,11 +474,24 @@ private fun CreateHouseScreen(
             val doorCount = generated.levels.sumOf { it.plan.doors.size }
             val windowCount = generated.levels.sumOf { it.plan.windows.size }
             val stairCount = generated.levels.sumOf { it.plan.stairs.size }
+            val trustedSwingDoorCount = generated.levels.sumOf { level ->
+                level.plan.doors.count { door ->
+                    door.hingeSide != DoorHingeSide.UNKNOWN &&
+                        door.swingSide != DoorSwingSide.UNKNOWN &&
+                        door.swingConfidence >= TRUSTED_DOOR_SWING_CONFIDENCE
+                }
+            }
             val averageConfidence = generated.levels
                 .map { it.plan.analysisConfidence }
                 .average()
                 .takeIf { it.isFinite() }
                 ?: 0.0
+            val reviewDiagnostics = generated.registrationDiagnostics.filter {
+                it.status == FloorRegistrationStatus.REVIEW_REQUIRED
+            }
+            val unresolvedDiagnostics = generated.registrationDiagnostics.filter {
+                it.status == FloorRegistrationStatus.UNRESOLVED
+            }
 
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -488,11 +510,25 @@ private fun CreateHouseScreen(
                         color = Color(0xFF405847),
                         style = MaterialTheme.typography.bodySmall,
                     )
+                    if (doorCount > 0) {
+                        Text(
+                            "اتجاه فتح مؤكد من رمز المخطط: $trustedSwingDoorCount من $doorCount باب. الأبواب غير الواضحة تبقى فتحات آمنة بدون تخمين المفصلة.",
+                            color = Color(0xFF56715E),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
                     if (generated.levels.size > 1) {
                         Text(
                             "روابط السلالم الموثوقة بين الأدوار: ${generated.stairLinks.size}. لن يتم اختراع انتقال بين دورين إذا لم تتطابق هندسة السلم.",
                             color = Color(0xFF56715E),
                             style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    if (reviewDiagnostics.isNotEmpty() || unresolvedDiagnostics.isNotEmpty()) {
+                        RegistrationWarning(
+                            building = generated,
+                            reviewCount = reviewDiagnostics.size,
+                            unresolvedCount = unresolvedDiagnostics.size,
                         )
                     }
                     Button(
@@ -512,6 +548,52 @@ private fun CreateHouseScreen(
         }
 
         Spacer(Modifier.height(8.dp))
+    }
+}
+
+@Composable
+private fun RegistrationWarning(
+    building: BuildingPlan,
+    reviewCount: Int,
+    unresolvedCount: Int,
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        color = ManzlAmberSurface,
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(5.dp),
+        ) {
+            Text(
+                "محاذاة الأدوار تحتاج انتباه",
+                color = ManzlAmberInk,
+                style = MaterialTheme.typography.titleSmall,
+            )
+            Text(
+                "$reviewCount قابل للمراجعة • $unresolvedCount غير محسوم. لم يتم تحريك أي مخطط تلقائياً.",
+                color = ManzlAmberInk,
+                style = MaterialTheme.typography.bodySmall,
+            )
+            building.registrationDiagnostics
+                .filter { it.status == FloorRegistrationStatus.REVIEW_REQUIRED }
+                .take(3)
+                .forEach { diagnostic ->
+                    val lowerIndex = building.levels.indexOfFirst { it.id == diagnostic.lowerLevelId }
+                    val upperIndex = building.levels.indexOfFirst { it.id == diagnostic.upperLevelId }
+                    if (lowerIndex >= 0 && upperIndex >= 0) {
+                        Text(
+                            "${floorNameArabic(lowerIndex)} ↔ ${floorNameArabic(upperIndex)}: " +
+                                "اقتراح فقط ΔX ${"%.2f".format(diagnostic.suggestedOffsetXMeters)}م، " +
+                                "ΔZ ${"%.2f".format(diagnostic.suggestedOffsetZMeters)}م • " +
+                                "ثقة ${(diagnostic.confidence * 100).toInt()}%",
+                            color = ManzlAmberInk,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
+        }
     }
 }
 
