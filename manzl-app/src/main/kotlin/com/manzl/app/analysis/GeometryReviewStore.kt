@@ -3,9 +3,11 @@ package com.manzl.app.analysis
 import android.graphics.Bitmap
 import com.manzl.app.model.FloorPlan
 import com.manzl.app.model.GeometryFidelityStatus
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.withContext
 
 /**
  * Immutable review payload exposed to Compose after a geometry session finishes or is rejected.
@@ -32,6 +34,7 @@ internal data class GeometryReviewState(
  * A new session is inferred when the pending list is empty. Multi-floor analysis appends in upload
  * order. Successful sessions are published only after BuildingPlanAssembler receives every floor;
  * rejected sessions are published immediately so the exact failing overlay is visible to the user.
+ * Overlay rendering stays off the Compose/main thread.
  */
 internal object GeometryReviewStore {
     private val lock = Any()
@@ -39,7 +42,8 @@ internal object GeometryReviewStore {
     private val _state = MutableStateFlow(GeometryReviewState())
     val state: StateFlow<GeometryReviewState> = _state.asStateFlow()
 
-    fun recordStructural(source: Bitmap, plan: FloorPlan) {
+    suspend fun recordStructural(source: Bitmap, plan: FloorPlan) {
+        val overlay = renderOverlay(source, plan)
         synchronized(lock) {
             if (pending.isEmpty()) {
                 // Hide the previous project as soon as a new geometry session has real output.
@@ -47,45 +51,38 @@ internal object GeometryReviewStore {
             }
             pending += GeometryReviewItem(
                 floorIndex = pending.size,
-                overlay = GeometryOverlayRenderer.render(source, plan, REVIEW_MAX_SIDE),
+                overlay = overlay,
                 plan = plan,
             )
         }
     }
 
-    fun recordFinal(source: Bitmap, plan: FloorPlan) {
+    suspend fun recordFinal(source: Bitmap, plan: FloorPlan) {
+        val overlay = renderOverlay(source, plan)
         synchronized(lock) {
             if (pending.isEmpty()) {
-                recordStructural(source, plan)
+                _state.value = GeometryReviewState(revision = _state.value.revision + 1L)
+                pending += GeometryReviewItem(
+                    floorIndex = 0,
+                    overlay = overlay,
+                    plan = plan,
+                )
                 return
             }
             val last = pending.last()
             if (!last.overlay.isRecycled) last.overlay.recycle()
             pending[pending.lastIndex] = last.copy(
-                overlay = GeometryOverlayRenderer.render(source, plan, REVIEW_MAX_SIDE),
+                overlay = overlay,
                 plan = plan,
             )
         }
     }
 
-    fun commitFailure(source: Bitmap, plan: FloorPlan) {
+    fun commitFailure(plan: FloorPlan) {
         synchronized(lock) {
-            if (pending.isEmpty()) {
-                pending += GeometryReviewItem(
-                    floorIndex = 0,
-                    overlay = GeometryOverlayRenderer.render(source, plan, REVIEW_MAX_SIDE),
-                    plan = plan,
-                )
-            } else {
-                val last = pending.last()
-                if (last.plan !== plan && last.plan != plan) {
-                    if (!last.overlay.isRecycled) last.overlay.recycle()
-                    pending[pending.lastIndex] = last.copy(
-                        overlay = GeometryOverlayRenderer.render(source, plan, REVIEW_MAX_SIDE),
-                        plan = plan,
-                    )
-                }
-            }
+            if (pending.isEmpty()) return
+            val last = pending.last()
+            pending[pending.lastIndex] = last.copy(plan = plan)
             publish(autoOpen = true)
         }
     }
@@ -117,6 +114,15 @@ internal object GeometryReviewStore {
         }
     }
 
+    fun abortPending() {
+        synchronized(lock) {
+            pending.forEach { item ->
+                if (!item.overlay.isRecycled) item.overlay.recycle()
+            }
+            pending.clear()
+        }
+    }
+
     private fun publish(autoOpen: Boolean) {
         _state.value = GeometryReviewState(
             items = pending.toList(),
@@ -125,6 +131,11 @@ internal object GeometryReviewStore {
         )
         pending.clear()
     }
+
+    private suspend fun renderOverlay(source: Bitmap, plan: FloorPlan): Bitmap =
+        withContext(Dispatchers.Default) {
+            GeometryOverlayRenderer.render(source, plan, REVIEW_MAX_SIDE)
+        }
 
     private const val REVIEW_MAX_SIDE = 1200
 }

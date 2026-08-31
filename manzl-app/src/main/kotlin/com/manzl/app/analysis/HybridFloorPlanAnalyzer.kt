@@ -47,59 +47,64 @@ internal class HybridFloorPlanAnalyzer(
 
         GeometryQualityGate.rejectionMessageArabic(structural)?.let { rejection ->
             progress.onUpdate(AnalysisUpdate(79, "فشل بوابة مطابقة 2D • افتح مراجعة التطابق"))
-            GeometryReviewStore.commitFailure(bitmap, structural)
+            GeometryReviewStore.commitFailure(structural)
             throw GeometryQualityRejectedException(structural, rejection)
         }
 
-        progress.onUpdate(AnalysisUpdate(82, "بناء خط أساس للأبواب والغرف"))
-        val baselineDoors = DoorInferenceEngine.infer(structural)
-        val withDoors = structural.copy(
-            doors = mergeDoors(structural.doors, baselineDoors),
-        )
-        val baselineRooms = RoomInferenceEngine.infer(withDoors)
-        val baseline = withDoors.copy(
-            rooms = mergeRooms(withDoors.rooms, baselineRooms),
-        )
+        return try {
+            progress.onUpdate(AnalysisUpdate(82, "بناء خط أساس للأبواب والغرف"))
+            val baselineDoors = DoorInferenceEngine.infer(structural)
+            val withDoors = structural.copy(
+                doors = mergeDoors(structural.doors, baselineDoors),
+            )
+            val baselineRooms = RoomInferenceEngine.infer(withDoors)
+            val baseline = withDoors.copy(
+                rooms = mergeRooms(withDoors.rooms, baselineRooms),
+            )
 
-        progress.onUpdate(AnalysisUpdate(87, "قراءة الغرف والسلالم والفتحات والذكاء المحلي"))
-        val semanticEvidence = ArrayList<SemanticEvidence>()
-        semanticProviders.forEach { provider ->
-            val providerPlan = if (provider is WindowSymbolEvidenceProvider) {
-                // Geometry-only door gaps are not sufficient evidence to suppress a real double-line
-                // window symbol. Door/window conflicts are decided later after swing-arc enrichment.
-                baseline.copy(doors = emptyList())
-            } else {
-                baseline
+            progress.onUpdate(AnalysisUpdate(87, "قراءة الغرف والسلالم والفتحات والذكاء المحلي"))
+            val semanticEvidence = ArrayList<SemanticEvidence>()
+            semanticProviders.forEach { provider ->
+                val providerPlan = if (provider is WindowSymbolEvidenceProvider) {
+                    // Geometry-only door gaps are not sufficient evidence to suppress a real double-line
+                    // window symbol. Door/window conflicts are decided later after swing-arc enrichment.
+                    baseline.copy(doors = emptyList())
+                } else {
+                    baseline
+                }
+                semanticEvidence += provider.analyze(bitmap, providerPlan)
             }
-            semanticEvidence += provider.analyze(bitmap, providerPlan)
+
+            progress.onUpdate(AnalysisUpdate(91, "دمج أدلة CV والذكاء المحلي المتفقة"))
+            val consensusEvidence = SemanticEvidenceConsensus.combine(semanticEvidence)
+
+            progress.onUpdate(AnalysisUpdate(93, "مطابقة الدلالات مع هندسة المخطط"))
+            val reconciled = GeometryEvidenceFusion.fuse(baseline, consensusEvidence)
+
+            progress.onUpdate(AnalysisUpdate(95, "مراجعة مرشحات الأبواب والنوافذ"))
+            val inferredDoors = DoorInferenceEngine.infer(reconciled)
+            val finalDoors = mergeDoors(reconciled.doors, inferredDoors)
+            val withFinalDoors = reconciled.copy(doors = finalDoors)
+
+            progress.onUpdate(AnalysisUpdate(97, "قراءة مفصلات واتجاه فتح الأبواب من رموز المخطط"))
+            val withDoorDynamics = withFinalDoors.copy(
+                doors = DoorSwingArcDetector.enrich(bitmap, withFinalDoors),
+            )
+            val withClassifiedOpenings = OpeningSemanticReconciler.reconcile(withDoorDynamics)
+
+            progress.onUpdate(AnalysisUpdate(98, "مراجعة حدود الغرف والأسقف"))
+            val inferredRooms = RoomInferenceEngine.infer(withClassifiedOpenings)
+            val enriched = withClassifiedOpenings.copy(
+                rooms = mergeRooms(withClassifiedOpenings.rooms, inferredRooms),
+            )
+
+            GeometryReviewStore.recordFinal(bitmap, enriched)
+            progress.onUpdate(AnalysisUpdate(100, "اجتاز المخطط بوابة الجودة وتم تجهيز المنزل للجولة"))
+            enriched
+        } catch (error: Throwable) {
+            GeometryReviewStore.abortPending()
+            throw error
         }
-
-        progress.onUpdate(AnalysisUpdate(91, "دمج أدلة CV والذكاء المحلي المتفقة"))
-        val consensusEvidence = SemanticEvidenceConsensus.combine(semanticEvidence)
-
-        progress.onUpdate(AnalysisUpdate(93, "مطابقة الدلالات مع هندسة المخطط"))
-        val reconciled = GeometryEvidenceFusion.fuse(baseline, consensusEvidence)
-
-        progress.onUpdate(AnalysisUpdate(95, "مراجعة مرشحات الأبواب والنوافذ"))
-        val inferredDoors = DoorInferenceEngine.infer(reconciled)
-        val finalDoors = mergeDoors(reconciled.doors, inferredDoors)
-        val withFinalDoors = reconciled.copy(doors = finalDoors)
-
-        progress.onUpdate(AnalysisUpdate(97, "قراءة مفصلات واتجاه فتح الأبواب من رموز المخطط"))
-        val withDoorDynamics = withFinalDoors.copy(
-            doors = DoorSwingArcDetector.enrich(bitmap, withFinalDoors),
-        )
-        val withClassifiedOpenings = OpeningSemanticReconciler.reconcile(withDoorDynamics)
-
-        progress.onUpdate(AnalysisUpdate(98, "مراجعة حدود الغرف والأسقف"))
-        val inferredRooms = RoomInferenceEngine.infer(withClassifiedOpenings)
-        val enriched = withClassifiedOpenings.copy(
-            rooms = mergeRooms(withClassifiedOpenings.rooms, inferredRooms),
-        )
-
-        GeometryReviewStore.recordFinal(bitmap, enriched)
-        progress.onUpdate(AnalysisUpdate(100, "اجتاز المخطط بوابة الجودة وتم تجهيز المنزل للجولة"))
-        return enriched
     }
 
     private fun mergeDoors(base: List<DoorOpening>, inferred: List<DoorOpening>): List<DoorOpening> =
