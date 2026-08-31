@@ -196,7 +196,10 @@ internal class DirectionalShadowMap(
         private const val DEPTH_FRAGMENT_SHADER = """
             #version 300 es
             precision mediump float;
-            void main() { }
+            out vec4 outColor;
+            void main() {
+                outColor = vec4(1.0);
+            }
         """
     }
 }
