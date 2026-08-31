@@ -16,7 +16,8 @@ import kotlin.math.sqrt
  * 3) bundled on-device semantic providers may label rooms or suggest stairs/openings;
  * 4) GeometryEvidenceFusion accepts only evidence that is geometrically plausible;
  * 5) deterministic topology is re-run after fusion and becomes the sole source of truth for 3D;
- * 6) door swing symbols may enrich an accepted opening but never create or move one.
+ * 6) door swing symbols may enrich an accepted opening but never create or move one;
+ * 7) door/window conflicts are resolved from symbol-specific evidence before final room topology.
  *
  * No provider is allowed to require a network connection in the release build.
  */
@@ -33,7 +34,6 @@ internal class HybridFloorPlanAnalyzer(
         val structural = structuralAnalyzer.analyze(
             bitmap = bitmap,
             progress = ProgressSink { update ->
-                // Reserve the final stages for topology, semantics and evidence reconciliation.
                 val remapped = (update.percent * 0.78f).toInt().coerceIn(0, 78)
                 progress.onUpdate(update.copy(percent = remapped))
             },
@@ -52,13 +52,20 @@ internal class HybridFloorPlanAnalyzer(
         progress.onUpdate(AnalysisUpdate(87, "قراءة الغرف والسلالم ورموز النوافذ محلياً"))
         val semanticEvidence = ArrayList<SemanticEvidence>()
         semanticProviders.forEach { provider ->
-            semanticEvidence += provider.analyze(bitmap, baseline)
+            val providerPlan = if (provider is WindowSymbolEvidenceProvider) {
+                // Geometry-only door gaps are not sufficient evidence to suppress a real double-line
+                // window symbol. Door/window conflicts are decided later after swing-arc enrichment.
+                baseline.copy(doors = emptyList())
+            } else {
+                baseline
+            }
+            semanticEvidence += provider.analyze(bitmap, providerPlan)
         }
 
         progress.onUpdate(AnalysisUpdate(92, "مطابقة الدلالات مع هندسة المخطط"))
         val reconciled = GeometryEvidenceFusion.fuse(baseline, semanticEvidence)
 
-        progress.onUpdate(AnalysisUpdate(96, "مراجعة الفتحات ومسارات الحركة"))
+        progress.onUpdate(AnalysisUpdate(95, "مراجعة مرشحات الأبواب والنوافذ"))
         val inferredDoors = DoorInferenceEngine.infer(reconciled)
         val finalDoors = mergeDoors(reconciled.doors, inferredDoors)
         val withFinalDoors = reconciled.copy(doors = finalDoors)
@@ -67,11 +74,12 @@ internal class HybridFloorPlanAnalyzer(
         val withDoorDynamics = withFinalDoors.copy(
             doors = DoorSwingArcDetector.enrich(bitmap, withFinalDoors),
         )
+        val withClassifiedOpenings = OpeningSemanticReconciler.reconcile(withDoorDynamics)
 
         progress.onUpdate(AnalysisUpdate(98, "مراجعة حدود الغرف والأسقف"))
-        val inferredRooms = RoomInferenceEngine.infer(withDoorDynamics)
-        val enriched = withDoorDynamics.copy(
-            rooms = mergeRooms(withDoorDynamics.rooms, inferredRooms),
+        val inferredRooms = RoomInferenceEngine.infer(withClassifiedOpenings)
+        val enriched = withClassifiedOpenings.copy(
+            rooms = mergeRooms(withClassifiedOpenings.rooms, inferredRooms),
         )
 
         progress.onUpdate(AnalysisUpdate(100, "تم تجهيز المنزل للجولة"))
