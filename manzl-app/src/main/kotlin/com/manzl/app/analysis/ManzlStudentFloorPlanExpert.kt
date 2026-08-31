@@ -12,9 +12,13 @@ import com.manzl.app.model.FloorPlan
 import com.manzl.app.model.Vec2
 import com.manzl.app.model.WallSegment
 import java.nio.FloatBuffer
+import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.atan2
+import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.sin
 import kotlin.math.sqrt
 
 /**
@@ -23,8 +27,9 @@ import kotlin.math.sqrt
  * Reconstruction is multi-scale: one letterboxed global 512px pass provides topology, then overlapping
  * source-space detail tiles preserve short partitions/openings that would vanish when a 4K sheet is
  * globally reduced to 512px. The same inference simultaneously decodes wall vectors and door/window/
- * stair observations; semantic observations are cached for the later fusion stage so ONNX is never
- * run twice for the same plan. All geometry remains proposal-only until source-raster adjudication.
+ * stair observations. Semantic blobs are converted only to source-raster coordinates here; OpenCV and
+ * MobileSAM are allowed to improve the wall graph afterwards, and the later semantic provider resolves
+ * those blobs against that final measured geometry. All geometry remains proposal-only.
  */
 internal class ManzlStudentFloorPlanExpert(context: Context) {
     private val models = OnnxAssetModelRepository(context)
@@ -58,7 +63,7 @@ internal class ManzlStudentFloorPlanExpert(context: Context) {
         if (regions.isEmpty()) return Result(seed, true, 0, 0)
 
         val candidates = ArrayList<WallSegment>()
-        val semanticEvidence = ArrayList<SemanticEvidence>()
+        val sourceComponents = ArrayList<StudentSemanticComponentDecoder.Component>()
         var successfulRegions = 0
         for (region in regions) {
             val inferred = inferRegion(
@@ -71,7 +76,7 @@ internal class ManzlStudentFloorPlanExpert(context: Context) {
             if (inferred != null) {
                 successfulRegions++
                 candidates += inferred.walls
-                semanticEvidence += inferred.semanticEvidence
+                sourceComponents += inferred.semanticComponents
             }
         }
 
@@ -86,8 +91,12 @@ internal class ManzlStudentFloorPlanExpert(context: Context) {
             }
             .take(MAX_MERGED_STUDENT_CANDIDATES)
 
-        val stableSemantics = SemanticEvidenceConsensus.combine(semanticEvidence)
-        StudentSemanticEvidenceStore.record(source, stableSemantics)
+        val stableComponents = deduplicateSourceComponents(
+            components = sourceComponents,
+            sourceWidth = source.width,
+            sourceHeight = source.height,
+        )
+        StudentSemanticEvidenceStore.record(source, stableComponents)
 
         if (uniqueCandidates.isEmpty()) {
             return Result(
@@ -96,7 +105,7 @@ internal class ManzlStudentFloorPlanExpert(context: Context) {
                 proposedWalls = 0,
                 acceptedWalls = 0,
                 inferenceRegions = successfulRegions,
-                semanticObservations = stableSemantics.size,
+                semanticObservations = stableComponents.size,
             )
         }
         val adjudicated = adjudicateAgainstSource(source, seed, uniqueCandidates)
@@ -106,7 +115,7 @@ internal class ManzlStudentFloorPlanExpert(context: Context) {
             proposedWalls = uniqueCandidates.size,
             acceptedWalls = adjudicated.second,
             inferenceRegions = successfulRegions,
-            semanticObservations = stableSemantics.size,
+            semanticObservations = stableComponents.size,
         )
     }
 
@@ -270,14 +279,76 @@ internal class ManzlStudentFloorPlanExpert(context: Context) {
                 accepted
             }
 
-        val evidence = StudentSemanticEvidenceProjector.project(
-            components = heads.semanticComponents,
-            seed = seed,
-            sourceTransform = sourceTransform,
-            modelToSource = inputTransform::modelToSource,
-            detailPass = detailPass,
+        val components = heads.semanticComponents.mapNotNull { component ->
+            componentToSource(component, inputTransform, detailPass)
+        }
+        return RegionInference(walls = walls, semanticComponents = components)
+    }
+
+    private fun componentToSource(
+        component: StudentSemanticComponentDecoder.Component,
+        transform: LetterboxTransform,
+        detailPass: Boolean,
+    ): StudentSemanticComponentDecoder.Component? {
+        if (detailPass && component.touchesModelEdge) return null
+        val radians = component.rotationDegrees * PI.toFloat() / 180f
+        val ux = cos(radians)
+        val uy = sin(radians)
+        val nx = -uy
+        val ny = ux
+        val majorHalf = component.majorSpanPx * 0.5f
+        val minorHalf = component.minorSpanPx * 0.5f
+        val center = transform.modelToSource(component.centerX, component.centerY) ?: return null
+        val majorA = transform.modelToSource(component.centerX - ux * majorHalf, component.centerY - uy * majorHalf)
+            ?: return null
+        val majorB = transform.modelToSource(component.centerX + ux * majorHalf, component.centerY + uy * majorHalf)
+            ?: return null
+        val minorA = transform.modelToSource(component.centerX - nx * minorHalf, component.centerY - ny * minorHalf)
+            ?: return null
+        val minorB = transform.modelToSource(component.centerX + nx * minorHalf, component.centerY + ny * minorHalf)
+            ?: return null
+
+        val majorDx = majorB.first - majorA.first
+        val majorDy = majorB.second - majorA.second
+        val majorSpan = sqrt(majorDx * majorDx + majorDy * majorDy)
+        val minorDx = minorB.first - minorA.first
+        val minorDy = minorB.second - minorA.second
+        val minorSpan = sqrt(minorDx * minorDx + minorDy * minorDy)
+        if (majorSpan <= 0f || minorSpan <= 0f) return null
+        var rotation = Math.toDegrees(atan2(majorDy.toDouble(), majorDx.toDouble())).toFloat() % 180f
+        if (rotation < 0f) rotation += 180f
+
+        return component.copy(
+            centerX = center.first,
+            centerY = center.second,
+            majorSpanPx = max(majorSpan, minorSpan),
+            minorSpanPx = min(majorSpan, minorSpan),
+            rotationDegrees = rotation,
+            touchesModelEdge = false,
         )
-        return RegionInference(walls = walls, semanticEvidence = evidence)
+    }
+
+    private fun deduplicateSourceComponents(
+        components: List<StudentSemanticComponentDecoder.Component>,
+        sourceWidth: Int,
+        sourceHeight: Int,
+    ): List<StudentSemanticComponentDecoder.Component> {
+        val distanceThreshold = max(
+            MIN_COMPONENT_DUPLICATE_PX,
+            min(sourceWidth, sourceHeight) * COMPONENT_DUPLICATE_FRACTION,
+        )
+        return components.sortedByDescending { it.confidence }
+            .fold(ArrayList<StudentSemanticComponentDecoder.Component>()) { accepted, candidate ->
+                val duplicate = accepted.any { existing ->
+                    if (existing.classId != candidate.classId) return@any false
+                    val dx = existing.centerX - candidate.centerX
+                    val dy = existing.centerY - candidate.centerY
+                    sqrt(dx * dx + dy * dy) <= distanceThreshold
+                }
+                if (!duplicate) accepted += candidate
+                accepted
+            }
+            .take(MAX_STORED_SEMANTIC_COMPONENTS)
     }
 
     private fun adjudicateAgainstSource(
@@ -376,7 +447,7 @@ internal class ManzlStudentFloorPlanExpert(context: Context) {
 
     private data class RegionInference(
         val walls: List<WallSegment>,
-        val semanticEvidence: List<SemanticEvidence>,
+        val semanticComponents: List<StudentSemanticComponentDecoder.Component>,
     )
 
     private data class PreparedInput(
@@ -434,12 +505,15 @@ internal class ManzlStudentFloorPlanExpert(context: Context) {
         private const val MAX_GLOBAL_CANDIDATES = 128
         private const val MAX_DETAIL_CANDIDATES_PER_REGION = 72
         private const val MAX_MERGED_STUDENT_CANDIDATES = 220
+        private const val MAX_STORED_SEMANTIC_COMPONENTS = 128
         private const val DETAIL_SOURCE_SIDE_PX = 1200
         private const val DETAIL_OVERLAP_FRACTION = 0.28f
         private const val ADJUDICATION_MAX_SIDE = 3000
         private const val CONNECTION_METERS = 0.36f
         private const val DUPLICATE_ALIGNMENT = 0.982f
         private const val DUPLICATE_DISTANCE_METERS = 0.13f
+        private const val MIN_COMPONENT_DUPLICATE_PX = 8f
+        private const val COMPONENT_DUPLICATE_FRACTION = 0.012f
         private const val MODEL_MAPPING_MARGIN = 1.5f
         private const val MEDIUM_HEAP_BYTES = 320L * 1024L * 1024L
         private const val LARGE_HEAP_BYTES = 448L * 1024L * 1024L
