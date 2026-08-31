@@ -1,7 +1,8 @@
 {
-  "schema": 2,
+  "schema": 3,
   "checkedAt": "2026-09-01",
   "costPolicy": "zero-paid-services",
+  "projectUse": "personal-non-commercial",
   "teachers": [
     {
       "id": "raster2seq",
@@ -29,6 +30,24 @@
       "role": "independent polygon/topology cross-check teacher",
       "shipInPublicApk": false,
       "notes": "Teacher-only; exact pretrained checkpoint dataset terms must be respected before selecting a weight file."
+    },
+    {
+      "id": "mitunet-wall",
+      "repository": "https://github.com/aliasstudio/mitunet.git",
+      "codeLicense": "MIT",
+      "pretrainedWeightLicense": "CC-BY-NC-4.0",
+      "role": "independent high-precision wall segmentation teacher",
+      "selectedCheckpoint": {
+        "revision": "ade0aa6ba01c72f02a32a33a605c36b54b264a7a",
+        "path": "experiments/models/mitunet_finetune_a6_mit_b4_tversky_8864_28E.pth",
+        "sha256": "9c56c86723b0b5099ea63c82b5cac2f9c98c1816536003a78e422b7fcfadfbaf",
+        "bytes": 257383307,
+        "publishedPrecisionPercent": 94.82,
+        "publishedBoundaryIoUPercent": 85.01,
+        "inputSize": 512
+      },
+      "shipInPublicApk": false,
+      "notes": "Allowed here only as a personal/non-commercial development-time teacher. It is never bundled in the APK. If project use changes to commercial, exclude it or retrain equivalent wall supervision from commercially compatible data."
     },
     {
       "id": "mobilesam",
