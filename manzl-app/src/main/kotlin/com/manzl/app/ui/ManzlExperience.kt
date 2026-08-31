@@ -21,8 +21,10 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.CheckCircle
@@ -64,8 +66,10 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import com.manzl.app.analysis.BuildingPlanAssembler
 import com.manzl.app.analysis.HybridFloorPlanAnalyzer
 import com.manzl.app.analysis.ProgressSink
+import com.manzl.app.model.BuildingPlan
 import com.manzl.app.model.FloorPlan
 import com.manzl.app.recording.TourRecordingService
 import com.manzl.app.recording.TourRecordingState
@@ -81,7 +85,14 @@ private val ManzlCanvas = Color(0xFFF7F5F1)
 private val ManzlGreen = Color(0xFF1F7A4D)
 private val ManzlRecord = Color(0xFFD63C32)
 
+private const val MAX_FLOORS = 6
 private enum class ManzlScreen { CREATE, WALK }
+private enum class PickerIntent { REPLACE_ALL, APPEND_FLOOR }
+
+private data class FloorDraft(
+    val uri: Uri,
+    val bitmap: Bitmap,
+)
 
 @Composable
 fun ManzlExperience() {
@@ -109,9 +120,9 @@ private fun ManzlExperienceContent() {
     val recordingState by TourRecordingState.state.collectAsState()
 
     var screen by remember { mutableStateOf(ManzlScreen.CREATE) }
-    var bitmap by remember { mutableStateOf<Bitmap?>(null) }
-    var sourceUri by remember { mutableStateOf<Uri?>(null) }
-    var plan by remember { mutableStateOf<FloorPlan?>(null) }
+    var drafts by remember { mutableStateOf<List<FloorDraft>>(emptyList()) }
+    var building by remember { mutableStateOf<BuildingPlan?>(null) }
+    var pickerIntent by remember { mutableStateOf(PickerIntent.REPLACE_ALL) }
     var progress by remember { mutableIntStateOf(0) }
     var stage by remember { mutableStateOf("جاهز") }
     var processing by remember { mutableStateOf(false) }
@@ -151,10 +162,9 @@ private fun ManzlExperienceContent() {
         if (uri == null) return@rememberLauncherForActivityResult
         scope.launch {
             error = null
-            plan = null
+            building = null
             progress = 0
-            sourceUri = uri
-            bitmap = runCatching {
+            val decoded = runCatching {
                 withContext(Dispatchers.IO) {
                     val source = ImageDecoder.createSource(context.contentResolver, uri)
                     ImageDecoder.decodeBitmap(source) { decoder, _, _ ->
@@ -164,43 +174,76 @@ private fun ManzlExperienceContent() {
             }.getOrElse {
                 error = "تعذر قراءة المخطط: ${it.message ?: "خطأ غير معروف"}"
                 null
+            } ?: return@launch
+
+            val draft = FloorDraft(uri = uri, bitmap = decoded)
+            drafts = when (pickerIntent) {
+                PickerIntent.REPLACE_ALL -> listOf(draft)
+                PickerIntent.APPEND_FLOOR -> {
+                    if (drafts.size >= MAX_FLOORS) {
+                        error = "الحد الحالي $MAX_FLOORS أدوار في مشروع واحد."
+                        drafts
+                    } else {
+                        drafts + draft
+                    }
+                }
             }
         }
     }
 
     when (screen) {
         ManzlScreen.CREATE -> CreateHouseScreen(
-            bitmap = bitmap,
-            sourceUri = sourceUri,
-            plan = plan,
+            drafts = drafts,
+            building = building,
             progress = progress,
             stage = stage,
             processing = processing,
             error = error,
             lastSavedVideo = recordingState.lastSavedUri,
-            onPick = { picker.launch("image/*") },
+            onPickFirst = {
+                pickerIntent = PickerIntent.REPLACE_ALL
+                picker.launch("image/*")
+            },
+            onAddFloor = {
+                pickerIntent = PickerIntent.APPEND_FLOOR
+                picker.launch("image/*")
+            },
             onExecute = {
-                val input = bitmap ?: return@CreateHouseScreen
+                val inputs = drafts
+                if (inputs.isEmpty()) return@CreateHouseScreen
                 processing = true
                 error = null
-                plan = null
+                building = null
                 progress = 0
                 stage = "بدء التحليل الهندسي"
+
                 scope.launch {
-                    runCatching {
-                        analyzer.analyze(
-                            bitmap = input,
-                            progress = ProgressSink { update ->
-                                scope.launch {
-                                    progress = update.percent
-                                    stage = update.messageArabic
-                                }
-                            },
-                        )
-                    }.onSuccess { generated ->
-                        plan = generated
+                    val analyzed = ArrayList<FloorPlan>(inputs.size)
+                    val result = runCatching {
+                        inputs.forEachIndexed { index, input ->
+                            val generated = analyzer.analyze(
+                                bitmap = input.bitmap,
+                                progress = ProgressSink { update ->
+                                    scope.launch {
+                                        val combined = ((index * 100) + update.percent.coerceIn(0, 100)) / inputs.size
+                                        progress = combined.coerceIn(0, 99)
+                                        stage = "${floorNameArabic(index)} • ${update.messageArabic}"
+                                    }
+                                },
+                            )
+                            analyzed += generated
+                        }
+                        BuildingPlanAssembler.assemble(analyzed)
+                    }
+
+                    result.onSuccess { generatedBuilding ->
+                        building = generatedBuilding
                         progress = 100
-                        stage = "جاهز للجولة"
+                        stage = if (generatedBuilding.levels.size > 1) {
+                            "تم بناء ${generatedBuilding.levels.size} أدوار وربط السلالم الموثوقة"
+                        } else {
+                            "جاهز للجولة"
+                        }
                     }.onFailure {
                         error = it.message ?: "تعذر تحليل المخطط"
                     }
@@ -212,9 +255,8 @@ private fun ManzlExperienceContent() {
                 recordingPermission.launch(projectionManager.createScreenCaptureIntent())
             },
             onReset = {
-                bitmap = null
-                sourceUri = null
-                plan = null
+                drafts = emptyList()
+                building = null
                 progress = 0
                 stage = "جاهز"
                 error = null
@@ -223,12 +265,12 @@ private fun ManzlExperienceContent() {
         )
 
         ManzlScreen.WALK -> {
-            val generated = plan
+            val generated = building
             if (generated == null) {
                 screen = ManzlScreen.CREATE
             } else {
                 NaturalWalkthrough(
-                    plan = generated,
+                    building = generated,
                     isRecording = recordingState.isRecording,
                     onExit = {
                         TourRecordingService.stop(context)
@@ -242,15 +284,15 @@ private fun ManzlExperienceContent() {
 
 @Composable
 private fun CreateHouseScreen(
-    bitmap: Bitmap?,
-    sourceUri: Uri?,
-    plan: FloorPlan?,
+    drafts: List<FloorDraft>,
+    building: BuildingPlan?,
     progress: Int,
     stage: String,
     processing: Boolean,
     error: String?,
     lastSavedVideo: String?,
-    onPick: () -> Unit,
+    onPickFirst: () -> Unit,
+    onAddFloor: () -> Unit,
     onExecute: () -> Unit,
     onWalk: () -> Unit,
     onReset: () -> Unit,
@@ -260,6 +302,7 @@ private fun CreateHouseScreen(
             .fillMaxSize()
             .statusBarsPadding()
             .navigationBarsPadding()
+            .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp, vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
@@ -286,7 +329,7 @@ private fun CreateHouseScreen(
             ) {
                 Icon(Icons.Rounded.CloudOff, contentDescription = null, tint = ManzlGreen)
                 Text(
-                    "البناء والذكاء المحلي والجولة والتسجيل تعمل على الجهاز بدون API أثناء الاستخدام.",
+                    "التحليل والبناء والجولة والتسجيل تعمل على الجهاز بدون API أثناء الاستخدام.",
                     color = Color(0xFF405C49),
                     style = MaterialTheme.typography.bodySmall,
                 )
@@ -303,7 +346,7 @@ private fun CreateHouseScreen(
                 verticalArrangement = Arrangement.spacedBy(12.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                if (bitmap == null) {
+                if (drafts.isEmpty()) {
                     Surface(shape = CircleShape, color = Color(0xFFF3EADF)) {
                         Icon(
                             Icons.Rounded.UploadFile,
@@ -314,26 +357,18 @@ private fun CreateHouseScreen(
                     }
                     Text("ارفع المخطط الهندسي", style = MaterialTheme.typography.titleLarge)
                     Text(
-                        "يفضل صورة واضحة، مستقيمة، وتظهر فيها الجدران والأبعاد.",
+                        "لمنزل متعدد الأدوار: ارفع الأرضي أولاً ثم أضف الأدوار بالترتيب إلى الأعلى.",
                         color = Color(0xFF77736D),
                         style = MaterialTheme.typography.bodyMedium,
                     )
                 } else {
-                    Image(
-                        bitmap = bitmap.asImageBitmap(),
-                        contentDescription = "المخطط المختار",
-                        modifier = Modifier.fillMaxWidth().height(190.dp),
-                        contentScale = ContentScale.Fit,
-                    )
-                    Text(
-                        sourceUri?.lastPathSegment?.takeLast(48) ?: "المخطط جاهز",
-                        color = Color(0xFF6C6862),
-                        style = MaterialTheme.typography.bodySmall,
-                    )
+                    drafts.forEachIndexed { index, draft ->
+                        FloorDraftCard(index = index, draft = draft)
+                    }
                 }
 
                 Button(
-                    onClick = onPick,
+                    onClick = onPickFirst,
                     enabled = !processing,
                     modifier = Modifier.fillMaxWidth().height(50.dp),
                     colors = ButtonDefaults.buttonColors(
@@ -341,12 +376,28 @@ private fun CreateHouseScreen(
                         contentColor = ManzlInk,
                     ),
                 ) {
-                    Text(if (bitmap == null) "اختيار المخطط" else "تغيير المخطط")
+                    Text(if (drafts.isEmpty()) "اختيار المخطط" else "استبدال المشروع بمخطط جديد")
+                }
+
+                if (drafts.isNotEmpty() && drafts.size < MAX_FLOORS) {
+                    Button(
+                        onClick = onAddFloor,
+                        enabled = !processing,
+                        modifier = Modifier.fillMaxWidth().height(50.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color(0xFFE9F5ED),
+                            contentColor = ManzlGreen,
+                        ),
+                    ) {
+                        Icon(Icons.Rounded.UploadFile, contentDescription = null)
+                        Spacer(Modifier.size(8.dp))
+                        Text("إضافة مخطط الدور التالي")
+                    }
                 }
 
                 Button(
                     onClick = onExecute,
-                    enabled = bitmap != null && !processing,
+                    enabled = drafts.isNotEmpty() && !processing,
                     modifier = Modifier.fillMaxWidth().height(56.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = ManzlInk),
                 ) {
@@ -409,7 +460,17 @@ private fun CreateHouseScreen(
             }
         }
 
-        plan?.let { generated ->
+        building?.let { generated ->
+            val wallCount = generated.levels.sumOf { it.plan.walls.size }
+            val doorCount = generated.levels.sumOf { it.plan.doors.size }
+            val windowCount = generated.levels.sumOf { it.plan.windows.size }
+            val stairCount = generated.levels.sumOf { it.plan.stairs.size }
+            val averageConfidence = generated.levels
+                .map { it.plan.analysisConfidence }
+                .average()
+                .takeIf { it.isFinite() }
+                ?: 0.0
+
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(18.dp),
@@ -422,15 +483,14 @@ private fun CreateHouseScreen(
                         Text("النموذج جاهز", color = ManzlGreen, style = MaterialTheme.typography.titleMedium)
                     }
                     Text(
-                        "${generated.walls.size} جدار • ${generated.doors.size} باب • ${generated.windows.size} نافذة • " +
-                            "${"%.1f".format(generated.widthMeters)} × ${"%.1f".format(generated.depthMeters)} م • " +
-                            "ثقة ${(generated.analysisConfidence * 100).toInt()}%",
+                        "${generated.levels.size} دور • $wallCount جدار • $doorCount باب • $windowCount نافذة • " +
+                            "$stairCount سلم • ثقة ${(averageConfidence * 100).toInt()}%",
                         color = Color(0xFF405847),
                         style = MaterialTheme.typography.bodySmall,
                     )
-                    if (generated.scaleSource == "bundled_ocr") {
+                    if (generated.levels.size > 1) {
                         Text(
-                            "المقياس قُرئ محلياً من الأبعاد المطبوعة • ثقة ${(generated.scaleConfidence * 100).toInt()}%",
+                            "روابط السلالم الموثوقة بين الأدوار: ${generated.stairLinks.size}. لن يتم اختراع انتقال بين دورين إذا لم تتطابق هندسة السلم.",
                             color = Color(0xFF56715E),
                             style = MaterialTheme.typography.bodySmall,
                         )
@@ -450,18 +510,56 @@ private fun CreateHouseScreen(
                 }
             }
         }
+
+        Spacer(Modifier.height(8.dp))
+    }
+}
+
+@Composable
+private fun FloorDraftCard(index: Int, draft: FloorDraft) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        color = Color(0xFFF7F3ED),
+    ) {
+        Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    floorNameArabic(index),
+                    color = ManzlInk,
+                    style = MaterialTheme.typography.titleSmall,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    "#${index + 1}",
+                    color = ManzlSand,
+                    style = MaterialTheme.typography.labelMedium,
+                )
+            }
+            Image(
+                bitmap = draft.bitmap.asImageBitmap(),
+                contentDescription = "مخطط ${floorNameArabic(index)}",
+                modifier = Modifier.fillMaxWidth().height(110.dp),
+                contentScale = ContentScale.Fit,
+            )
+            Text(
+                draft.uri.lastPathSegment?.takeLast(56) ?: "مخطط الدور",
+                color = Color(0xFF6C6862),
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
     }
 }
 
 @Composable
 private fun NaturalWalkthrough(
-    plan: FloorPlan,
+    building: BuildingPlan,
     isRecording: Boolean,
     onExit: () -> Unit,
 ) {
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
         AndroidView(
-            factory = { context -> HouseWalkView(context).apply { setFloorPlan(plan) } },
+            factory = { context -> HouseWalkView(context).apply { setBuildingPlan(building) } },
             modifier = Modifier.fillMaxSize(),
         )
 
@@ -523,4 +621,14 @@ private fun NaturalWalkthrough(
             Text("إنهاء وحفظ MP4")
         }
     }
+}
+
+private fun floorNameArabic(index: Int): String = when (index) {
+    0 -> "الدور الأرضي"
+    1 -> "الدور الأول"
+    2 -> "الدور الثاني"
+    3 -> "الدور الثالث"
+    4 -> "الدور الرابع"
+    5 -> "الدور الخامس"
+    else -> "الدور ${index + 1}"
 }
