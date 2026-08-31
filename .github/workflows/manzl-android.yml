@@ -8,6 +8,7 @@ on:
       - 'feature/manzl-*'
     paths:
       - 'manzl-app/**'
+      - 'research/ultra-reconstruction/**'
       - 'gradle/**'
       - 'gradle.properties'
       - 'settings.gradle.kts'
@@ -18,6 +19,7 @@ on:
       - dev
     paths:
       - 'manzl-app/**'
+      - 'research/ultra-reconstruction/**'
       - 'gradle/**'
       - 'gradle.properties'
       - 'settings.gradle.kts'
@@ -33,7 +35,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 35
 
     steps:
       - name: Checkout
@@ -48,6 +50,9 @@ jobs:
 
       - name: Make Gradle executable
         run: chmod +x gradlew
+
+      - name: Fetch verified MobileSAM runtime models
+        run: python3 research/ultra-reconstruction/fetch_runtime_models.py
 
       - name: Verify and build Manzl
         run: ./gradlew --no-daemon :manzl-app:testDebugUnitTest :manzl-app:lintDebug :manzl-app:assembleDebug --stacktrace
