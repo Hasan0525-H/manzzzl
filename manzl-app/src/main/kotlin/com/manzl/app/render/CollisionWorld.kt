@@ -7,6 +7,7 @@ import com.manzl.app.model.WallSegment
 import com.manzl.app.model.WindowOpening
 import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.atan2
 import kotlin.math.ceil
 import kotlin.math.cos
 import kotlin.math.max
@@ -20,8 +21,8 @@ import kotlin.math.sqrt
  * The player is represented by a circle on the X/Z floor plane. Movement is sub-stepped so a
  * low-frame-rate device cannot tunnel through thin walls, then any penetration is projected out
  * of nearby capsules. Window metadata adds a solid barrier across raster wall gaps, while only
- * verified door spans may become traversable. This prevents a visually correct window from behaving
- * like an accidental doorway.
+ * verified door spans on the same measured wall axis may become traversable. This prevents a door
+ * beside a corner/crossing wall from accidentally punching a passage through the wrong wall.
  */
 internal class CollisionWorld(private val plan: FloorPlan) {
 
@@ -52,11 +53,6 @@ internal class CollisionWorld(private val plan: FloorPlan) {
         return result
     }
 
-    /**
-     * Prefer a collision-free point inside trusted room geometry. This avoids spawning the player
-     * in exterior drawing margins or other empty regions merely because the bitmap centre is clear.
-     * If room evidence is insufficient, retain the deterministic centre/grid fallback.
-     */
     fun findSpawn(radius: Float = DEFAULT_PLAYER_RADIUS): Vec2 {
         WalkableSpawnResolver.find(plan, radius, ::isClear)?.let { return it }
 
@@ -92,9 +88,7 @@ internal class CollisionWorld(private val plan: FloorPlan) {
         if (point.x - radius < -halfWidth || point.x + radius > halfWidth) return false
         if (point.z - radius < -halfDepth || point.z + radius > halfDepth) return false
 
-        return barriers.none { barrier ->
-            collidesWithBarrier(point, radius, barrier)
-        }
+        return barriers.none { barrier -> collidesWithBarrier(point, radius, barrier) }
     }
 
     private fun resolvePenetration(candidate: Vec2, radius: Float): Vec2 {
@@ -196,6 +190,11 @@ internal class CollisionWorld(private val plan: FloorPlan) {
         wallProjection: Float,
         radius: Float,
     ): Boolean {
+        val wallRotation = Math.toDegrees(atan2(vz.toDouble(), vx.toDouble())).toFloat()
+        if (axisAngleDifference(wallRotation, door.rotationDegrees) > MAX_DOOR_AXIS_ERROR_DEGREES) {
+            return false
+        }
+
         val lengthSquared = wallLength * wallLength
         val doorProjection = (((door.center.x - wall.start.x) * vx +
             (door.center.z - wall.start.z) * vz) / lengthSquared).coerceIn(0f, 1f)
@@ -205,13 +204,24 @@ internal class CollisionWorld(private val plan: FloorPlan) {
             (door.center.x - wallX) * (door.center.x - wallX) +
                 (door.center.z - wallZ) * (door.center.z - wallZ)
         )
-        if (perpendicularDistance > wall.thicknessMeters + DOOR_ASSOCIATION_TOLERANCE_METERS) {
-            return false
-        }
+        if (perpendicularDistance > wall.thicknessMeters + DOOR_ASSOCIATION_TOLERANCE_METERS) return false
 
         val alongDistance = abs(wallProjection - doorProjection) * wallLength
         val usableHalfWidth = door.widthMeters / 2f - radius * DOOR_EDGE_SAFETY_FACTOR
         return usableHalfWidth > 0f && alongDistance <= usableHalfWidth
+    }
+
+    private fun axisAngleDifference(a: Float, b: Float): Float {
+        val na = normalizeHalfTurn(a)
+        val nb = normalizeHalfTurn(b)
+        val delta = abs(na - nb)
+        return min(delta, 180f - delta)
+    }
+
+    private fun normalizeHalfTurn(value: Float): Float {
+        var result = value % 180f
+        if (result < 0f) result += 180f
+        return result
     }
 
     private fun WindowOpening.toCollisionWall(): WallSegment? {
@@ -244,6 +254,7 @@ internal class CollisionWorld(private val plan: FloorPlan) {
         private const val CONTACT_SKIN_METERS = 0.012f
         private const val MIN_DOOR_CLEARANCE_METERS = 0.08f
         private const val DOOR_ASSOCIATION_TOLERANCE_METERS = 0.18f
+        private const val MAX_DOOR_AXIS_ERROR_DEGREES = 14f
         private const val DOOR_EDGE_SAFETY_FACTOR = 0.62f
         private const val WINDOW_COLLISION_THICKNESS_METERS = 0.08f
         private const val MIN_WINDOW_COLLISION_WIDTH_METERS = 0.20f
