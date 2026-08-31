@@ -77,6 +77,12 @@ class TourRecordingService : Service() {
 
         val projectionManager = getSystemService(MediaProjectionManager::class.java)
         val projection = projectionManager.getMediaProjection(resultCode, resultData)
+        if (projection == null) {
+            TourRecordingState.finish(null)
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return
+        }
         projection.registerCallback(projectionCallback, Handler(Looper.getMainLooper()))
         mediaProjection = projection
 
