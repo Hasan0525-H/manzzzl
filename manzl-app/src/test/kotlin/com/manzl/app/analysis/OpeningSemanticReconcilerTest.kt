@@ -74,6 +74,60 @@ class OpeningSemanticReconcilerTest {
         assertEquals(1, result.windows.size)
     }
 
+    @Test
+    fun `nearby perpendicular wall openings do not conflict`() {
+        val plan = basePlan(
+            door = door(confidence = 0.90f).copy(
+                center = Vec2(0f, 0f),
+                rotationDegrees = 0f,
+            ),
+            window = window(confidence = 0.94f).copy(
+                center = Vec2(0.08f, 0.06f),
+                rotationDegrees = 90f,
+            ),
+        )
+
+        val result = OpeningSemanticReconciler.reconcile(plan)
+
+        assertEquals(1, result.doors.size)
+        assertEquals(1, result.windows.size)
+    }
+
+    @Test
+    fun `same diagonal opening still reconciles as one semantic conflict`() {
+        val plan = basePlan(
+            door = door(confidence = 0.88f).copy(
+                center = Vec2(1f, -0.5f),
+                widthMeters = 1.15f,
+                rotationDegrees = 43f,
+            ),
+            window = window(confidence = 0.93f).copy(
+                center = Vec2(1.04f, -0.47f),
+                widthMeters = 1.17f,
+                rotationDegrees = 46f,
+            ),
+        )
+
+        val result = OpeningSemanticReconciler.reconcile(plan)
+
+        assertTrue(result.doors.isEmpty())
+        assertEquals(1, result.windows.size)
+        assertEquals(46f, result.windows.single().rotationDegrees, 0.001f)
+    }
+
+    @Test
+    fun `different measured widths are not collapsed into one opening`() {
+        val plan = basePlan(
+            door = door(confidence = 0.88f).copy(widthMeters = 0.80f),
+            window = window(confidence = 0.95f).copy(widthMeters = 1.80f),
+        )
+
+        val result = OpeningSemanticReconciler.reconcile(plan)
+
+        assertEquals(1, result.doors.size)
+        assertEquals(1, result.windows.size)
+    }
+
     private fun basePlan(door: DoorOpening, window: WindowOpening) = FloorPlan(
         widthMeters = 10f,
         depthMeters = 8f,
