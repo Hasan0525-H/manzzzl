@@ -57,6 +57,8 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
     private var shaderProgram = 0
     private var uMvp = -1
     private var uColor = -1
+    private var uCameraPosition = -1
+    private var uMaterial = -1
 
     private var wallColor = floatArrayOf(0.94f, 0.92f, 0.87f)
     private var floorColor = floatArrayOf(0.73f, 0.68f, 0.59f)
@@ -150,6 +152,8 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
         shaderProgram = createProgram(VERTEX_SHADER, FRAGMENT_SHADER)
         uMvp = GLES30.glGetUniformLocation(shaderProgram, "uMvp")
         uColor = GLES30.glGetUniformLocation(shaderProgram, "uColor")
+        uCameraPosition = GLES30.glGetUniformLocation(shaderProgram, "uCameraPosition")
+        uMaterial = GLES30.glGetUniformLocation(shaderProgram, "uMaterial")
         lastFrameNanos = 0L
     }
 
@@ -248,29 +252,46 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
 
         GLES30.glUseProgram(shaderProgram)
         GLES30.glUniformMatrix4fv(uMvp, 1, false, mvp, 0)
+        GLES30.glUniform3f(uCameraPosition, cameraX, eyeY, cameraZ)
 
         floor?.let {
-            GLES30.glUniform4f(uColor, floorColor[0], floorColor[1], floorColor[2], 1f)
+            applyMaterial(floorColor, alpha = 1f, roughness = 0.48f, metallic = 0.02f, ambientOcclusion = 0.92f)
             drawMesh(it)
         }
         walls?.let {
-            GLES30.glUniform4f(uColor, wallColor[0], wallColor[1], wallColor[2], 1f)
+            applyMaterial(wallColor, alpha = 1f, roughness = 0.82f, metallic = 0f, ambientOcclusion = 0.95f)
             drawMesh(it)
         }
         ceiling?.let {
-            GLES30.glUniform4f(uColor, ceilingColor[0], ceilingColor[1], ceilingColor[2], 1f)
+            applyMaterial(ceilingColor, alpha = 1f, roughness = 0.92f, metallic = 0f, ambientOcclusion = 0.98f)
             drawMesh(it)
         }
         trim?.let {
-            GLES30.glUniform4f(uColor, trimColor[0], trimColor[1], trimColor[2], 1f)
+            applyMaterial(trimColor, alpha = 1f, roughness = 0.36f, metallic = 0.01f, ambientOcclusion = 0.88f)
             drawMesh(it)
         }
         glass?.let {
             GLES30.glDepthMask(false)
-            GLES30.glUniform4f(uColor, glassColor[0], glassColor[1], glassColor[2], 0.38f)
+            applyMaterial(glassColor, alpha = 0.34f, roughness = 0.10f, metallic = 0.06f, ambientOcclusion = 0.86f)
             drawMesh(it)
             GLES30.glDepthMask(true)
         }
+    }
+
+    private fun applyMaterial(
+        color: FloatArray,
+        alpha: Float,
+        roughness: Float,
+        metallic: Float,
+        ambientOcclusion: Float,
+    ) {
+        GLES30.glUniform4f(uColor, color[0], color[1], color[2], alpha)
+        GLES30.glUniform3f(
+            uMaterial,
+            roughness.coerceIn(0.06f, 1f),
+            metallic.coerceIn(0f, 1f),
+            ambientOcclusion.coerceIn(0f, 1f),
+        )
     }
 
     private fun updateMovement(deltaSeconds: Float) {
@@ -604,12 +625,12 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
 
             uniform mat4 uMvp;
             out vec3 vNormal;
-            out float vHeight;
+            out vec3 vWorldPosition;
 
             void main() {
                 gl_Position = uMvp * vec4(aPosition, 1.0);
                 vNormal = aNormal;
-                vHeight = aPosition.y;
+                vWorldPosition = aPosition;
             }
         """
 
@@ -618,19 +639,74 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
             precision highp float;
 
             uniform vec4 uColor;
+            uniform vec3 uCameraPosition;
+            uniform vec3 uMaterial;
             in vec3 vNormal;
-            in float vHeight;
+            in vec3 vWorldPosition;
             out vec4 outColor;
 
+            const float PI = 3.14159265359;
+
+            float distributionGGX(vec3 n, vec3 h, float roughness) {
+                float a = roughness * roughness;
+                float a2 = a * a;
+                float nDotH = max(dot(n, h), 0.0);
+                float nDotH2 = nDotH * nDotH;
+                float denominator = nDotH2 * (a2 - 1.0) + 1.0;
+                return a2 / max(PI * denominator * denominator, 0.0001);
+            }
+
+            float geometrySchlickGGX(float nDotV, float roughness) {
+                float r = roughness + 1.0;
+                float k = (r * r) / 8.0;
+                return nDotV / max(nDotV * (1.0 - k) + k, 0.0001);
+            }
+
+            float geometrySmith(vec3 n, vec3 v, vec3 l, float roughness) {
+                float nDotV = max(dot(n, v), 0.0);
+                float nDotL = max(dot(n, l), 0.0);
+                return geometrySchlickGGX(nDotV, roughness) * geometrySchlickGGX(nDotL, roughness);
+            }
+
+            vec3 fresnelSchlick(float cosTheta, vec3 f0) {
+                return f0 + (1.0 - f0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+            }
+
             void main() {
+                vec3 baseColor = max(uColor.rgb, vec3(0.001));
+                float roughness = clamp(uMaterial.x, 0.06, 1.0);
+                float metallic = clamp(uMaterial.y, 0.0, 1.0);
+                float ao = clamp(uMaterial.z, 0.0, 1.0);
+
                 vec3 n = normalize(vNormal);
-                vec3 lightDirection = normalize(vec3(-0.35, 0.88, 0.28));
-                float diffuse = max(dot(n, lightDirection), 0.0);
-                float ambient = 0.64;
-                float ceilingBounce = clamp(vHeight / 3.0, 0.0, 1.0) * 0.08;
-                float ceilingSoftLight = max(-n.y, 0.0) * 0.18;
-                vec3 lit = uColor.rgb * (ambient + diffuse * 0.34 + ceilingBounce + ceilingSoftLight);
-                outColor = vec4(min(lit, vec3(1.0)), uColor.a);
+                vec3 v = normalize(uCameraPosition - vWorldPosition);
+                vec3 l = normalize(vec3(-0.34, 0.88, 0.31));
+                vec3 h = normalize(v + l);
+                float nDotL = max(dot(n, l), 0.0);
+                float nDotV = max(dot(n, v), 0.001);
+
+                vec3 f0 = mix(vec3(0.04), baseColor, metallic);
+                vec3 f = fresnelSchlick(max(dot(h, v), 0.0), f0);
+                float ndf = distributionGGX(n, h, roughness);
+                float geometry = geometrySmith(n, v, l, roughness);
+                vec3 specular = (ndf * geometry * f) / max(4.0 * nDotV * nDotL, 0.001);
+
+                vec3 kS = f;
+                vec3 kD = (vec3(1.0) - kS) * (1.0 - metallic);
+                vec3 warmDaylight = vec3(1.18, 1.10, 0.99);
+                vec3 direct = (kD * baseColor / PI + specular) * warmDaylight * nDotL;
+
+                float upward = max(n.y, 0.0);
+                float downward = max(-n.y, 0.0);
+                float vertical = 1.0 - abs(n.y);
+                vec3 ambient = baseColor * ao * (0.24 + upward * 0.12 + downward * 0.17 + vertical * 0.08);
+                float heightBounce = clamp(vWorldPosition.y / 3.2, 0.0, 1.0);
+                vec3 bounced = baseColor * (heightBounce * 0.055 + downward * 0.07);
+
+                vec3 hdr = ambient + direct + bounced;
+                vec3 mapped = vec3(1.0) - exp(-hdr * 1.18);
+                vec3 gammaCorrected = pow(max(mapped, vec3(0.0)), vec3(1.0 / 2.2));
+                outColor = vec4(gammaCorrected, uColor.a);
             }
         """
     }
