@@ -78,8 +78,9 @@ class GeometryFidelityEvaluatorTest {
         val report = GeometryFidelityEvaluator.evaluate(mask, width, height, predictedPlan)
         val gatedPlan = predictedPlan.copy(geometryFidelity = report)
 
-        // The global score is intentionally strong: this regression protects against dilution rather
-        // than simply testing the existing aggregate thresholds.
+        // Most measured structure lives in the opposite half of the plan, so the omitted diagonal
+        // is deliberately small globally but dominates its own review tile. This is the exact
+        // dilution failure the strict local gate is meant to prevent.
         assertEquals(GeometryFidelityStatus.PASS, report.status)
         assertTrue(report.wallCoverage > 0.80f)
         assertTrue(report.wallPrecision > 0.90f)
@@ -101,17 +102,25 @@ class GeometryFidelityEvaluatorTest {
         WallSegment(Vec2(-4f, 0f), Vec2(4f, 0f), thicknessMeters = 0.16f),
     )
 
+    /**
+     * Dense trusted structure is intentionally confined to the lower-left area while the last wall
+     * is isolated in the upper-right. Removing only that last wall keeps the aggregate score high,
+     * yet produces a near-100% local coverage deficit in its tile.
+     */
     private fun denseHouseWalls(): List<WallSegment> = listOf(
-        WallSegment(Vec2(-4f, -4f), Vec2(4f, -4f), thicknessMeters = 0.20f),
-        WallSegment(Vec2(4f, -4f), Vec2(4f, 4f), thicknessMeters = 0.20f),
-        WallSegment(Vec2(4f, 4f), Vec2(-4f, 4f), thicknessMeters = 0.20f),
-        WallSegment(Vec2(-4f, 4f), Vec2(-4f, -4f), thicknessMeters = 0.20f),
-        WallSegment(Vec2(-4f, -2f), Vec2(4f, -2f), thicknessMeters = 0.16f),
-        WallSegment(Vec2(-4f, 0f), Vec2(4f, 0f), thicknessMeters = 0.16f),
-        WallSegment(Vec2(-4f, 2f), Vec2(4f, 2f), thicknessMeters = 0.16f),
-        WallSegment(Vec2(-2f, -4f), Vec2(-2f, 4f), thicknessMeters = 0.16f),
-        WallSegment(Vec2(0f, -4f), Vec2(0f, 4f), thicknessMeters = 0.16f),
-        WallSegment(Vec2(2f, -4f), Vec2(2f, 4f), thicknessMeters = 0.16f),
+        WallSegment(Vec2(-4.3f, -4.2f), Vec2(0.8f, -4.2f), thicknessMeters = 0.16f),
+        WallSegment(Vec2(-4.3f, -3.55f), Vec2(0.8f, -3.55f), thicknessMeters = 0.16f),
+        WallSegment(Vec2(-4.3f, -2.90f), Vec2(0.8f, -2.90f), thicknessMeters = 0.16f),
+        WallSegment(Vec2(-4.3f, -2.25f), Vec2(0.8f, -2.25f), thicknessMeters = 0.16f),
+        WallSegment(Vec2(-4.3f, -1.60f), Vec2(0.8f, -1.60f), thicknessMeters = 0.16f),
+        WallSegment(Vec2(-4.3f, -0.95f), Vec2(0.8f, -0.95f), thicknessMeters = 0.16f),
+        WallSegment(Vec2(-4.2f, -4.3f), Vec2(-4.2f, 0.8f), thicknessMeters = 0.16f),
+        WallSegment(Vec2(-3.55f, -4.3f), Vec2(-3.55f, 0.8f), thicknessMeters = 0.16f),
+        WallSegment(Vec2(-2.90f, -4.3f), Vec2(-2.90f, 0.8f), thicknessMeters = 0.16f),
+        WallSegment(Vec2(-2.25f, -4.3f), Vec2(-2.25f, 0.8f), thicknessMeters = 0.16f),
+        WallSegment(Vec2(-1.60f, -4.3f), Vec2(-1.60f, 0.8f), thicknessMeters = 0.16f),
+        WallSegment(Vec2(-0.95f, -4.3f), Vec2(-0.95f, 0.8f), thicknessMeters = 0.16f),
+        WallSegment(Vec2(2.30f, 2.30f), Vec2(3.75f, 3.75f), thicknessMeters = 0.18f),
     )
 
     private fun plan(
@@ -175,6 +184,6 @@ class GeometryFidelityEvaluatorTest {
     }
 
     companion object {
-        private const val MISSING_DENSE_WALL_INDEX = 9
+        private const val MISSING_DENSE_WALL_INDEX = 12
     }
 }
