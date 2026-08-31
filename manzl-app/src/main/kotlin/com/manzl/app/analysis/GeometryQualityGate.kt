@@ -18,20 +18,26 @@ internal class GeometryQualityRejectedException(
  *
  * Visual polish, semantic AI and rendering are intentionally downstream from this gate. In strict
  * mode only an independently verified PASS may enter the 3D synthesis pipeline. Aggregate PASS is
- * not enough when a localized region contains a severe wall mismatch: one missing exterior/internal
- * wall can be diluted by a large otherwise-correct plan, so critical local disagreements are a
- * second fail-closed guard.
+ * not enough when a localized region contains a severe wall mismatch, and it is also insufficient
+ * when trusted wall axes stop short of a non-parallel wall leaving a physical crack in the 3D shell.
  */
 internal object GeometryQualityGate {
 
     fun isReadyFor3d(plan: FloorPlan): Boolean =
         plan.geometryFidelity.status == GeometryFidelityStatus.PASS &&
-            criticalLocalMismatch(plan) == null
+            criticalLocalMismatch(plan) == null &&
+            WallTopologyIntegrity.findNearMissJunctions(plan).isEmpty()
 
     fun rejectionMessageArabic(plan: FloorPlan): String? {
         val report = plan.geometryFidelity
         val localMismatch = criticalLocalMismatch(plan)
-        if (report.status == GeometryFidelityStatus.PASS && localMismatch == null) return null
+        val topologyIssue = WallTopologyIntegrity.findNearMissJunctions(plan).firstOrNull()
+        if (
+            report.status == GeometryFidelityStatus.PASS &&
+            localMismatch == null &&
+            topologyIssue == null
+        ) return null
+
         val score = (report.score * 100f).toInt().coerceIn(0, 100)
         val coverage = (report.wallCoverage * 100f).toInt().coerceIn(0, 100)
         val precision = (report.wallPrecision * 100f).toInt().coerceIn(0, 100)
@@ -44,6 +50,11 @@ internal object GeometryQualityGate {
                 GeometryFidelityIssueKind.EXTRA_GEOMETRY -> "جدار مستخرج لا يملك دعماً كافياً في المخطط"
             }
             return "أوقفت بناء 3D رغم نجاح المتوسط العام لأن هناك خطأ هندسياً موضعياً شديداً: $problem، شدة الاختلاف $severity%. المتوسطات: الجودة $score%، التغطية $coverage%، الدقة $precision%، دعم النهايات $endpoints%. افتح مراجعة التطابق وصحح المنطقة المحددة؛ لا يتم السماح لخطأ محلي أن يختبئ داخل متوسط مرتفع."
+        }
+
+        if (report.status == GeometryFidelityStatus.PASS && topologyIssue != null) {
+            val gapCm = (topologyIssue.physicalGapMeters * 100f).toInt().coerceAtLeast(1)
+            return "أوقفت بناء 3D رغم نجاح مطابقة الصورة لأن هناك وصلة جدران غير مكتملة: نهاية جدار موثوق تتوقف قبل جدار آخر بحوالي $gapCm سم بعد احتساب سماكات الجدار. هذا قد يفتح شقاً في المنزل أو يقسم الغرفة خطأ. راجع المنطقة وصحح نقطة الالتقاء؛ لا يتم إغلاقها تلقائياً إذا لم يثبت الرسم ذلك."
         }
 
         return when (report.status) {
