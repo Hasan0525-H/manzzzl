@@ -6,13 +6,16 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Straighten
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -25,8 +28,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.MaterialTheme
 import com.manzl.app.analysis.MetricScaleReviewApplier
 import com.manzl.app.model.BuildingPlan
 
@@ -56,28 +57,23 @@ internal fun MetricScaleReviewCard(
         color = ScaleWarningSurface,
     ) {
         Column(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth().padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(9.dp),
         ) {
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Row(modifier = Modifier.fillMaxWidth()) {
-                    Icon(Icons.Rounded.Straighten, contentDescription = null, tint = ScaleWarningInk)
-                    Spacer(Modifier.size(7.dp))
-                    Text(
-                        "مقياس المخطط يحتاج تأكيد",
-                        color = ScaleWarningInk,
-                        style = MaterialTheme.typography.titleSmall,
-                    )
-                }
+            Row(modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.Rounded.Straighten, contentDescription = null, tint = ScaleWarningInk)
+                Spacer(Modifier.size(7.dp))
                 Text(
-                    "لم أجد بُعداً مطبوعاً موثوقاً بما يكفي في بعض الأدوار. إذا كنت تعرف طول الضلع الأكبر بالمتر أدخله هنا؛ وإلا يمكنك المتابعة بالمقياس التقديري الحالي.",
+                    "مقياس المخطط يحتاج تأكيد",
                     color = ScaleWarningInk,
-                    style = MaterialTheme.typography.bodySmall,
+                    style = MaterialTheme.typography.titleSmall,
                 )
             }
+            Text(
+                "لم أجد بُعداً مطبوعاً موثوقاً بما يكفي في بعض الأدوار. إذا كنت تعرف طول الضلع الأكبر بالمتر أدخله هنا؛ وإلا يمكنك المتابعة بالمقياس التقديري الحالي.",
+                color = ScaleWarningInk,
+                style = MaterialTheme.typography.bodySmall,
+            )
 
             reviewLevels.forEach { level ->
                 val current = MetricScaleReviewApplier.currentLongSideMeters(level.plan)
@@ -124,7 +120,7 @@ internal fun MetricScaleAppliedNotice(onRevert: () -> Unit) {
         color = ScaleAppliedSurface,
     ) {
         Column(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth().padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(7.dp),
         ) {
             Text(
