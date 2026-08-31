@@ -19,6 +19,9 @@ internal object UltraReconstructionRuntime {
     fun createStudentExpertOrNull(): ManzlStudentFloorPlanExpert? =
         applicationContext?.let(::ManzlStudentFloorPlanExpert)
 
+    fun createBoundaryRefinerOrNull(): MobileSamBoundaryRefiner? =
+        applicationContext?.let(::MobileSamBoundaryRefiner)
+
     fun modelAvailabilityOrNull(): UltraModelAvailability? {
         val context = applicationContext ?: return null
         return OnnxAssetModelRepository(context).use { it.availability() }
