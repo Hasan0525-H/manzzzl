@@ -1,7 +1,6 @@
 package com.manzl.app.analysis
 
 import android.graphics.Bitmap
-import android.graphics.Rect
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.Text
 import com.google.mlkit.vision.text.TextRecognition
@@ -19,7 +18,7 @@ import kotlin.math.max
  *
  * ML Kit supplies OCR evidence only. Geometry remains authoritative: a label is accepted only when
  * the text centre falls inside a room polygon that was already inferred from measured walls.
- * Therefore OCR can name a room, but cannot create, resize or move one.
+ * The shared PlanRasterTransform removes any coordinate drift caused by white page margins/crops.
  */
 internal class RoomLabelEvidenceProvider : SemanticEvidenceProvider {
 
@@ -51,12 +50,13 @@ internal class RoomLabelEvidenceProvider : SemanticEvidenceProvider {
         bitmap: Bitmap,
         plan: FloorPlan,
     ): List<SemanticEvidence> {
+        val transform = PlanRasterTransform.forImage(plan, bitmap.width, bitmap.height)
         val bestByRoom = LinkedHashMap<String, SemanticEvidence>()
         for (block in text.textBlocks) {
             for (line in block.lines) {
                 val box = line.boundingBox ?: continue
                 val match = RoomLabelSemantics.match(line.text) ?: continue
-                val point = imagePointToPlan(box, bitmap, plan)
+                val point = transform.imageToPlan(box.exactCenterX(), box.exactCenterY())
                 val room = plan.rooms.firstOrNull { pointInsidePolygon(point, it.polygon) } ?: continue
                 val confidence = (
                     match.confidence * 0.82f + room.confidence.coerceIn(0f, 1f) * 0.18f
@@ -76,15 +76,6 @@ internal class RoomLabelEvidenceProvider : SemanticEvidenceProvider {
             }
         }
         return bestByRoom.values.toList()
-    }
-
-    private fun imagePointToPlan(box: Rect, bitmap: Bitmap, plan: FloorPlan): Vec2 {
-        val normalizedX = box.exactCenterX() / bitmap.width.toFloat()
-        val normalizedY = box.exactCenterY() / bitmap.height.toFloat()
-        return Vec2(
-            x = (normalizedX - 0.5f) * plan.widthMeters,
-            z = (normalizedY - 0.5f) * plan.depthMeters,
-        )
     }
 
     private fun pointInsidePolygon(point: Vec2, polygon: List<Vec2>): Boolean {
