@@ -5,17 +5,16 @@ import com.manzl.app.model.RoomRegion
 import com.manzl.app.model.Vec2
 import kotlin.math.abs
 import kotlin.math.max
-import kotlin.math.min
 import kotlin.math.sqrt
 
 /**
  * Chooses a first-person spawn from trusted room geometry instead of blindly using the drawing
  * bounding-box centre.
  *
- * This is deliberately conservative: only already-inferred room polygons participate, every
- * candidate must still pass CollisionWorld clearance, and labels only affect preference. Labels can
- * never create walkable space. When no trusted room yields a safe point the caller falls back to the
- * older bounded centre/grid search.
+ * This is deliberately conservative: only already-inferred interior room polygons participate,
+ * every candidate must still pass CollisionWorld clearance, and labels only affect preference.
+ * Labels can never create walkable space. When no trusted room yields a safe point the caller falls
+ * back to the older bounded centre/grid search.
  */
 internal object WalkableSpawnResolver {
 
@@ -27,6 +26,7 @@ internal object WalkableSpawnResolver {
         val candidates = plan.rooms
             .asSequence()
             .filter { it.confidence >= MIN_ROOM_CONFIDENCE }
+            .filterNot(OpenAirRoomPolicy::shouldRemainOpenToSky)
             .mapNotNull { room ->
                 val area = polygonArea(room.polygon)
                 if (area < MIN_ROOM_AREA_SQ_METERS) null else RoomCandidate(room, area, roomScore(room, area))
@@ -87,8 +87,8 @@ internal object WalkableSpawnResolver {
 
     /**
      * Prefer entrances/foyers and common circulation spaces. Service/private rooms remain usable
-     * as a last resort but receive a low score so a tour does not normally begin in a bathroom or
-     * storage room when a better room exists.
+     * as a last resort but receive a low score so a tour does not normally begin in a bathroom,
+     * storage room, stair shaft or lift lobby when a better room exists.
      */
     private fun labelPriority(label: String?): Float {
         val normalized = label?.trim()?.lowercase().orEmpty()
@@ -101,12 +101,17 @@ internal object WalkableSpawnResolver {
             normalized.contains("مجلس") || normalized.contains("majlis") -> 0.74f
             normalized.contains("غرفة طعام") || normalized.contains("dining") -> 0.66f
             normalized.contains("غرفة نوم") || normalized.contains("bedroom") -> 0.54f
+            normalized.contains("مصلى") || normalized.contains("prayer") -> 0.50f
             normalized.contains("مطبخ") || normalized.contains("kitchen") -> 0.42f
+            normalized.contains("مرآب") || normalized.contains("garage") || normalized.contains("parking") -> 0.30f
             normalized.contains("حمام") || normalized.contains("bath") || normalized.contains("toilet") -> 0.10f
             normalized.contains("مخزن") || normalized.contains("storage") || normalized.contains("store") -> 0.12f
             normalized.contains("غسيل") || normalized.contains("laundry") -> 0.14f
+            normalized.contains("مغاسل") || normalized.contains("wash basin") -> 0.14f
             normalized.contains("ملابس") || normalized.contains("closet") || normalized.contains("dressing") -> 0.14f
             normalized.contains("خادمة") || normalized.contains("سائق") -> 0.20f
+            normalized.contains("مصعد") || normalized.contains("elevator") || normalized.contains("lift") -> 0.05f
+            normalized.contains("درج") || normalized.contains("stair") -> 0.08f
             else -> 0.50f
         }
     }
