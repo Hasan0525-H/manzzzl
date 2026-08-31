@@ -5,8 +5,10 @@ import android.opengl.GLES30
 import android.opengl.GLSurfaceView
 import android.opengl.Matrix
 import android.view.MotionEvent
+import com.manzl.app.analysis.StairLevelLinker
 import com.manzl.app.design.HouseRenderProfile
 import com.manzl.app.design.ReferenceDrivenDesignEngine
+import com.manzl.app.model.BuildingPlan
 import com.manzl.app.model.FloorPlan
 import com.manzl.app.model.Vec2
 import java.nio.ByteBuffer
@@ -26,9 +28,10 @@ import kotlin.math.sqrt
 /**
  * Native first-person walkthrough renderer.
  *
- * Rendering, movement, collision and visual-profile synthesis all run locally on the phone. The
- * left side of the surface is a dynamic analog stick (touch and drag); the right side controls
- * free-look. Two fingers can be used simultaneously, matching modern mobile first-person controls.
+ * Rendering, movement, level-aware collision and visual-profile synthesis all run locally on the
+ * phone. The left side of the surface is a dynamic analog stick (touch and drag); the right side
+ * controls free-look. Two fingers can be used simultaneously, matching modern mobile first-person
+ * controls.
  */
 class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Renderer {
 
@@ -36,7 +39,7 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
     private var pendingMesh: MeshData? = null
 
     @Volatile
-    private var pendingSpawn: Vec2? = null
+    private var pendingSpawn: BuildingSpawn? = null
 
     @Volatile
     private var pendingDesign: HouseRenderProfile? = null
@@ -47,8 +50,8 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
     @Volatile
     private var movementStrafe = 0f
 
-    private var collisionWorld: CollisionWorld? = null
-    private var stairTraversalResolver: StairTraversalResolver? = null
+    private var walkWorld: MultiLevelWalkWorld? = null
+    private var currentLevelId = ""
     private var walls: GlMesh? = null
     private var floor: GlMesh? = null
     private var ceiling: GlMesh? = null
@@ -73,6 +76,7 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
     private var aspect = 1f
     private var cameraX = 0f
     private var cameraZ = 0f
+    /** Global floor elevation, not eye height. */
     private var cameraElevationY = 0f
     private var yaw = 0f
     private var pitch = 0f
@@ -95,18 +99,34 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
         preserveEGLContextOnPause = true
     }
 
+    /** Backward-compatible one-floor entry point; it now uses the same multi-level runtime. */
     fun setFloorPlan(plan: FloorPlan) {
-        val world = CollisionWorld(plan)
-        val design = ReferenceDrivenDesignEngine.synthesize(plan)
-        collisionWorld = world
-        stairTraversalResolver = StairTraversalResolver(plan)
-        pendingSpawn = world.findSpawn(PLAYER_RADIUS)
+        setBuildingPlan(BuildingPlan.singleLevel(plan))
+    }
+
+    /**
+     * Loads a complete building without changing any measured floor geometry.
+     *
+     * When callers provide several floors without stair links, links are inferred conservatively
+     * from already-detected stair evidence. The renderer then stacks each floor at its declared
+     * elevation and MultiLevelWalkWorld owns both horizontal collision and stair transitions.
+     */
+    fun setBuildingPlan(building: BuildingPlan) {
+        if (building.levels.isEmpty()) return
+
+        val prepared = if (building.levels.size > 1 && building.stairLinks.isEmpty()) {
+            StairLevelLinker.link(building)
+        } else {
+            building
+        }
+        val firstLevel = prepared.levels.minByOrNull { it.levelIndex } ?: return
+        val world = MultiLevelWalkWorld(prepared)
+        val design = ReferenceDrivenDesignEngine.synthesize(firstLevel.plan)
+
+        walkWorld = world
+        pendingSpawn = world.findInitialSpawn(PLAYER_RADIUS)
         pendingDesign = design
-        pendingMesh = HouseMeshBuilder.build(
-            plan = plan,
-            wallHeightOverride = design.wallHeightMeters,
-            doorHeightOverride = design.doorHeightMeters,
-        )
+        pendingMesh = BuildingMeshBuilder.build(prepared)
     }
 
     fun setMovementInput(forward: Float, strafe: Float) {
@@ -128,12 +148,14 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
     }
 
     fun resetCamera() {
-        val spawn = collisionWorld?.findSpawn(PLAYER_RADIUS) ?: Vec2(0f, 0f)
+        val spawn = walkWorld?.findInitialSpawn(PLAYER_RADIUS)
+            ?: BuildingSpawn("", Vec2(0f, 0f), 0f)
         stopMovement()
         queueEvent {
-            cameraX = spawn.x
-            cameraZ = spawn.z
-            cameraElevationY = 0f
+            currentLevelId = spawn.levelId
+            cameraX = spawn.position.x
+            cameraZ = spawn.position.z
+            cameraElevationY = spawn.globalElevationMeters
             yaw = 0f
             pitch = 0f
             velocityX = 0f
@@ -206,9 +228,10 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
         }
         pendingSpawn?.let { spawn ->
             pendingSpawn = null
-            cameraX = spawn.x
-            cameraZ = spawn.z
-            cameraElevationY = 0f
+            currentLevelId = spawn.levelId
+            cameraX = spawn.position.x
+            cameraZ = spawn.position.z
+            cameraElevationY = spawn.globalElevationMeters
             velocityX = 0f
             velocityZ = 0f
             lastFrameNanos = 0L
@@ -326,27 +349,34 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
             return
         }
 
-        val intendedX = cameraX + velocityX * deltaSeconds
-        val intendedZ = cameraZ + velocityZ * deltaSeconds
+        val moveX = velocityX * deltaSeconds
+        val moveZ = velocityZ * deltaSeconds
+        val intendedX = cameraX + moveX
+        val intendedZ = cameraZ + moveZ
         val from = Vec2(cameraX, cameraZ)
-        val horizontalMoved = collisionWorld?.move(
+        val result = walkWorld?.move(
+            levelId = currentLevelId,
             position = from,
-            deltaX = velocityX * deltaSeconds,
-            deltaZ = velocityZ * deltaSeconds,
+            globalElevationMeters = cameraElevationY,
+            deltaX = moveX,
+            deltaZ = moveZ,
             radius = PLAYER_RADIUS,
-        ) ?: Vec2(intendedX, intendedZ)
-        val verticalMove = stairTraversalResolver?.resolveMove(
-            from = from,
-            to = horizontalMoved,
-            currentElevationMeters = cameraElevationY,
         )
-        val moved = verticalMove?.position ?: horizontalMoved
-        if (verticalMove != null) cameraElevationY = verticalMove.elevationMeters
+        val moved = result?.position ?: Vec2(intendedX, intendedZ)
 
         if (abs(moved.x - intendedX) > COLLISION_VELOCITY_TOLERANCE) velocityX *= COLLISION_DAMPING
         if (abs(moved.z - intendedZ) > COLLISION_VELOCITY_TOLERANCE) velocityZ *= COLLISION_DAMPING
+        if (result?.levelTransition != null) {
+            velocityX *= LEVEL_TRANSITION_VELOCITY_RETAIN
+            velocityZ *= LEVEL_TRANSITION_VELOCITY_RETAIN
+        }
+
         cameraX = moved.x
         cameraZ = moved.z
+        if (result != null) {
+            currentLevelId = result.levelId
+            cameraElevationY = result.globalElevationMeters
+        }
 
         val speed = sqrt(velocityX * velocityX + velocityZ * velocityZ)
         if (speed > VELOCITY_EPSILON) {
@@ -358,21 +388,21 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
         val dx = sin(yaw) * localForwardMeters + cos(yaw) * localStrafeMeters
         val dz = -cos(yaw) * localForwardMeters + sin(yaw) * localStrafeMeters
         val from = Vec2(cameraX, cameraZ)
-        val horizontalMoved = collisionWorld?.move(
+        val result = walkWorld?.move(
+            levelId = currentLevelId,
             position = from,
+            globalElevationMeters = cameraElevationY,
             deltaX = dx,
             deltaZ = dz,
             radius = PLAYER_RADIUS,
-        ) ?: Vec2(cameraX + dx, cameraZ + dz)
-        val verticalMove = stairTraversalResolver?.resolveMove(
-            from = from,
-            to = horizontalMoved,
-            currentElevationMeters = cameraElevationY,
         )
-        val moved = verticalMove?.position ?: horizontalMoved
-        if (verticalMove != null) cameraElevationY = verticalMove.elevationMeters
+        val moved = result?.position ?: Vec2(cameraX + dx, cameraZ + dz)
         cameraX = moved.x
         cameraZ = moved.z
+        if (result != null) {
+            currentLevelId = result.levelId
+            cameraElevationY = result.globalElevationMeters
+        }
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
@@ -613,6 +643,7 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
         private const val VELOCITY_EPSILON = 0.008f
         private const val COLLISION_VELOCITY_TOLERANCE = 0.004f
         private const val COLLISION_DAMPING = 0.12f
+        private const val LEVEL_TRANSITION_VELOCITY_RETAIN = 0.72f
         private const val MAX_FRAME_STEP_SECONDS = 0.05f
         private const val NANOS_PER_SECOND = 1_000_000_000.0
         private val MAX_PITCH = (80.0 * PI / 180.0).toFloat()
