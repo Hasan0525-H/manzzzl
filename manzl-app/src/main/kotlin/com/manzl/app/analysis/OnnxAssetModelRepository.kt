@@ -53,6 +53,8 @@ internal class OnnxAssetModelRepository(context: Context) : Closeable {
         )
     }
 
+    internal fun environmentOrNull(): OrtEnvironment? = environment
+
     @Synchronized
     fun session(assetPath: String): OrtSession? {
         sessions[assetPath]?.let { return it }
