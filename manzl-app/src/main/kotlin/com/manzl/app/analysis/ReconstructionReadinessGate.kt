@@ -4,9 +4,7 @@ import com.manzl.app.model.DoorEvidenceKind
 import com.manzl.app.model.FloorPlan
 import com.manzl.app.model.RoomRegion
 import com.manzl.app.model.Vec2
-import kotlin.math.PI
 import kotlin.math.abs
-import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sqrt
@@ -208,7 +206,9 @@ internal object ReconstructionReadinessGate {
     private const val MAX_OPENING_AXIS_DELTA_DEGREES = 12f
     private const val MIN_TRUSTED_ROOM_CONFIDENCE = 0.66f
     private const val MIN_TRUSTED_ROOM_AREA_SQ_METERS = 1.2f
-    private const val MIN_TRUSTED_ROOM_COVERAGE = 0.18f
+    // Match HouseMeshBuilder's room-floor threshold: if this passes, the renderer never falls back
+    // to a fake full-plan rectangular slab for a partially reconstructed house.
+    private const val MIN_TRUSTED_ROOM_COVERAGE = 0.32f
     private const val COVERAGE_GRID = 48
     private const val EPSILON = 0.000001f
 }
