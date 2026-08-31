@@ -4,10 +4,14 @@ import com.manzl.app.model.DoorOpening
 import com.manzl.app.model.FloorPlan
 import com.manzl.app.model.Vec2
 import com.manzl.app.model.WallSegment
+import com.manzl.app.model.WindowOpening
+import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.ceil
+import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.sin
 import kotlin.math.sqrt
 
 /**
@@ -15,10 +19,20 @@ import kotlin.math.sqrt
  *
  * The player is represented by a circle on the X/Z floor plane. Movement is sub-stepped so a
  * low-frame-rate device cannot tunnel through thin walls, then any penetration is projected out
- * of the nearby wall capsules. Projecting rather than simply rejecting movement gives natural
- * wall sliding in corridors and around door jambs.
+ * of nearby capsules. Window metadata adds a solid barrier across raster wall gaps, while only
+ * verified door spans may become traversable. This prevents a visually correct window from behaving
+ * like an accidental doorway.
  */
 internal class CollisionWorld(private val plan: FloorPlan) {
+
+    private val barriers: List<CollisionBarrier> = buildList {
+        plan.walls.forEach { wall -> add(CollisionBarrier(wall, permitsDoorPassage = true)) }
+        plan.windows.forEach { window ->
+            window.toCollisionWall()?.let { wall ->
+                add(CollisionBarrier(wall, permitsDoorPassage = false))
+            }
+        }
+    }
 
     fun move(position: Vec2, deltaX: Float, deltaZ: Float, radius: Float): Vec2 {
         val distance = sqrt(deltaX * deltaX + deltaZ * deltaZ)
@@ -38,7 +52,7 @@ internal class CollisionWorld(private val plan: FloorPlan) {
         return result
     }
 
-    /** Finds a collision-free point near the plan centre so a generated model never starts in a wall. */
+    /** Finds a collision-free point near the plan centre so a generated model never starts in a wall/window. */
     fun findSpawn(radius: Float = DEFAULT_PLAYER_RADIUS): Vec2 {
         val centre = Vec2(0f, 0f)
         if (isClear(centre, radius)) return centre
@@ -63,7 +77,6 @@ internal class CollisionWorld(private val plan: FloorPlan) {
             }
         }
 
-        // Extremely dense/invalid drawings still get a deterministic bounded fallback.
         return resolvePenetration(centre, radius)
     }
 
@@ -73,8 +86,8 @@ internal class CollisionWorld(private val plan: FloorPlan) {
         if (point.x - radius < -halfWidth || point.x + radius > halfWidth) return false
         if (point.z - radius < -halfDepth || point.z + radius > halfDepth) return false
 
-        return plan.walls.none { wall ->
-            collidesWithWall(point, radius, wall)
+        return barriers.none { barrier ->
+            collidesWithBarrier(point, radius, barrier)
         }
     }
 
@@ -84,10 +97,10 @@ internal class CollisionWorld(private val plan: FloorPlan) {
         var x = candidate.x.coerceIn(-halfWidth, halfWidth)
         var z = candidate.z.coerceIn(-halfDepth, halfDepth)
 
-        // Multiple passes resolve corners/intersections without an expensive physics dependency.
         repeat(RESOLUTION_PASSES) {
             var changed = false
-            for (wall in plan.walls) {
+            for (barrier in barriers) {
+                val wall = barrier.wall
                 val start = wall.start
                 val end = wall.end
                 val vx = end.x - start.x
@@ -100,7 +113,7 @@ internal class CollisionWorld(private val plan: FloorPlan) {
                 val closestX = start.x + vx * projection
                 val closestZ = start.z + vz * projection
 
-                if (isDoorPassage(wall, projection, radius)) continue
+                if (barrier.permitsDoorPassage && isDoorPassage(wall, projection, radius)) continue
 
                 val dx = x - closestX
                 val dz = z - closestZ
@@ -116,7 +129,6 @@ internal class CollisionWorld(private val plan: FloorPlan) {
                     nz = dz / distance
                 } else {
                     val wallLength = sqrt(lengthSquared)
-                    // Deterministic perpendicular when the point lies exactly on a wall centreline.
                     nx = -vz / wallLength
                     nz = vx / wallLength
                 }
@@ -134,7 +146,8 @@ internal class CollisionWorld(private val plan: FloorPlan) {
         return Vec2(x, z)
     }
 
-    private fun collidesWithWall(point: Vec2, radius: Float, wall: WallSegment): Boolean {
+    private fun collidesWithBarrier(point: Vec2, radius: Float, barrier: CollisionBarrier): Boolean {
+        val wall = barrier.wall
         val vx = wall.end.x - wall.start.x
         val vz = wall.end.z - wall.start.z
         val lengthSquared = vx * vx + vz * vz
@@ -142,7 +155,7 @@ internal class CollisionWorld(private val plan: FloorPlan) {
 
         val projection = (((point.x - wall.start.x) * vx + (point.z - wall.start.z) * vz) / lengthSquared)
             .coerceIn(0f, 1f)
-        if (isDoorPassage(wall, projection, radius)) return false
+        if (barrier.permitsDoorPassage && isDoorPassage(wall, projection, radius)) return false
 
         val closestX = wall.start.x + vx * projection
         val closestZ = wall.start.z + vz * projection
@@ -152,10 +165,6 @@ internal class CollisionWorld(private val plan: FloorPlan) {
         return dx * dx + dz * dz < minDistance * minDistance
     }
 
-    /**
-     * Door metadata can arrive either from the current classical gap detector or from the future
-     * on-device model. Treat a sufficiently wide opening as non-solid only in the span of the door.
-     */
     private fun isDoorPassage(wall: WallSegment, wallProjection: Float, radius: Float): Boolean {
         if (plan.doors.isEmpty()) return false
 
@@ -197,6 +206,26 @@ internal class CollisionWorld(private val plan: FloorPlan) {
         return usableHalfWidth > 0f && alongDistance <= usableHalfWidth
     }
 
+    private fun WindowOpening.toCollisionWall(): WallSegment? {
+        if (widthMeters <= MIN_WINDOW_COLLISION_WIDTH_METERS) return null
+        val radians = rotationDegrees * (PI.toFloat() / 180f)
+        val axisX = cos(radians)
+        val axisZ = sin(radians)
+        val half = widthMeters * 0.5f
+        return WallSegment(
+            start = Vec2(center.x - axisX * half, center.z - axisZ * half),
+            end = Vec2(center.x + axisX * half, center.z + axisZ * half),
+            thicknessMeters = WINDOW_COLLISION_THICKNESS_METERS,
+            heightMeters = 1f,
+            confidence = confidence,
+        )
+    }
+
+    private data class CollisionBarrier(
+        val wall: WallSegment,
+        val permitsDoorPassage: Boolean,
+    )
+
     companion object {
         const val DEFAULT_PLAYER_RADIUS = 0.27f
         private const val MAX_SUBSTEP_METERS = 0.055f
@@ -208,6 +237,8 @@ internal class CollisionWorld(private val plan: FloorPlan) {
         private const val MIN_DOOR_CLEARANCE_METERS = 0.08f
         private const val DOOR_ASSOCIATION_TOLERANCE_METERS = 0.18f
         private const val DOOR_EDGE_SAFETY_FACTOR = 0.62f
+        private const val WINDOW_COLLISION_THICKNESS_METERS = 0.08f
+        private const val MIN_WINDOW_COLLISION_WIDTH_METERS = 0.20f
         private const val EPSILON = 0.000001f
     }
 }
