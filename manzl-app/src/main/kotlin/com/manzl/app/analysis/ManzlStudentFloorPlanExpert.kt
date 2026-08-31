@@ -239,11 +239,12 @@ internal class ManzlStudentFloorPlanExpert(context: Context) {
                 if (!connects(candidate, current.walls)) continue
                 val trial = current.copy(walls = current.walls + candidate)
                 val trialReport = GeometryFidelityEvaluator.evaluate(structural, working.width, working.height, trial)
-                if (
-                    trialReport.wallCoverage - report.wallCoverage >= MIN_COVERAGE_GAIN &&
-                    report.wallPrecision - trialReport.wallPrecision <= MAX_PRECISION_LOSS &&
-                    report.score - trialReport.score <= MAX_SCORE_LOSS
-                ) {
+                val decision = GeometryCandidateAdjudicator.decide(
+                    before = report,
+                    after = trialReport,
+                    kind = GeometryCandidateAdjudicator.ChangeKind.ADDITION,
+                )
+                if (decision.accepted) {
                     current = trial.copy(geometryFidelity = trialReport)
                     report = trialReport
                     accepted++
@@ -353,9 +354,6 @@ internal class ManzlStudentFloorPlanExpert(context: Context) {
         private const val CONNECTION_METERS = 0.36f
         private const val DUPLICATE_ALIGNMENT = 0.982f
         private const val DUPLICATE_DISTANCE_METERS = 0.13f
-        private const val MIN_COVERAGE_GAIN = 0.0025f
-        private const val MAX_PRECISION_LOSS = 0.008f
-        private const val MAX_SCORE_LOSS = 0.0015f
         private const val MODEL_MAPPING_MARGIN = 1.5f
         private const val EPSILON = 0.000001f
     }
