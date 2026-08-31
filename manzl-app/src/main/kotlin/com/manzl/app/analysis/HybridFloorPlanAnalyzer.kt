@@ -25,6 +25,7 @@ internal class HybridFloorPlanAnalyzer(
     private val semanticProviders: List<SemanticEvidenceProvider> = listOf(
         RoomLabelEvidenceProvider(),
         StairPatternEvidenceProvider(),
+        WindowSymbolEvidenceProvider(),
     ),
 ) : FloorPlanAnalyzer {
 
@@ -48,7 +49,7 @@ internal class HybridFloorPlanAnalyzer(
             rooms = mergeRooms(withDoors.rooms, baselineRooms),
         )
 
-        progress.onUpdate(AnalysisUpdate(87, "قراءة أسماء الغرف واكتشاف السلالم محلياً"))
+        progress.onUpdate(AnalysisUpdate(87, "قراءة الغرف والسلالم ورموز النوافذ محلياً"))
         val semanticEvidence = ArrayList<SemanticEvidence>()
         semanticProviders.forEach { provider ->
             semanticEvidence += provider.analyze(bitmap, baseline)
