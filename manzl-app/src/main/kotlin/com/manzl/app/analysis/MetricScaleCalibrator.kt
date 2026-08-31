@@ -34,16 +34,18 @@ internal data class AxisDimensionEvidence(
 /**
  * Reads printed architectural dimensions using a bundled on-device ML Kit OCR model.
  *
- * Strong evidence is axis-aware: a dimension nearest the top/bottom edge is treated as a horizontal
- * dimension and one nearest the left/right edge as vertical. When independent horizontal and vertical
- * dimensions imply the same metres-per-pixel scale, their agreement raises confidence sharply.
- * This avoids the old failure mode where a valid short-side dimension was mistaken for the plan's
- * long side. Weak/inconsistent evidence still falls back conservatively and is surfaced to the user
- * by the explicit metric-scale review flow.
+ * Scale is resolved against the structural drawing envelope, not the full page raster. This makes
+ * metres-per-pixel invariant to white margins, title blocks and asymmetric screenshot crops.
+ * Dimensions near the top/bottom structural edge are horizontal evidence; dimensions near the
+ * left/right structural edge are vertical evidence. Independent axes must agree before confidence
+ * is raised. Weak/inconsistent evidence still falls back and is surfaced by explicit scale review.
  */
 internal object MetricScaleCalibrator {
 
-    suspend fun calibrate(bitmap: Bitmap): ScaleCalibration {
+    suspend fun calibrate(
+        bitmap: Bitmap,
+        structuralBounds: PixelContentBounds = PixelContentBounds.full(bitmap.width, bitmap.height),
+    ): ScaleCalibration {
         val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
         return try {
             val result = recognize(recognizer, InputImage.fromBitmap(bitmap, 0))
@@ -51,6 +53,7 @@ internal object MetricScaleCalibrator {
                 text = result,
                 imageWidth = bitmap.width,
                 imageHeight = bitmap.height,
+                structuralBounds = structuralBounds,
             ) ?: fallback()
         } catch (_: Throwable) {
             fallback()
@@ -72,8 +75,10 @@ internal object MetricScaleCalibrator {
         text: Text,
         imageWidth: Int,
         imageHeight: Int,
+        structuralBounds: PixelContentBounds,
     ): ScaleCalibration? {
         if (imageWidth <= 0 || imageHeight <= 0) return null
+        val bounds = sanitizeBounds(structuralBounds, imageWidth, imageHeight)
         val evidence = ArrayList<AxisDimensionEvidence>()
         for (block in text.textBlocks) {
             for (line in block.lines) {
@@ -85,19 +90,18 @@ internal object MetricScaleCalibrator {
                         rawText = element.text,
                         meters = meters,
                         box = box,
-                        imageWidth = imageWidth,
-                        imageHeight = imageHeight,
+                        bounds = bounds,
                     )
                     evidence += AxisDimensionEvidence(
                         meters = meters,
-                        axis = inferAxis(box, imageWidth, imageHeight),
+                        axis = inferAxis(box, bounds),
                         score = score,
                     )
                 }
             }
         }
 
-        return resolveAxisEvidence(evidence, imageWidth, imageHeight)
+        return resolveAxisEvidence(evidence, bounds.width, bounds.height)
     }
 
     internal fun resolveAxisEvidence(
@@ -177,12 +181,17 @@ internal object MetricScaleCalibrator {
         DimensionAxis.UNKNOWN -> evidence.meters
     }
 
-    private fun inferAxis(box: Rect, imageWidth: Int, imageHeight: Int): DimensionAxis {
-        if (imageWidth <= 0 || imageHeight <= 0) return DimensionAxis.UNKNOWN
-        val cx = box.exactCenterX() / imageWidth.toFloat()
-        val cy = box.exactCenterY() / imageHeight.toFloat()
-        val horizontalBorderDistance = min(cy, 1f - cy)
-        val verticalBorderDistance = min(cx, 1f - cx)
+    private fun inferAxis(box: Rect, bounds: PixelContentBounds): DimensionAxis {
+        val cx = box.exactCenterX()
+        val cy = box.exactCenterY()
+        val horizontalBorderDistance = min(
+            abs(cy - bounds.top),
+            abs(cy - bounds.bottomExclusive),
+        ) / bounds.height.toFloat()
+        val verticalBorderDistance = min(
+            abs(cx - bounds.left),
+            abs(cx - bounds.rightExclusive),
+        ) / bounds.width.toFloat()
         val nearest = min(horizontalBorderDistance, verticalBorderDistance)
         if (nearest > MAX_AXIS_BORDER_DISTANCE) return DimensionAxis.UNKNOWN
         return if (horizontalBorderDistance + AXIS_TIE_MARGIN < verticalBorderDistance) {
@@ -198,13 +207,19 @@ internal object MetricScaleCalibrator {
         rawText: String,
         meters: Float,
         box: Rect,
-        imageWidth: Int,
-        imageHeight: Int,
+        bounds: PixelContentBounds,
     ): Float {
-        if (imageWidth <= 0 || imageHeight <= 0) return 0f
-        val cx = box.exactCenterX() / imageWidth.toFloat()
-        val cy = box.exactCenterY() / imageHeight.toFloat()
-        val borderDistance = min(min(cx, 1f - cx), min(cy, 1f - cy)).coerceIn(0f, 0.5f)
+        val cx = box.exactCenterX()
+        val cy = box.exactCenterY()
+        val horizontalBorderDistance = min(
+            abs(cy - bounds.top),
+            abs(cy - bounds.bottomExclusive),
+        ) / bounds.height.toFloat()
+        val verticalBorderDistance = min(
+            abs(cx - bounds.left),
+            abs(cx - bounds.rightExclusive),
+        ) / bounds.width.toFloat()
+        val borderDistance = min(horizontalBorderDistance, verticalBorderDistance).coerceIn(0f, 1f)
         val perimeterScore = (1f - borderDistance / 0.34f).coerceIn(0f, 1f)
         val decimalScore = if (rawText.contains('.') || rawText.contains(',') || rawText.contains('٫')) 0.11f else 0f
         val overallPlausibility = when (meters) {
@@ -213,6 +228,19 @@ internal object MetricScaleCalibrator {
             else -> 0.18f
         }
         return (perimeterScore * 0.52f + overallPlausibility + decimalScore).coerceIn(0f, 1f)
+    }
+
+    private fun sanitizeBounds(
+        candidate: PixelContentBounds,
+        imageWidth: Int,
+        imageHeight: Int,
+    ): PixelContentBounds {
+        if (imageWidth <= 0 || imageHeight <= 0) return PixelContentBounds.full(imageWidth, imageHeight)
+        val left = candidate.left.coerceIn(0, imageWidth - 1)
+        val top = candidate.top.coerceIn(0, imageHeight - 1)
+        val right = candidate.rightExclusive.coerceIn(left + 1, imageWidth)
+        val bottom = candidate.bottomExclusive.coerceIn(top + 1, imageHeight)
+        return PixelContentBounds(left, top, right, bottom)
     }
 
     /**
@@ -274,6 +302,6 @@ internal object MetricScaleCalibrator {
     private const val MIN_PAIR_ACCEPTED_SCORE = 0.70f
     private const val MAX_AXIS_SCALE_DISAGREEMENT = 0.16f
     private const val MAX_PAIR_CANDIDATES = 6
-    private const val MAX_AXIS_BORDER_DISTANCE = 0.23f
+    private const val MAX_AXIS_BORDER_DISTANCE = 0.30f
     private const val AXIS_TIE_MARGIN = 0.025f
 }
