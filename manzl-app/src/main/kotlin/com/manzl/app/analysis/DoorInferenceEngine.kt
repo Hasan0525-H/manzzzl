@@ -13,10 +13,11 @@ import kotlin.math.min
  *
  * The classical wall detector emits axis-aligned wall runs. Real door openings often appear as
  * short gaps between two collinear runs. This class turns those gaps into explicit DoorOpening
- * metadata so collision/navigation and the future door-frame renderer share the same truth.
+ * metadata so collision/navigation and the door-frame renderer share the same truth.
  *
- * It deliberately refuses to invent an opening when evidence is weak. A future local neural model
- * can contribute additional candidates, but this deterministic layer remains the topology guard.
+ * A gap width by itself is not sufficient. Both supporting wall runs must be trusted, nearly
+ * collinear and dimensionally compatible. This prevents low-confidence fragments or mismatched wall
+ * faces from becoming authoritative door holes before semantic symbol evidence is considered.
  */
 internal object DoorInferenceEngine {
 
@@ -40,6 +41,8 @@ internal object DoorInferenceEngine {
                 for (index in 0 until sorted.lastIndex) {
                     val left = sorted[index]
                     val right = sorted[index + 1]
+                    if (!trustedContext(left, right)) continue
+
                     val leftEnd = max(left.start.x, left.end.x)
                     val rightStart = min(right.start.x, right.end.x)
                     val gap = rightStart - leftEnd
@@ -47,14 +50,17 @@ internal object DoorInferenceEngine {
 
                     val zA = (left.start.z + left.end.z) * 0.5f
                     val zB = (right.start.z + right.end.z) * 0.5f
-                    if (abs(zA - zB) > COLLINEAR_TOLERANCE_METERS) continue
+                    val lineOffset = abs(zA - zB)
+                    if (lineOffset > COLLINEAR_TOLERANCE_METERS) continue
 
+                    val confidence = contextConfidence(left, right, gap, lineOffset)
+                    if (confidence < MIN_DOOR_CONFIDENCE) continue
                     add(
                         DoorOpening(
                             center = Vec2((leftEnd + rightStart) * 0.5f, (zA + zB) * 0.5f),
                             widthMeters = gap,
                             rotationDegrees = 0f,
-                            confidence = gapConfidence(gap),
+                            confidence = confidence,
                         )
                     )
                 }
@@ -70,6 +76,8 @@ internal object DoorInferenceEngine {
                 for (index in 0 until sorted.lastIndex) {
                     val top = sorted[index]
                     val bottom = sorted[index + 1]
+                    if (!trustedContext(top, bottom)) continue
+
                     val topEnd = max(top.start.z, top.end.z)
                     val bottomStart = min(bottom.start.z, bottom.end.z)
                     val gap = bottomStart - topEnd
@@ -77,19 +85,51 @@ internal object DoorInferenceEngine {
 
                     val xA = (top.start.x + top.end.x) * 0.5f
                     val xB = (bottom.start.x + bottom.end.x) * 0.5f
-                    if (abs(xA - xB) > COLLINEAR_TOLERANCE_METERS) continue
+                    val lineOffset = abs(xA - xB)
+                    if (lineOffset > COLLINEAR_TOLERANCE_METERS) continue
 
+                    val confidence = contextConfidence(top, bottom, gap, lineOffset)
+                    if (confidence < MIN_DOOR_CONFIDENCE) continue
                     add(
                         DoorOpening(
                             center = Vec2((xA + xB) * 0.5f, (topEnd + bottomStart) * 0.5f),
                             widthMeters = gap,
                             rotationDegrees = 90f,
-                            confidence = gapConfidence(gap),
+                            confidence = confidence,
                         )
                     )
                 }
             }
         }
+    }
+
+    private fun trustedContext(a: WallSegment, b: WallSegment): Boolean {
+        if (a.confidence < MIN_SUPPORT_WALL_CONFIDENCE || b.confidence < MIN_SUPPORT_WALL_CONFIDENCE) {
+            return false
+        }
+        val maxThickness = max(a.thicknessMeters, b.thicknessMeters).coerceAtLeast(0.01f)
+        val thicknessDelta = abs(a.thicknessMeters - b.thicknessMeters)
+        return thicknessDelta <= max(MAX_THICKNESS_DELTA_METERS, maxThickness * MAX_THICKNESS_DELTA_RATIO)
+    }
+
+    private fun contextConfidence(
+        a: WallSegment,
+        b: WallSegment,
+        width: Float,
+        lineOffset: Float,
+    ): Float {
+        val structural = min(a.confidence, b.confidence).coerceIn(0f, 1f)
+        val widthScore = gapConfidence(width)
+        val alignment = (1f - lineOffset / COLLINEAR_TOLERANCE_METERS).coerceIn(0f, 1f)
+        val maxThickness = max(a.thicknessMeters, b.thicknessMeters).coerceAtLeast(0.01f)
+        val thicknessAgreement =
+            (1f - abs(a.thicknessMeters - b.thicknessMeters) / maxThickness).coerceIn(0f, 1f)
+        return (
+            structural * 0.42f +
+                widthScore * 0.38f +
+                alignment * 0.12f +
+                thicknessAgreement * 0.08f
+            ).coerceIn(0f, MAX_GEOMETRY_ONLY_DOOR_CONFIDENCE)
     }
 
     private fun deduplicate(candidates: List<DoorOpening>): List<DoorOpening> {
@@ -119,7 +159,7 @@ internal object DoorInferenceEngine {
 
     private fun gapConfidence(width: Float): Float {
         val delta = abs(width - IDEAL_DOOR_WIDTH_METERS)
-        return (0.91f - delta * 0.20f).coerceIn(0.68f, 0.91f)
+        return (0.96f - delta * 0.24f).coerceIn(0.66f, 0.96f)
     }
 
     private fun quantize(value: Float, step: Float): Int = kotlin.math.round(value / step).toInt()
@@ -128,8 +168,13 @@ internal object DoorInferenceEngine {
     private const val MAX_DOOR_WIDTH_METERS = 1.45f
     private const val IDEAL_DOOR_WIDTH_METERS = 0.95f
     private const val MIN_WALL_FOR_DOOR_CONTEXT_METERS = 0.42f
+    private const val MIN_SUPPORT_WALL_CONFIDENCE = 0.60f
+    private const val MIN_DOOR_CONFIDENCE = 0.70f
+    private const val MAX_GEOMETRY_ONLY_DOOR_CONFIDENCE = 0.90f
     private const val AXIS_TOLERANCE_METERS = 0.07f
     private const val COLLINEAR_TOLERANCE_METERS = 0.16f
     private const val LINE_BUCKET_METERS = 0.14f
     private const val DUPLICATE_RADIUS_METERS = 0.33f
+    private const val MAX_THICKNESS_DELTA_METERS = 0.08f
+    private const val MAX_THICKNESS_DELTA_RATIO = 0.42f
 }
