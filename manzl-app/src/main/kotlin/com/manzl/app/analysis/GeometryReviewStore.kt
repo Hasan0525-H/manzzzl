@@ -2,7 +2,6 @@ package com.manzl.app.analysis
 
 import android.graphics.Bitmap
 import com.manzl.app.model.FloorPlan
-import com.manzl.app.model.GeometryFidelityStatus
 import java.util.IdentityHashMap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -42,10 +41,9 @@ internal data class GeometryReviewState(
  * fidelity gate. No stored correction can directly set PASS.
  *
  * The runtime gate is stricter than the aggregate fidelity enum: a floor can have aggregate PASS but
- * still be rejected for a severe localized mismatch or a physical near-miss wall junction. Review
- * copies are therefore downgraded to REVIEW_REQUIRED while the canonical measured plan remains
- * unchanged. This keeps correction tools available and prevents a green PASS badge from contradicting
- * the actual 3D gate.
+ * still be rejected for a severe localized mismatch or a physical near-miss wall junction. Every
+ * review-only copy therefore passes through [GeometryQualityGate.planForReview]. The canonical
+ * [basePlan] remains untouched so diagnostics can never become geometry authority.
  */
 internal object GeometryReviewStore {
     private val lock = Any()
@@ -60,7 +58,7 @@ internal object GeometryReviewStore {
         plan: FloorPlan,
         basePlan: FloorPlan = plan,
     ) {
-        val reviewPlan = reviewSafePlan(plan)
+        val reviewPlan = GeometryQualityGate.planForReview(plan)
         val overlay = renderOverlay(source, reviewPlan)
         synchronized(lock) {
             if (pending.isEmpty()) {
@@ -84,7 +82,7 @@ internal object GeometryReviewStore {
     }
 
     suspend fun recordFinal(source: Bitmap, plan: FloorPlan) {
-        val reviewPlan = reviewSafePlan(plan)
+        val reviewPlan = GeometryQualityGate.planForReview(plan)
         val overlay = renderOverlay(source, reviewPlan)
         synchronized(lock) {
             knownProjectSources[source] = true
@@ -139,7 +137,7 @@ internal object GeometryReviewStore {
             corrections = replay,
         )
         if (verified.appliedCount <= 0) return item
-        val reviewPlan = reviewSafePlan(verified.plan)
+        val reviewPlan = GeometryQualityGate.planForReview(verified.plan)
         val overlay = renderOverlay(item.source, reviewPlan)
 
         return synchronized(lock) {
@@ -183,7 +181,7 @@ internal object GeometryReviewStore {
                 corrections = remaining,
             ).plan
         }
-        val reviewPlan = reviewSafePlan(verifiedPlan)
+        val reviewPlan = GeometryQualityGate.planForReview(verifiedPlan)
         val overlay = renderOverlay(item.source, reviewPlan)
 
         return synchronized(lock) {
@@ -212,7 +210,7 @@ internal object GeometryReviewStore {
         val item = synchronized(lock) {
             _state.value.items.firstOrNull { it.floorIndex == floorIndex }
         } ?: return null
-        val reviewPlan = reviewSafePlan(item.basePlan)
+        val reviewPlan = GeometryQualityGate.planForReview(item.basePlan)
         val overlay = renderOverlay(item.source, reviewPlan)
         return synchronized(lock) {
             correctionsBySource.remove(item.source)
@@ -239,7 +237,7 @@ internal object GeometryReviewStore {
         synchronized(lock) {
             if (pending.isEmpty()) return
             val last = pending.last()
-            pending[pending.lastIndex] = last.copy(plan = reviewSafePlan(plan))
+            pending[pending.lastIndex] = last.copy(plan = GeometryQualityGate.planForReview(plan))
             publish(autoOpen = true)
         }
     }
@@ -253,7 +251,7 @@ internal object GeometryReviewStore {
                 val item = pending[index]
                 resolved += item.copy(
                     floorIndex = index,
-                    plan = reviewSafePlan(orderedPlans[index]),
+                    plan = GeometryQualityGate.planForReview(orderedPlans[index]),
                 )
             }
             _state.value = GeometryReviewState(
@@ -304,15 +302,6 @@ internal object GeometryReviewStore {
             revision = _state.value.revision + 1L,
         )
         pending.clear()
-    }
-
-    private fun reviewSafePlan(plan: FloorPlan): FloorPlan {
-        if (GeometryQualityGate.isReadyFor3d(plan)) return plan
-        val report = plan.geometryFidelity
-        if (report.status != GeometryFidelityStatus.PASS) return plan
-        return plan.copy(
-            geometryFidelity = report.copy(status = GeometryFidelityStatus.REVIEW_REQUIRED),
-        )
     }
 
     private suspend fun renderOverlay(source: Bitmap, plan: FloorPlan): Bitmap =
