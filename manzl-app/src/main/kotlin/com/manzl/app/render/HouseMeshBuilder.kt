@@ -67,11 +67,14 @@ internal object HouseMeshBuilder {
         }
 
         // Ceilings are generated only from validated room polygons. A room containing a confident
-        // staircase keeps a stairwell opening instead of receiving a slab directly above the steps.
+        // staircase keeps a stairwell opening. Likewise, a room that the semantic pipeline has
+        // explicitly identified as a courtyard/yard/lightwell/garden/roof terrace stays open to the
+        // sky; ambiguous or unlabeled rooms remain covered rather than receiving speculative voids.
         val ceilingBuilder = GeometryBuilder()
         plan.rooms.forEach { room ->
             val containsStair = acceptedStairs.any { stair -> pointInsidePolygon(stair.center, room.polygon) }
-            if (!containsStair) addRoomCeiling(ceilingBuilder, room, ceilingHeight)
+            val openToSky = OpenAirRoomPolicy.shouldRemainOpenToSky(room)
+            if (!containsStair && !openToSky) addRoomCeiling(ceilingBuilder, room, ceilingHeight)
         }
 
         val trimBuilder = GeometryBuilder()
