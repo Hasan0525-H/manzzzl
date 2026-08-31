@@ -3,7 +3,6 @@ package com.manzl.app.analysis
 import android.graphics.Bitmap
 import android.graphics.Color
 import com.manzl.app.model.FloorPlan
-import com.manzl.app.model.Vec2
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlin.math.abs
@@ -15,7 +14,8 @@ import kotlin.math.min
  *
  * This is deliberately deterministic computer vision rather than a black-box model. A staircase is
  * suggested only when at least five similarly sized, regularly spaced strokes form a compact band.
- * GeometryEvidenceFusion still validates the resulting physical width/run before it enters FloorPlan.
+ * Raster coordinates are converted through the same structural content bounds used by wall geometry,
+ * so asymmetric white margins cannot shift the stair into another room.
  */
 internal class StairPatternEvidenceProvider : SemanticEvidenceProvider {
 
@@ -26,25 +26,21 @@ internal class StairPatternEvidenceProvider : SemanticEvidenceProvider {
             val pixels = IntArray(working.width * working.height)
             working.getPixels(pixels, 0, working.width, 0, 0, working.width, working.height)
             val mask = BooleanArray(pixels.size) { index -> isStroke(pixels[index]) }
+            val transform = PlanRasterTransform.forImage(structuralPlan, working.width, working.height)
 
             StairPatternDetector.detect(mask, working.width, working.height).mapNotNull { candidate ->
-                val normalizedX = candidate.centerX / working.width.toFloat()
-                val normalizedY = candidate.centerY / working.height.toFloat()
-                val center = Vec2(
-                    x = (normalizedX - 0.5f) * structuralPlan.widthMeters,
-                    z = (normalizedY - 0.5f) * structuralPlan.depthMeters,
-                )
+                val center = transform.imageToPlan(candidate.centerX, candidate.centerY)
 
                 val stairWidth: Float
                 val stairRun: Float
                 val rotation: Float
                 if (candidate.treadsHorizontal) {
-                    stairWidth = candidate.treadLengthPx / working.width.toFloat() * structuralPlan.widthMeters
-                    stairRun = candidate.bandLengthPx / working.height.toFloat() * structuralPlan.depthMeters
+                    stairWidth = candidate.treadLengthPx / transform.pixelsPerMeterX
+                    stairRun = candidate.bandLengthPx / transform.pixelsPerMeterZ
                     rotation = 90f
                 } else {
-                    stairWidth = candidate.treadLengthPx / working.height.toFloat() * structuralPlan.depthMeters
-                    stairRun = candidate.bandLengthPx / working.width.toFloat() * structuralPlan.widthMeters
+                    stairWidth = candidate.treadLengthPx / transform.pixelsPerMeterZ
+                    stairRun = candidate.bandLengthPx / transform.pixelsPerMeterX
                     rotation = 0f
                 }
 
@@ -140,8 +136,6 @@ internal object StairPatternDetector {
         val across = if (horizontal) width else height
         val along = if (horizontal) height else width
         val minRun = max(8, min(width, height) / 90)
-        // A staircase can occupy a substantial fraction of a cropped plan image. Keep the upper
-        // bound generous; the repeated/regular spacing checks below provide the stronger filter.
         val maxRun = max(minRun + 2, (min(width, height) * 0.50f).toInt())
         val result = ArrayList<Run>()
 
@@ -192,8 +186,6 @@ internal object StairPatternDetector {
             if (deltas.size < MIN_TREADS - 1) continue
             val medianSpacing = median(deltas)
             val minSpacing = max(2f, alongPixels / 420f)
-            // CAD stair treads can be visually sparse in a cropped drawing; permit spacing up to
-            // about 1/18 of the analysis dimension, then rely on regularity and length consistency.
             val maxSpacing = max(minSpacing + 1f, alongPixels / 18f)
             if (medianSpacing !in minSpacing..maxSpacing) continue
 
