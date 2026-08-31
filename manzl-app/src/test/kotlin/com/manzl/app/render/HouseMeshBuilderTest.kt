@@ -68,6 +68,49 @@ class HouseMeshBuilderTest {
     }
 
     @Test
+    fun `opening cuts only a wall with the same measured axis`() {
+        val horizontalWall = WallSegment(
+            start = Vec2(-2f, 0f),
+            end = Vec2(2f, 0f),
+        )
+        val matchingDoor = DoorOpening(
+            center = Vec2(0f, 0f),
+            widthMeters = 1f,
+            rotationDegrees = 0f,
+            confidence = 0.95f,
+        )
+        val crossingDoor = matchingDoor.copy(rotationDegrees = 90f)
+
+        val matchingMesh = HouseMeshBuilder.build(
+            FloorPlan(
+                widthMeters = 6f,
+                depthMeters = 4f,
+                walls = listOf(horizontalWall),
+                doors = listOf(matchingDoor),
+                analysisConfidence = 1f,
+                sourceWidthPx = 1000,
+                sourceHeightPx = 800,
+            )
+        )
+        val crossingMesh = HouseMeshBuilder.build(
+            FloorPlan(
+                widthMeters = 6f,
+                depthMeters = 4f,
+                walls = listOf(horizontalWall),
+                doors = listOf(crossingDoor),
+                analysisConfidence = 1f,
+                sourceWidthPx = 1000,
+                sourceHeightPx = 800,
+            )
+        )
+
+        // Same-axis opening produces left/right wall solids plus the lintel slice.
+        assertEquals(3 * 6 * 4 * 6, matchingMesh.wallVertices.size)
+        // A nearby opening on a perpendicular wall must not punch this wall at all.
+        assertEquals(6 * 4 * 6, crossingMesh.wallVertices.size)
+    }
+
+    @Test
     fun `trusted swing evidence adds an open physical door leaf`() {
         val plan = FloorPlan(
             widthMeters = 6f,
