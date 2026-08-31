@@ -2,6 +2,7 @@ package com.manzl.app.analysis
 
 import android.graphics.Bitmap
 import android.graphics.Color
+import com.manzl.app.model.DoorEvidenceKind
 import com.manzl.app.model.DoorHingeSide
 import com.manzl.app.model.DoorOpening
 import com.manzl.app.model.DoorSwingSide
@@ -137,6 +138,11 @@ internal object DoorSwingArcDetector {
             hingeSide = best.hingeSide,
             swingSide = best.swingSide,
             swingConfidence = confidence,
+            evidenceKind = if (door.evidenceKind == DoorEvidenceKind.USER_CONFIRMED) {
+                DoorEvidenceKind.USER_CONFIRMED
+            } else {
+                DoorEvidenceKind.SEMANTIC_CONFIRMED
+            },
         )
     }
 
