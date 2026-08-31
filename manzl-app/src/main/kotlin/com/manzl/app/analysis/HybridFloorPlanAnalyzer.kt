@@ -15,7 +15,8 @@ import kotlin.math.sqrt
  * 2) deterministic door/room topology creates a geometry baseline;
  * 3) bundled on-device semantic providers may label rooms or suggest stairs/openings;
  * 4) GeometryEvidenceFusion accepts only evidence that is geometrically plausible;
- * 5) deterministic topology is re-run after fusion and becomes the sole source of truth for 3D.
+ * 5) deterministic topology is re-run after fusion and becomes the sole source of truth for 3D;
+ * 6) door swing symbols may enrich an accepted opening but never create or move one.
  *
  * No provider is allowed to require a network connection in the release build.
  */
@@ -61,10 +62,15 @@ internal class HybridFloorPlanAnalyzer(
         val finalDoors = mergeDoors(reconciled.doors, inferredDoors)
         val withFinalDoors = reconciled.copy(doors = finalDoors)
 
+        progress.onUpdate(AnalysisUpdate(97, "قراءة مفصلات واتجاه فتح الأبواب من رموز المخطط"))
+        val withDoorDynamics = withFinalDoors.copy(
+            doors = DoorSwingArcDetector.enrich(bitmap, withFinalDoors),
+        )
+
         progress.onUpdate(AnalysisUpdate(98, "مراجعة حدود الغرف والأسقف"))
-        val inferredRooms = RoomInferenceEngine.infer(withFinalDoors)
-        val enriched = withFinalDoors.copy(
-            rooms = mergeRooms(withFinalDoors.rooms, inferredRooms),
+        val inferredRooms = RoomInferenceEngine.infer(withDoorDynamics)
+        val enriched = withDoorDynamics.copy(
+            rooms = mergeRooms(withDoorDynamics.rooms, inferredRooms),
         )
 
         progress.onUpdate(AnalysisUpdate(100, "تم تجهيز المنزل للجولة"))
