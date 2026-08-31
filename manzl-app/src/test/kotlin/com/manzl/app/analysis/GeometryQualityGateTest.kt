@@ -7,6 +7,7 @@ import com.manzl.app.model.GeometryFidelityReport
 import com.manzl.app.model.GeometryFidelityStatus
 import com.manzl.app.model.Vec2
 import com.manzl.app.model.WallSegment
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -89,6 +90,75 @@ class GeometryQualityGateTest {
         assertNull(GeometryQualityGate.rejectionMessageArabic(moderate))
         assertTrue(GeometryQualityGate.isReadyFor3d(tiny))
         assertNull(GeometryQualityGate.rejectionMessageArabic(tiny))
+    }
+
+    @Test
+    fun `review copy preserves a clean pass without changing metrics`() {
+        val original = plan(GeometryFidelityStatus.PASS, 0.90f)
+
+        val review = GeometryQualityGate.planForReview(original)
+
+        assertTrue(GeometryQualityGate.isReadyFor3d(original))
+        assertEquals(GeometryFidelityStatus.PASS, review.geometryFidelity.status)
+        assertEquals(original.geometryFidelity.score, review.geometryFidelity.score, 0f)
+        assertEquals(original.walls, review.walls)
+    }
+
+    @Test
+    fun `review copy downgrades hidden local gate failure while canonical plan remains pass`() {
+        val original = plan(
+            status = GeometryFidelityStatus.PASS,
+            score = 0.93f,
+            issues = listOf(
+                GeometryFidelityIssue(
+                    leftFraction = 0.14f,
+                    topFraction = 0.18f,
+                    rightFraction = 0.28f,
+                    bottomFraction = 0.34f,
+                    kind = GeometryFidelityIssueKind.MISSING_SOURCE,
+                    severity = 0.76f,
+                )
+            ),
+        )
+
+        val review = GeometryQualityGate.planForReview(original)
+
+        assertFalse(GeometryQualityGate.isReadyFor3d(original))
+        assertEquals(GeometryFidelityStatus.PASS, original.geometryFidelity.status)
+        assertEquals(GeometryFidelityStatus.REVIEW_REQUIRED, review.geometryFidelity.status)
+        assertEquals(original.geometryFidelity.score, review.geometryFidelity.score, 0f)
+        assertEquals(original.geometryFidelity.issues, review.geometryFidelity.issues)
+        assertEquals(original.walls, review.walls)
+    }
+
+    @Test
+    fun `review copy exposes a topology near miss as review required`() {
+        val original = plan(GeometryFidelityStatus.PASS, 0.94f).copy(
+            walls = listOf(
+                WallSegment(
+                    start = Vec2(-3f, 0f),
+                    end = Vec2(-0.28f, 0f),
+                    thicknessMeters = 0.18f,
+                    confidence = 0.96f,
+                ),
+                WallSegment(
+                    start = Vec2(0f, -2f),
+                    end = Vec2(0f, 2f),
+                    thicknessMeters = 0.18f,
+                    confidence = 0.97f,
+                ),
+                WallSegment(Vec2(-3f, -2f), Vec2(-3f, 2f), confidence = 0.95f),
+                WallSegment(Vec2(-3f, -2f), Vec2(0f, -2f), confidence = 0.95f),
+            )
+        )
+
+        assertTrue(WallTopologyIntegrity.findNearMissJunctions(original).isNotEmpty())
+        assertFalse(GeometryQualityGate.isReadyFor3d(original))
+        assertEquals(
+            GeometryFidelityStatus.REVIEW_REQUIRED,
+            GeometryQualityGate.planForReview(original).geometryFidelity.status,
+        )
+        assertEquals(GeometryFidelityStatus.PASS, original.geometryFidelity.status)
     }
 
     private fun plan(
