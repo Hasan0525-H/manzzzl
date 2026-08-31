@@ -1,6 +1,8 @@
 package com.manzl.app.analysis
 
 import ai.onnxruntime.OnnxTensor
+import ai.onnxruntime.OrtEnvironment
+import ai.onnxruntime.OrtSession
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
@@ -19,10 +21,11 @@ import kotlin.math.sqrt
 /**
  * Mobile student for the heavy Raster2Seq + RoomFormer teacher ensemble.
  *
- * The model has three heads: semantic wall/feature logits, corner logits and wall orientation. The
- * runtime keeps the source aspect ratio through letterboxing, then decodes arbitrary-angle vectors
- * from all three heads instead of collapsing the student output back to Hough lines. Every vector is
- * still only a proposal and must improve independent source-raster fidelity before it is accepted.
+ * Reconstruction is multi-scale: one letterboxed global 512px pass provides topology, then overlapping
+ * source-space detail tiles preserve short partitions/openings that would vanish when a 4K sheet is
+ * globally reduced to 512px. Semantic, corner and orientation heads are decoded into arbitrary-angle
+ * vectors; all vectors map back to original source coordinates and remain proposal-only until the
+ * independent raster fidelity adjudicator accepts them.
  */
 internal class ManzlStudentFloorPlanExpert(context: Context) {
     private val models = OnnxAssetModelRepository(context)
@@ -32,6 +35,7 @@ internal class ManzlStudentFloorPlanExpert(context: Context) {
         val modelAvailable: Boolean,
         val proposedWalls: Int,
         val acceptedWalls: Int,
+        val inferenceRegions: Int = 0,
     )
 
     fun refine(source: Bitmap, seed: FloorPlan): Result {
@@ -40,7 +44,66 @@ internal class ManzlStudentFloorPlanExpert(context: Context) {
         val session = models.session(UltraModelCatalog.MANZL_RECONSTRUCTION_STUDENT)
             ?: return Result(seed, false, 0, 0)
 
-        val prepared = prepareLetterboxedInput(source)
+        val contentBounds = PlanRasterTransform.forImage(seed, source.width, source.height).bounds
+        val regionLimit = detailRegionLimit(Runtime.getRuntime().maxMemory())
+        val regions = StudentInferenceTilePlanner.plan(
+            imageWidth = source.width,
+            imageHeight = source.height,
+            contentBounds = contentBounds,
+            maxDetailSidePx = DETAIL_SOURCE_SIDE_PX,
+            overlapFraction = DETAIL_OVERLAP_FRACTION,
+            maxRegions = regionLimit,
+        )
+        if (regions.isEmpty()) return Result(seed, true, 0, 0)
+
+        val candidates = ArrayList<WallSegment>()
+        var successfulRegions = 0
+        for (region in regions) {
+            val inferred = inferRegion(
+                source = source,
+                seed = seed,
+                region = region,
+                environment = environment,
+                session = session,
+            )
+            if (inferred != null) {
+                successfulRegions++
+                candidates += inferred
+            }
+        }
+
+        val uniqueCandidates = candidates
+            .sortedWith(
+                compareByDescending<WallSegment> { it.confidence }
+                    .thenByDescending { distance(it.start, it.end) }
+            )
+            .fold(ArrayList<WallSegment>()) { accepted, candidate ->
+                if (accepted.none { existing -> nearlySameWall(existing, candidate) }) accepted += candidate
+                accepted
+            }
+            .take(MAX_MERGED_STUDENT_CANDIDATES)
+
+        if (uniqueCandidates.isEmpty()) {
+            return Result(seed, true, 0, 0, successfulRegions)
+        }
+        val adjudicated = adjudicateAgainstSource(source, seed, uniqueCandidates)
+        return Result(
+            plan = adjudicated.first,
+            modelAvailable = true,
+            proposedWalls = uniqueCandidates.size,
+            acceptedWalls = adjudicated.second,
+            inferenceRegions = successfulRegions,
+        )
+    }
+
+    private fun inferRegion(
+        source: Bitmap,
+        seed: FloorPlan,
+        region: StudentInferenceTilePlanner.Region,
+        environment: OrtEnvironment,
+        session: OrtSession,
+    ): List<WallSegment>? {
+        val prepared = prepareLetterboxedInput(source, region)
         val inputData = preprocess(prepared.bitmap)
         val inputTensor = runCatching {
             OnnxTensor.createTensor(
@@ -50,17 +113,17 @@ internal class ManzlStudentFloorPlanExpert(context: Context) {
             )
         }.getOrNull() ?: run {
             prepared.recycle()
-            return Result(seed, true, 0, 0)
+            return null
         }
 
-        val candidates = try {
+        return try {
             session.run(mapOf(INPUT_NAME to inputTensor)).use { outputs ->
                 val semantic = outputs.get(SEMANTIC_OUTPUT_NAME).orElse(null) as? OnnxTensor
-                    ?: return@use emptyList()
+                    ?: return@use null
                 val corners = outputs.get(CORNER_OUTPUT_NAME).orElse(null) as? OnnxTensor
-                    ?: return@use emptyList()
+                    ?: return@use null
                 val orientation = outputs.get(ORIENTATION_OUTPUT_NAME).orElse(null) as? OnnxTensor
-                    ?: return@use emptyList()
+                    ?: return@use null
                 wallCandidatesFromOutputs(
                     semantic = semantic,
                     corners = corners,
@@ -69,32 +132,35 @@ internal class ManzlStudentFloorPlanExpert(context: Context) {
                     sourceWidth = source.width,
                     sourceHeight = source.height,
                     inputTransform = prepared.transform,
+                    detailPass = region.kind == StudentInferenceTilePlanner.Region.Kind.DETAIL,
                 )
             }
         } catch (_: Exception) {
-            emptyList()
+            null
         } finally {
             runCatching { inputTensor.close() }
             prepared.recycle()
         }
-
-        if (candidates.isEmpty()) return Result(seed, true, 0, 0)
-        val adjudicated = adjudicateAgainstSource(source, seed, candidates)
-        return Result(
-            plan = adjudicated.first,
-            modelAvailable = true,
-            proposedWalls = candidates.size,
-            acceptedWalls = adjudicated.second,
-        )
     }
 
-    private fun prepareLetterboxedInput(source: Bitmap): PreparedInput {
-        val scale = min(INPUT_SIDE / source.width.toFloat(), INPUT_SIDE / source.height.toFloat())
-        val scaledWidth = max(1, (source.width * scale).toInt())
-        val scaledHeight = max(1, (source.height * scale).toInt())
+    private fun prepareLetterboxedInput(
+        source: Bitmap,
+        region: StudentInferenceTilePlanner.Region,
+    ): PreparedInput {
+        val regionBitmap = if (
+            region.left == 0 && region.top == 0 &&
+            region.rightExclusive == source.width && region.bottomExclusive == source.height
+        ) {
+            source
+        } else {
+            Bitmap.createBitmap(source, region.left, region.top, region.width, region.height)
+        }
+        val scale = min(INPUT_SIDE / region.width.toFloat(), INPUT_SIDE / region.height.toFloat())
+        val scaledWidth = max(1, (region.width * scale).toInt())
+        val scaledHeight = max(1, (region.height * scale).toInt())
         val offsetX = (INPUT_SIDE - scaledWidth) * 0.5f
         val offsetY = (INPUT_SIDE - scaledHeight) * 0.5f
-        val scaled = Bitmap.createScaledBitmap(source, scaledWidth, scaledHeight, true)
+        val scaled = Bitmap.createScaledBitmap(regionBitmap, scaledWidth, scaledHeight, true)
         val canvasBitmap = Bitmap.createBitmap(INPUT_SIDE, INPUT_SIDE, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(canvasBitmap)
         canvas.drawColor(Color.WHITE)
@@ -104,15 +170,20 @@ internal class ManzlStudentFloorPlanExpert(context: Context) {
             offsetY,
             Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG),
         )
-        if (scaled !== source && !scaled.isRecycled) scaled.recycle()
+        if (scaled !== regionBitmap && !scaled.isRecycled) scaled.recycle()
+        if (regionBitmap !== source && !regionBitmap.isRecycled) regionBitmap.recycle()
         return PreparedInput(
             bitmap = canvasBitmap,
             transform = LetterboxTransform(
                 scale = scale,
                 offsetX = offsetX,
                 offsetY = offsetY,
-                sourceWidth = source.width,
-                sourceHeight = source.height,
+                sourceOriginX = region.left.toFloat(),
+                sourceOriginY = region.top.toFloat(),
+                regionWidth = region.width,
+                regionHeight = region.height,
+                fullSourceWidth = source.width,
+                fullSourceHeight = source.height,
             ),
         )
     }
@@ -142,6 +213,7 @@ internal class ManzlStudentFloorPlanExpert(context: Context) {
         sourceWidth: Int,
         sourceHeight: Int,
         inputTransform: LetterboxTransform,
+        detailPass: Boolean,
     ): List<WallSegment> {
         val plane = INPUT_SIDE * INPUT_SIDE
         val semanticValues = semantic.floatBuffer?.let { buffer ->
@@ -158,6 +230,7 @@ internal class ManzlStudentFloorPlanExpert(context: Context) {
         } ?: return emptyList()
 
         val wallMask = BooleanArray(plane)
+        val logitMargin = if (detailPass) DETAIL_MIN_WALL_LOGIT_MARGIN else GLOBAL_MIN_WALL_LOGIT_MARGIN
         for (pixel in 0 until plane) {
             var bestClass = 0
             var best = semanticValues[pixel]
@@ -172,7 +245,7 @@ internal class ManzlStudentFloorPlanExpert(context: Context) {
                     runnerUp = value
                 }
             }
-            wallMask[pixel] = bestClass == WALL_CLASS_ID && best - runnerUp >= MIN_WALL_LOGIT_MARGIN
+            wallMask[pixel] = bestClass == WALL_CLASS_ID && best - runnerUp >= logitMargin
         }
 
         val cornerProbability = FloatArray(plane) { index -> sigmoid(cornerValues[index]) }
@@ -184,8 +257,8 @@ internal class ManzlStudentFloorPlanExpert(context: Context) {
             orientationX = orientationX,
             orientationY = orientationY,
             side = INPUT_SIDE,
-            minLengthPx = MIN_STUDENT_VECTOR_PIXELS,
-            maxSegments = MAX_STUDENT_CANDIDATES,
+            minLengthPx = if (detailPass) DETAIL_MIN_VECTOR_PIXELS else GLOBAL_MIN_VECTOR_PIXELS,
+            maxSegments = if (detailPass) MAX_DETAIL_CANDIDATES_PER_REGION else MAX_GLOBAL_CANDIDATES,
         )
         if (decoded.isEmpty()) return emptyList()
 
@@ -212,7 +285,6 @@ internal class ManzlStudentFloorPlanExpert(context: Context) {
                 if (accepted.none { existing -> nearlySameWall(existing, candidate) }) accepted += candidate
                 accepted
             }
-            .take(MAX_STUDENT_CANDIDATES)
     }
 
     private fun adjudicateAgainstSource(
@@ -305,6 +377,12 @@ internal class ManzlStudentFloorPlanExpert(context: Context) {
 
     private fun sigmoid(value: Float): Float = (1.0 / (1.0 + exp(-value.toDouble()))).toFloat()
 
+    private fun detailRegionLimit(maxHeapBytes: Long): Int = when {
+        maxHeapBytes >= LARGE_HEAP_BYTES -> 13
+        maxHeapBytes >= MEDIUM_HEAP_BYTES -> 9
+        else -> 5
+    }
+
     private data class PreparedInput(
         val bitmap: Bitmap,
         val transform: LetterboxTransform,
@@ -318,17 +396,25 @@ internal class ManzlStudentFloorPlanExpert(context: Context) {
         val scale: Float,
         val offsetX: Float,
         val offsetY: Float,
-        val sourceWidth: Int,
-        val sourceHeight: Int,
+        val sourceOriginX: Float,
+        val sourceOriginY: Float,
+        val regionWidth: Int,
+        val regionHeight: Int,
+        val fullSourceWidth: Int,
+        val fullSourceHeight: Int,
     ) {
         fun modelToSource(x: Float, y: Float): Pair<Float, Float>? {
             if (scale <= 0f) return null
-            val sx = (x - offsetX) / scale
-            val sy = (y - offsetY) / scale
-            if (sx < -MODEL_MAPPING_MARGIN || sy < -MODEL_MAPPING_MARGIN ||
-                sx > sourceWidth - 1 + MODEL_MAPPING_MARGIN || sy > sourceHeight - 1 + MODEL_MAPPING_MARGIN
+            val localX = (x - offsetX) / scale
+            val localY = (y - offsetY) / scale
+            if (
+                localX < -MODEL_MAPPING_MARGIN || localY < -MODEL_MAPPING_MARGIN ||
+                localX > regionWidth - 1 + MODEL_MAPPING_MARGIN ||
+                localY > regionHeight - 1 + MODEL_MAPPING_MARGIN
             ) return null
-            return sx.coerceIn(0f, sourceWidth - 1f) to sy.coerceIn(0f, sourceHeight - 1f)
+            val sx = sourceOriginX + localX.coerceIn(0f, regionWidth - 1f)
+            val sy = sourceOriginY + localY.coerceIn(0f, regionHeight - 1f)
+            return sx.coerceIn(0f, fullSourceWidth - 1f) to sy.coerceIn(0f, fullSourceHeight - 1f)
         }
     }
 
@@ -340,21 +426,29 @@ internal class ManzlStudentFloorPlanExpert(context: Context) {
         private const val ORIENTATION_OUTPUT_NAME = "wall_orientation"
         private const val SEMANTIC_CLASS_COUNT = 9
         private const val WALL_CLASS_ID = 1
-        private const val MIN_WALL_LOGIT_MARGIN = 0.22f
-        private const val MIN_STUDENT_VECTOR_PIXELS = 18f
-        private const val MIN_STUDENT_WALL_METERS = 0.42f
+        private const val GLOBAL_MIN_WALL_LOGIT_MARGIN = 0.22f
+        private const val DETAIL_MIN_WALL_LOGIT_MARGIN = 0.18f
+        private const val GLOBAL_MIN_VECTOR_PIXELS = 18f
+        private const val DETAIL_MIN_VECTOR_PIXELS = 12f
+        private const val MIN_STUDENT_WALL_METERS = 0.30f
         private const val DEFAULT_WALL_THICKNESS_METERS = 0.18f
         private const val MIN_WALL_THICKNESS_METERS = 0.09f
         private const val MAX_WALL_THICKNESS_METERS = 0.42f
-        private const val STUDENT_BASE_CONFIDENCE = 0.74f
-        private const val STUDENT_CONFIDENCE_RANGE = 0.22f
+        private const val STUDENT_BASE_CONFIDENCE = 0.72f
+        private const val STUDENT_CONFIDENCE_RANGE = 0.24f
         private const val MAX_STUDENT_CONFIDENCE = 0.95f
-        private const val MAX_STUDENT_CANDIDATES = 128
-        private const val ADJUDICATION_MAX_SIDE = 2800
+        private const val MAX_GLOBAL_CANDIDATES = 128
+        private const val MAX_DETAIL_CANDIDATES_PER_REGION = 72
+        private const val MAX_MERGED_STUDENT_CANDIDATES = 220
+        private const val DETAIL_SOURCE_SIDE_PX = 1200
+        private const val DETAIL_OVERLAP_FRACTION = 0.28f
+        private const val ADJUDICATION_MAX_SIDE = 3000
         private const val CONNECTION_METERS = 0.36f
         private const val DUPLICATE_ALIGNMENT = 0.982f
         private const val DUPLICATE_DISTANCE_METERS = 0.13f
         private const val MODEL_MAPPING_MARGIN = 1.5f
+        private const val MEDIUM_HEAP_BYTES = 320L * 1024L * 1024L
+        private const val LARGE_HEAP_BYTES = 448L * 1024L * 1024L
         private const val EPSILON = 0.000001f
     }
 }
