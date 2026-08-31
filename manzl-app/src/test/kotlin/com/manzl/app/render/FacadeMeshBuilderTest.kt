@@ -62,6 +62,30 @@ class FacadeMeshBuilderTest {
     }
 
     @Test
+    fun `perpendicular nearby door does not cut unrelated exterior wall`() {
+        val wall = WallSegment(Vec2(-2f, -2f), Vec2(2f, -2f), heightMeters = 3f)
+        val baseline = FacadeMeshBuilder.build(
+            plan(walls = listOf(wall), rooms = listOf(fullRoom())),
+        )
+        val crossingDoor = DoorOpening(
+            center = Vec2(0f, -2f),
+            widthMeters = 1f,
+            rotationDegrees = 90f,
+            confidence = 0.95f,
+        )
+        val withCrossingOpening = FacadeMeshBuilder.build(
+            plan(
+                walls = listOf(wall),
+                rooms = listOf(fullRoom()),
+                doors = listOf(crossingDoor),
+            ),
+        )
+
+        assertTrue(baseline.vertices.contentEquals(withCrossingOpening.vertices))
+        assertTrue(baseline.indices.contentEquals(withCrossingOpening.indices))
+    }
+
+    @Test
     fun `window receives projected surround with real side normals`() {
         val wall = WallSegment(Vec2(-2f, -2f), Vec2(2f, -2f), heightMeters = 3f)
         val window = WindowOpening(
