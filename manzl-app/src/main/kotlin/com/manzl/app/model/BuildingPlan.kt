@@ -27,9 +27,40 @@ data class StairLevelLink(
 )
 
 @Immutable
+enum class FloorRegistrationStatus {
+    ALIGNED,
+    REVIEW_REQUIRED,
+    UNRESOLVED,
+}
+
+@Immutable
+enum class FloorRegistrationEvidence {
+    STAIR_SHAFT,
+    FOOTPRINT_ONLY,
+    NONE,
+}
+
+/**
+ * Diagnostic only. suggestedOffsetX/Z describe how the upper drawing could be translated to align
+ * with the lower drawing, but the renderer never applies this offset automatically. Any future
+ * registration correction must be explicit/reviewable so source geometry is not silently warped.
+ */
+@Immutable
+data class FloorRegistrationDiagnostic(
+    val lowerLevelId: String,
+    val upperLevelId: String,
+    val status: FloorRegistrationStatus,
+    val evidence: FloorRegistrationEvidence,
+    val suggestedOffsetXMeters: Float = 0f,
+    val suggestedOffsetZMeters: Float = 0f,
+    val confidence: Float = 0f,
+)
+
+@Immutable
 data class BuildingPlan(
     val levels: List<FloorLevel>,
     val stairLinks: List<StairLevelLink> = emptyList(),
+    val registrationDiagnostics: List<FloorRegistrationDiagnostic> = emptyList(),
 ) {
     init {
         require(levels.map { it.id }.distinct().size == levels.size) {
