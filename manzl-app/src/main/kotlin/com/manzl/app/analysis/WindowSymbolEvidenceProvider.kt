@@ -17,10 +17,9 @@ import kotlin.math.sqrt
  * Offline window-symbol evidence provider.
  *
  * Architectural windows are commonly drawn as two thin parallel strokes inside a gap in the main
- * wall line. This provider first derives plausible collinear wall gaps from measured geometry, then
- * checks the original raster for two sustained parallel ink bands inside that exact opening. It
- * never invents topology: accepted observations are still projected and validated by
- * GeometryEvidenceFusion before entering the canonical FloorPlan.
+ * wall line. Candidates come from measured geometry, then the raster is sampled through the shared
+ * structural-bounds transform. Page margins/crop differences therefore cannot move the sampling
+ * window away from the geometrically accepted opening.
  */
 internal class WindowSymbolEvidenceProvider : SemanticEvidenceProvider {
 
@@ -127,11 +126,13 @@ internal class WindowSymbolEvidenceProvider : SemanticEvidenceProvider {
         gap: OpeningGap,
     ): Float? {
         if (plan.widthMeters <= 0f || plan.depthMeters <= 0f) return null
-        val centerX = ((gap.center.x / plan.widthMeters) + 0.5f) * imageWidth
-        val centerY = ((gap.center.z / plan.depthMeters) + 0.5f) * imageHeight
+        val transform = PlanRasterTransform.forImage(plan, imageWidth, imageHeight)
+        val center = transform.planToImage(gap.center)
+        val centerX = center.first
+        val centerY = center.second
         val horizontal = gap.rotationDegrees < 45f || gap.rotationDegrees > 135f
-        val alongPixelsPerMeter = if (horizontal) imageWidth / plan.widthMeters else imageHeight / plan.depthMeters
-        val perpendicularPixelsPerMeter = if (horizontal) imageHeight / plan.depthMeters else imageWidth / plan.widthMeters
+        val alongPixelsPerMeter = if (horizontal) transform.pixelsPerMeterX else transform.pixelsPerMeterZ
+        val perpendicularPixelsPerMeter = if (horizontal) transform.pixelsPerMeterZ else transform.pixelsPerMeterX
         val halfAlong = (gap.widthMeters * alongPixelsPerMeter * WINDOW_SCAN_SPAN_FRACTION * 0.5f)
             .roundToInt()
             .coerceAtLeast(MIN_ALONG_HALF_SPAN_PX)
