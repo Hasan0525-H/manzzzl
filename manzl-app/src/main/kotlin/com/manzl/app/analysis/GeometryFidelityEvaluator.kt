@@ -1,6 +1,8 @@
 package com.manzl.app.analysis
 
 import com.manzl.app.model.FloorPlan
+import com.manzl.app.model.GeometryFidelityIssue
+import com.manzl.app.model.GeometryFidelityIssueKind
 import com.manzl.app.model.GeometryFidelityReport
 import com.manzl.app.model.GeometryFidelityStatus
 import kotlin.math.ceil
@@ -8,7 +10,6 @@ import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
-import kotlin.math.sqrt
 
 /**
  * Independent raster-vs-geometry quality gate.
@@ -17,6 +18,9 @@ import kotlin.math.sqrt
  * image space and compares them with long line-like source evidence. This catches the failure mode
  * where a pipeline returns a clean-looking but incomplete/simplified house. Text and short symbols
  * are suppressed by a directional continuity filter before coverage is measured.
+ *
+ * In addition to aggregate scores it localizes the strongest disagreement regions. Those regions are
+ * review/correction hints only; they never relax PASS thresholds and never modify geometry.
  */
 internal object GeometryFidelityEvaluator {
 
@@ -99,14 +103,129 @@ internal object GeometryFidelityEvaluator {
             else -> GeometryFidelityStatus.BLOCKED
         }
 
+        val issues = localizeIssues(
+            sourceEvidence = sourceEvidence,
+            predicted = predicted,
+            sourceDilated = sourceDilated,
+            predictedDilated = predictedDilated,
+            width = imageWidth,
+            height = imageHeight,
+            bounds = bounds,
+        )
+
         return GeometryFidelityReport(
             score = score,
             wallCoverage = coverage,
             wallPrecision = precision,
             endpointSupport = endpointSupport,
             status = status,
+            issues = issues,
         )
     }
+
+    private fun localizeIssues(
+        sourceEvidence: BooleanArray,
+        predicted: BooleanArray,
+        sourceDilated: BooleanArray,
+        predictedDilated: BooleanArray,
+        width: Int,
+        height: Int,
+        bounds: PixelContentBounds,
+    ): List<GeometryFidelityIssue> {
+        if (bounds.width <= 0 || bounds.height <= 0) return emptyList()
+        val columns = (bounds.width / TARGET_TILE_SIZE_PX).coerceIn(2, MAX_ISSUE_GRID_AXIS)
+        val rows = (bounds.height / TARGET_TILE_SIZE_PX).coerceIn(2, MAX_ISSUE_GRID_AXIS)
+        val tileWidth = max(1, ceil(bounds.width / columns.toFloat()).toInt())
+        val tileHeight = max(1, ceil(bounds.height / rows.toFloat()).toInt())
+        val issues = ArrayList<GeometryFidelityIssue>()
+
+        for (rowIndex in 0 until rows) {
+            val top = bounds.top + rowIndex * tileHeight
+            val bottom = min(bounds.bottomExclusive, top + tileHeight)
+            if (bottom <= top) continue
+            for (columnIndex in 0 until columns) {
+                val left = bounds.left + columnIndex * tileWidth
+                val right = min(bounds.rightExclusive, left + tileWidth)
+                if (right <= left) continue
+
+                var source = 0
+                var sourceMatched = 0
+                var predictedCount = 0
+                var predictedMatched = 0
+                for (y in top until bottom) {
+                    val base = y * width
+                    for (x in left until right) {
+                        val index = base + x
+                        if (sourceEvidence[index]) {
+                            source++
+                            if (predictedDilated[index]) sourceMatched++
+                        }
+                        if (predicted[index]) {
+                            predictedCount++
+                            if (sourceDilated[index]) predictedMatched++
+                        }
+                    }
+                }
+
+                val tileArea = (right - left) * (bottom - top)
+                val minLocalEvidence = max(MIN_LOCAL_EVIDENCE_PIXELS, tileArea / LOCAL_EVIDENCE_AREA_DIVISOR)
+                if (source >= minLocalEvidence) {
+                    val localCoverage = sourceMatched / source.toFloat()
+                    val deficit = (1f - localCoverage).coerceIn(0f, 1f)
+                    if (deficit >= LOCAL_ISSUE_DEFICIT) {
+                        issues += issue(
+                            left = left,
+                            top = top,
+                            right = right,
+                            bottom = bottom,
+                            width = width,
+                            height = height,
+                            kind = GeometryFidelityIssueKind.MISSING_SOURCE,
+                            severity = deficit,
+                        )
+                    }
+                }
+                if (predictedCount >= minLocalEvidence) {
+                    val localPrecision = predictedMatched / predictedCount.toFloat()
+                    val deficit = (1f - localPrecision).coerceIn(0f, 1f)
+                    if (deficit >= LOCAL_ISSUE_DEFICIT) {
+                        issues += issue(
+                            left = left,
+                            top = top,
+                            right = right,
+                            bottom = bottom,
+                            width = width,
+                            height = height,
+                            kind = GeometryFidelityIssueKind.EXTRA_GEOMETRY,
+                            severity = deficit,
+                        )
+                    }
+                }
+            }
+        }
+
+        return issues
+            .sortedByDescending { it.severity }
+            .take(MAX_LOCAL_ISSUES)
+    }
+
+    private fun issue(
+        left: Int,
+        top: Int,
+        right: Int,
+        bottom: Int,
+        width: Int,
+        height: Int,
+        kind: GeometryFidelityIssueKind,
+        severity: Float,
+    ) = GeometryFidelityIssue(
+        leftFraction = (left / width.toFloat()).coerceIn(0f, 1f),
+        topFraction = (top / height.toFloat()).coerceIn(0f, 1f),
+        rightFraction = (right / width.toFloat()).coerceIn(0f, 1f),
+        bottomFraction = (bottom / height.toFloat()).coerceIn(0f, 1f),
+        kind = kind,
+        severity = severity.coerceIn(0f, 1f),
+    )
 
     private fun buildLineEvidence(
         mask: BooleanArray,
@@ -319,6 +438,7 @@ internal object GeometryFidelityEvaluator {
         wallPrecision = 0f,
         endpointSupport = 0f,
         status = GeometryFidelityStatus.BLOCKED,
+        issues = emptyList(),
     )
 
     private const val MIN_WALL_COUNT = 4
@@ -333,6 +453,13 @@ internal object GeometryFidelityEvaluator {
     private const val MIN_ENDPOINT_RADIUS_PX = 3
     private const val MAX_ENDPOINT_RADIUS_PX = 14
     private const val ENDPOINT_RADIUS_MULTIPLIER = 0.75f
+
+    private const val TARGET_TILE_SIZE_PX = 180
+    private const val MAX_ISSUE_GRID_AXIS = 7
+    private const val MIN_LOCAL_EVIDENCE_PIXELS = 8
+    private const val LOCAL_EVIDENCE_AREA_DIVISOR = 240
+    private const val LOCAL_ISSUE_DEFICIT = 0.34f
+    private const val MAX_LOCAL_ISSUES = 10
 
     private const val COVERAGE_WEIGHT = 0.48f
     private const val PRECISION_WEIGHT = 0.37f

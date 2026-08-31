@@ -1,6 +1,7 @@
 package com.manzl.app.analysis
 
 import com.manzl.app.model.FloorPlan
+import com.manzl.app.model.GeometryFidelityIssueKind
 import com.manzl.app.model.GeometryFidelityStatus
 import com.manzl.app.model.Vec2
 import com.manzl.app.model.WallSegment
@@ -28,10 +29,11 @@ class GeometryFidelityEvaluatorTest {
         assertTrue(report.wallCoverage > 0.70f)
         assertTrue(report.wallPrecision > 0.78f)
         assertTrue(report.endpointSupport > 0.90f)
+        assertTrue(report.issues.size <= 1)
     }
 
     @Test
-    fun `clean looking but displaced reconstruction scores much worse`() {
+    fun `clean looking but displaced reconstruction scores much worse and localizes disagreement`() {
         val width = 220
         val height = 220
         val sourceWalls = rectangleWalls()
@@ -49,6 +51,17 @@ class GeometryFidelityEvaluatorTest {
 
         assertTrue(bad.score < good.score - 0.22f)
         assertTrue(bad.status != GeometryFidelityStatus.PASS)
+        assertTrue(bad.issues.isNotEmpty())
+        assertTrue(bad.issues.any { it.kind == GeometryFidelityIssueKind.MISSING_SOURCE })
+        assertTrue(bad.issues.any { it.kind == GeometryFidelityIssueKind.EXTRA_GEOMETRY })
+        assertTrue(bad.issues.all {
+            it.leftFraction in 0f..1f &&
+                it.topFraction in 0f..1f &&
+                it.rightFraction in 0f..1f &&
+                it.bottomFraction in 0f..1f &&
+                it.rightFraction > it.leftFraction &&
+                it.bottomFraction > it.topFraction
+        })
     }
 
     private fun rectangleWalls(): List<WallSegment> = listOf(

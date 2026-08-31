@@ -41,6 +41,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.manzl.app.analysis.GeometryReviewItem
 import com.manzl.app.analysis.GeometryReviewStore
+import com.manzl.app.model.GeometryFidelityIssueKind
 import com.manzl.app.model.GeometryFidelityReport
 import com.manzl.app.model.GeometryFidelityStatus
 
@@ -50,6 +51,8 @@ private val ReviewPass = Color(0xFF1F7A4D)
 private val ReviewAmber = Color(0xFF9A6412)
 private val ReviewBlocked = Color(0xFF9B302A)
 private val ReviewBlue = Color(0xFF245A92)
+private val ReviewMissing = Color(0xFFCD1948)
+private val ReviewExtra = Color(0xFF582BAB)
 
 /**
  * Global trust surface layered above ManzlExperience without weakening the one-button workflow.
@@ -128,6 +131,8 @@ private fun GeometryReviewScreen(
     val report = item.plan.geometryFidelity
     val blocking = items.any { it.plan.geometryFidelity.status != GeometryFidelityStatus.PASS }
     val statusColor = statusColor(report.status)
+    val missingRegions = report.issues.count { it.kind == GeometryFidelityIssueKind.MISSING_SOURCE }
+    val extraRegions = report.issues.count { it.kind == GeometryFidelityIssueKind.EXTRA_GEOMETRY }
 
     Surface(
         modifier = Modifier.fillMaxSize(),
@@ -234,10 +239,45 @@ private fun GeometryReviewScreen(
                     )
 
                     Text(
-                        text = "لون الجدران: حالة المطابقة • أزرق: محاور الأبواب • سماوي: محاور النوافذ. المخطط الأصلي لا يتم تعديله.",
+                        text = "لون الجدران = حالة المطابقة • أزرق = الأبواب • سماوي = النوافذ. المربعات الوردية تحدد حبر جدران لم تغطه الهندسة، والبنفسجية تحدد هندسة زائدة محتملة.",
                         color = ReviewBlue,
                         style = MaterialTheme.typography.bodySmall,
                     )
+                    if (report.issues.isNotEmpty()) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            if (missingRegions > 0) {
+                                Surface(
+                                    shape = RoundedCornerShape(999.dp),
+                                    color = ReviewMissing.copy(alpha = 0.10f),
+                                ) {
+                                    Text(
+                                        text = "مناطق ناقصة: $missingRegions",
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                        color = ReviewMissing,
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold,
+                                    )
+                                }
+                            }
+                            if (extraRegions > 0) {
+                                Surface(
+                                    shape = RoundedCornerShape(999.dp),
+                                    color = ReviewExtra.copy(alpha = 0.10f),
+                                ) {
+                                    Text(
+                                        text = "هندسة زائدة: $extraRegions",
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                        color = ReviewExtra,
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold,
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
@@ -306,7 +346,7 @@ private fun GeometryReviewScreen(
 
             if (blocking) {
                 Text(
-                    text = "قاعدة منزل الحالية: لا يوجد زر لتجاوز هذه النتيجة. التصحيح القادم سيعدل الهندسة ثم يعيد قياسها؛ لن يحول REVIEW/BLOCKED إلى PASS شكلياً.",
+                    text = "قاعدة منزل الحالية: لا يوجد زر لتجاوز هذه النتيجة. أي تصحيح هندسي يجب أن يعاد قياسه مقابل المخطط؛ REVIEW/BLOCKED لا يتحول إلى PASS شكلياً.",
                     color = ReviewBlocked,
                     style = MaterialTheme.typography.bodySmall,
                 )
@@ -352,6 +392,9 @@ private fun geometryAdviceArabic(report: GeometryFidelityReport): List<String> {
     }
     if (report.endpointSupport < 0.75f) {
         advice += "دعم النهايات منخفض: نهايات الجدران أو التقاطعات تحتاج استخراجاً/تصحيحاً أدق."
+    }
+    if (report.issues.isNotEmpty()) {
+        advice += "تم تحديد ${report.issues.size} مناطق محلية ذات أكبر اختلاف لتوجيه المراجعة بدلاً من البحث في كامل المخطط."
     }
     if (advice.isEmpty()) {
         advice += if (report.status == GeometryFidelityStatus.PASS) {

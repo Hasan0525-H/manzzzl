@@ -5,6 +5,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import com.manzl.app.model.FloorPlan
+import com.manzl.app.model.GeometryFidelityIssueKind
 import com.manzl.app.model.GeometryFidelityStatus
 import com.manzl.app.model.Vec2
 import kotlin.math.PI
@@ -34,6 +35,8 @@ internal object GeometryOverlayRenderer {
         val canvas = Canvas(output)
         val transform = PlanRasterTransform.forImage(plan, width, height)
         val pixelsPerMeter = (transform.pixelsPerMeterX + transform.pixelsPerMeterZ) * 0.5f
+
+        drawLocalizedIssues(canvas, plan, width, height)
 
         val wallPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
@@ -94,6 +97,42 @@ internal object GeometryOverlayRenderer {
 
         if (scaled !== source && !scaled.isRecycled) scaled.recycle()
         return output
+    }
+
+    private fun drawLocalizedIssues(
+        canvas: Canvas,
+        plan: FloorPlan,
+        width: Int,
+        height: Int,
+    ) {
+        if (plan.geometryFidelity.issues.isEmpty()) return
+        val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+        val border = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = max(2f, minOf(width, height) / 420f)
+        }
+
+        plan.geometryFidelity.issues.forEach { issue ->
+            val left = issue.leftFraction.coerceIn(0f, 1f) * width
+            val top = issue.topFraction.coerceIn(0f, 1f) * height
+            val right = issue.rightFraction.coerceIn(0f, 1f) * width
+            val bottom = issue.bottomFraction.coerceIn(0f, 1f) * height
+            if (right <= left || bottom <= top) return@forEach
+
+            val alpha = (28 + issue.severity.coerceIn(0f, 1f) * 46f).toInt()
+            when (issue.kind) {
+                GeometryFidelityIssueKind.MISSING_SOURCE -> {
+                    fill.color = Color.argb(alpha, 225, 35, 92)
+                    border.color = Color.argb(210, 205, 25, 72)
+                }
+                GeometryFidelityIssueKind.EXTRA_GEOMETRY -> {
+                    fill.color = Color.argb(alpha, 112, 58, 196)
+                    border.color = Color.argb(205, 88, 43, 171)
+                }
+            }
+            canvas.drawRect(left, top, right, bottom, fill)
+            canvas.drawRect(left, top, right, bottom, border)
+        }
     }
 
     private fun drawOpeningAxis(

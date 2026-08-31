@@ -16,6 +16,8 @@ data class GeometryFidelityReport(
     val wallPrecision: Float,
     val endpointSupport: Float,
     val status: GeometryFidelityStatus,
+    /** Localized source-space regions that explain why aggregate fidelity is weak. */
+    val issues: List<GeometryFidelityIssue> = emptyList(),
 ) {
     companion object {
         val UNKNOWN = GeometryFidelityReport(
@@ -24,8 +26,28 @@ data class GeometryFidelityReport(
             wallPrecision = 0f,
             endpointSupport = 0f,
             status = GeometryFidelityStatus.UNKNOWN,
+            issues = emptyList(),
         )
     }
+}
+
+@Immutable
+data class GeometryFidelityIssue(
+    val leftFraction: Float,
+    val topFraction: Float,
+    val rightFraction: Float,
+    val bottomFraction: Float,
+    val kind: GeometryFidelityIssueKind,
+    val severity: Float,
+)
+
+@Immutable
+enum class GeometryFidelityIssueKind {
+    /** Source contains structural wall evidence that the reconstruction does not cover. */
+    MISSING_SOURCE,
+
+    /** Reconstruction places wall face pixels where source structural evidence is insufficient. */
+    EXTRA_GEOMETRY,
 }
 
 enum class GeometryFidelityStatus {
