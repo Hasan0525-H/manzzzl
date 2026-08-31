@@ -12,47 +12,59 @@ import kotlin.math.sqrt
  * Production-facing analyzer facade.
  *
  * 1) deterministic vision establishes measured topology and metric scale;
- * 2) optional bundled on-device AI providers report semantic evidence;
- * 3) GeometryEvidenceFusion accepts only evidence that is geometrically plausible;
- * 4) deterministic door/room topology closes remaining gaps;
- * 5) the reconciled FloorPlan becomes the sole source of truth for 3D generation.
+ * 2) deterministic door/room topology creates a geometry baseline;
+ * 3) bundled on-device semantic providers may label rooms or suggest stairs/openings;
+ * 4) GeometryEvidenceFusion accepts only evidence that is geometrically plausible;
+ * 5) deterministic topology is re-run after fusion and becomes the sole source of truth for 3D.
  *
  * No provider is allowed to require a network connection in the release build.
  */
 internal class HybridFloorPlanAnalyzer(
     private val structuralAnalyzer: FloorPlanAnalyzer = ClassicalFloorPlanAnalyzer(),
-    private val semanticProviders: List<SemanticEvidenceProvider> = emptyList(),
+    private val semanticProviders: List<SemanticEvidenceProvider> = listOf(
+        RoomLabelEvidenceProvider(),
+        StairPatternEvidenceProvider(),
+    ),
 ) : FloorPlanAnalyzer {
 
     override suspend fun analyze(bitmap: Bitmap, progress: ProgressSink): FloorPlan {
         val structural = structuralAnalyzer.analyze(
             bitmap = bitmap,
             progress = ProgressSink { update ->
-                // Reserve the final stages for semantic inference and topology reconciliation.
-                val remapped = (update.percent * 0.82f).toInt().coerceIn(0, 82)
+                // Reserve the final stages for topology, semantics and evidence reconciliation.
+                val remapped = (update.percent * 0.78f).toInt().coerceIn(0, 78)
                 progress.onUpdate(update.copy(percent = remapped))
             },
         )
 
-        progress.onUpdate(AnalysisUpdate(86, "تحليل الأبواب والنوافذ والسلالم محلياً"))
-        val semanticEvidence = ArrayList<SemanticEvidence>()
-        semanticProviders.forEach { provider ->
-            semanticEvidence += provider.analyze(bitmap, structural)
-        }
-
-        progress.onUpdate(AnalysisUpdate(91, "مطابقة نتائج الذكاء الاصطناعي مع هندسة المخطط"))
-        val reconciled = GeometryEvidenceFusion.fuse(structural, semanticEvidence)
-
-        progress.onUpdate(AnalysisUpdate(95, "مراجعة فتحات الأبواب ومسارات الحركة"))
-        val inferredDoors = DoorInferenceEngine.infer(reconciled)
-        val withDoors = reconciled.copy(
-            doors = mergeDoors(reconciled.doors, inferredDoors),
+        progress.onUpdate(AnalysisUpdate(82, "بناء خط أساس للأبواب والغرف"))
+        val baselineDoors = DoorInferenceEngine.infer(structural)
+        val withDoors = structural.copy(
+            doors = mergeDoors(structural.doors, baselineDoors),
+        )
+        val baselineRooms = RoomInferenceEngine.infer(withDoors)
+        val baseline = withDoors.copy(
+            rooms = mergeRooms(withDoors.rooms, baselineRooms),
         )
 
-        progress.onUpdate(AnalysisUpdate(98, "اكتشاف حدود الغرف والأسقف"))
-        val inferredRooms = RoomInferenceEngine.infer(withDoors)
-        val enriched = withDoors.copy(
-            rooms = mergeRooms(withDoors.rooms, inferredRooms),
+        progress.onUpdate(AnalysisUpdate(87, "قراءة أسماء الغرف واكتشاف السلالم محلياً"))
+        val semanticEvidence = ArrayList<SemanticEvidence>()
+        semanticProviders.forEach { provider ->
+            semanticEvidence += provider.analyze(bitmap, baseline)
+        }
+
+        progress.onUpdate(AnalysisUpdate(92, "مطابقة الدلالات مع هندسة المخطط"))
+        val reconciled = GeometryEvidenceFusion.fuse(baseline, semanticEvidence)
+
+        progress.onUpdate(AnalysisUpdate(96, "مراجعة الفتحات ومسارات الحركة"))
+        val inferredDoors = DoorInferenceEngine.infer(reconciled)
+        val finalDoors = mergeDoors(reconciled.doors, inferredDoors)
+        val withFinalDoors = reconciled.copy(doors = finalDoors)
+
+        progress.onUpdate(AnalysisUpdate(98, "مراجعة حدود الغرف والأسقف"))
+        val inferredRooms = RoomInferenceEngine.infer(withFinalDoors)
+        val enriched = withFinalDoors.copy(
+            rooms = mergeRooms(withFinalDoors.rooms, inferredRooms),
         )
 
         progress.onUpdate(AnalysisUpdate(100, "تم تجهيز المنزل للجولة"))
@@ -76,15 +88,23 @@ internal class HybridFloorPlanAnalyzer(
         val result = ArrayList<RoomRegion>()
         for (candidate in (base + inferred).sortedByDescending { it.confidence }) {
             val center = candidate.centroidOrNull() ?: continue
-            val duplicate = result.any { existing ->
-                val existingCenter = existing.centroidOrNull() ?: return@any false
+            val index = result.indexOfFirst { existing ->
+                val existingCenter = existing.centroidOrNull() ?: return@indexOfFirst false
                 val dx = existingCenter.x - center.x
                 val dz = existingCenter.z - center.z
                 val distance = sqrt(dx * dx + dz * dz)
                 distance <= ROOM_CENTER_DUPLICATE_METERS &&
                     areaRatio(existing, candidate) >= ROOM_DUPLICATE_MIN_AREA_RATIO
             }
-            if (!duplicate) result += candidate
+            if (index < 0) {
+                result += candidate
+            } else if (result[index].label.isNullOrBlank() && !candidate.label.isNullOrBlank()) {
+                val existing = result[index]
+                result[index] = existing.copy(
+                    label = candidate.label,
+                    confidence = maxOf(existing.confidence, candidate.confidence),
+                )
+            }
         }
         return result
     }

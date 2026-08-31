@@ -14,12 +14,12 @@ import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
 /**
- * Canonical geometry guard between AI observations and the generated house.
+ * Canonical geometry guard between semantic observations and the generated house.
  *
- * A local model is allowed to suggest semantics, never to silently rewrite measured topology.
- * Doors/windows must sit close to a detected wall; rooms must be bounded and have meaningful area;
- * stairs must fit plausible residential dimensions. Explicit user corrections receive a lower
- * confidence threshold but still pass basic geometry safety checks.
+ * A local model/provider is allowed to suggest semantics, never to silently rewrite measured
+ * topology. Doors/windows must sit close to a detected wall; rooms must be bounded and have
+ * meaningful area; stairs must fit plausible residential dimensions. Explicit user corrections
+ * receive a lower confidence threshold but still pass basic geometry safety checks.
  */
 internal object GeometryEvidenceFusion {
 
@@ -129,7 +129,22 @@ internal object GeometryEvidenceFusion {
         val index = target.indexOfFirst {
             squaredDistance(polygonCentroid(it.polygon), candidateCenter) < DUPLICATE_ROOM_CENTER_DISTANCE_SQ
         }
-        if (index < 0) target += candidate else if (candidate.confidence > target[index].confidence) target[index] = candidate
+        if (index < 0) {
+            target += candidate
+            return
+        }
+
+        val existing = target[index]
+        target[index] = when {
+            existing.label.isNullOrBlank() && !candidate.label.isNullOrBlank() -> existing.copy(
+                label = candidate.label,
+                confidence = max(existing.confidence, candidate.confidence),
+            )
+            candidate.confidence > existing.confidence -> candidate.copy(
+                label = candidate.label ?: existing.label,
+            )
+            else -> existing
+        }
     }
 
     private fun nearestWall(walls: List<WallSegment>, point: Vec2): WallSegment? =
