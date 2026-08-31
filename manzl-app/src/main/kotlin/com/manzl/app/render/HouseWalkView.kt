@@ -48,6 +48,7 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
     private var movementStrafe = 0f
 
     private var collisionWorld: CollisionWorld? = null
+    private var stairTraversalResolver: StairTraversalResolver? = null
     private var walls: GlMesh? = null
     private var floor: GlMesh? = null
     private var ceiling: GlMesh? = null
@@ -70,6 +71,7 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
     private var aspect = 1f
     private var cameraX = 0f
     private var cameraZ = 0f
+    private var cameraElevationY = 0f
     private var yaw = 0f
     private var pitch = 0f
     private var velocityX = 0f
@@ -95,6 +97,7 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
         val world = CollisionWorld(plan)
         val design = ReferenceDrivenDesignEngine.synthesize(plan)
         collisionWorld = world
+        stairTraversalResolver = StairTraversalResolver(plan)
         pendingSpawn = world.findSpawn(PLAYER_RADIUS)
         pendingDesign = design
         pendingMesh = HouseMeshBuilder.build(
@@ -128,6 +131,7 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
         queueEvent {
             cameraX = spawn.x
             cameraZ = spawn.z
+            cameraElevationY = 0f
             yaw = 0f
             pitch = 0f
             velocityX = 0f
@@ -200,6 +204,7 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
             pendingSpawn = null
             cameraX = spawn.x
             cameraZ = spawn.z
+            cameraElevationY = 0f
             velocityX = 0f
             velocityZ = 0f
             lastFrameNanos = 0L
@@ -221,7 +226,7 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
 
         val horizontalSpeed = sqrt(velocityX * velocityX + velocityZ * velocityZ)
         val bobStrength = (horizontalSpeed / WALK_SPEED_METERS_PER_SECOND).coerceIn(0f, 1f)
-        val eyeY = EYE_HEIGHT_METERS + sin(walkPhase) * HEAD_BOB_METERS * bobStrength
+        val eyeY = cameraElevationY + EYE_HEIGHT_METERS + sin(walkPhase) * HEAD_BOB_METERS * bobStrength
         val cosPitch = cos(pitch)
         val lookX = cameraX + sin(yaw) * cosPitch
         val lookY = eyeY + sin(pitch)
@@ -302,12 +307,20 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
 
         val intendedX = cameraX + velocityX * deltaSeconds
         val intendedZ = cameraZ + velocityZ * deltaSeconds
-        val moved = collisionWorld?.move(
-            position = Vec2(cameraX, cameraZ),
+        val from = Vec2(cameraX, cameraZ)
+        val horizontalMoved = collisionWorld?.move(
+            position = from,
             deltaX = velocityX * deltaSeconds,
             deltaZ = velocityZ * deltaSeconds,
             radius = PLAYER_RADIUS,
         ) ?: Vec2(intendedX, intendedZ)
+        val verticalMove = stairTraversalResolver?.resolveMove(
+            from = from,
+            to = horizontalMoved,
+            currentElevationMeters = cameraElevationY,
+        )
+        val moved = verticalMove?.position ?: horizontalMoved
+        if (verticalMove != null) cameraElevationY = verticalMove.elevationMeters
 
         if (abs(moved.x - intendedX) > COLLISION_VELOCITY_TOLERANCE) velocityX *= COLLISION_DAMPING
         if (abs(moved.z - intendedZ) > COLLISION_VELOCITY_TOLERANCE) velocityZ *= COLLISION_DAMPING
@@ -323,12 +336,20 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
     private fun moveImmediate(localForwardMeters: Float, localStrafeMeters: Float) {
         val dx = sin(yaw) * localForwardMeters + cos(yaw) * localStrafeMeters
         val dz = -cos(yaw) * localForwardMeters + sin(yaw) * localStrafeMeters
-        val moved = collisionWorld?.move(
-            position = Vec2(cameraX, cameraZ),
+        val from = Vec2(cameraX, cameraZ)
+        val horizontalMoved = collisionWorld?.move(
+            position = from,
             deltaX = dx,
             deltaZ = dz,
             radius = PLAYER_RADIUS,
         ) ?: Vec2(cameraX + dx, cameraZ + dz)
+        val verticalMove = stairTraversalResolver?.resolveMove(
+            from = from,
+            to = horizontalMoved,
+            currentElevationMeters = cameraElevationY,
+        )
+        val moved = verticalMove?.position ?: horizontalMoved
+        if (verticalMove != null) cameraElevationY = verticalMove.elevationMeters
         cameraX = moved.x
         cameraZ = moved.z
     }
