@@ -69,6 +69,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import com.manzl.app.analysis.BuildingPlanAssembler
 import com.manzl.app.analysis.HybridFloorPlanAnalyzer
 import com.manzl.app.analysis.ProgressSink
+import com.manzl.app.analysis.ReviewedRegistrationApplier
 import com.manzl.app.model.BuildingPlan
 import com.manzl.app.model.DoorHingeSide
 import com.manzl.app.model.DoorSwingSide
@@ -127,7 +128,9 @@ private fun ManzlExperienceContent() {
 
     var screen by remember { mutableStateOf(ManzlScreen.CREATE) }
     var drafts by remember { mutableStateOf<List<FloorDraft>>(emptyList()) }
+    var canonicalBuilding by remember { mutableStateOf<BuildingPlan?>(null) }
     var building by remember { mutableStateOf<BuildingPlan?>(null) }
+    var registrationApplied by remember { mutableStateOf(false) }
     var pickerIntent by remember { mutableStateOf(PickerIntent.REPLACE_ALL) }
     var progress by remember { mutableIntStateOf(0) }
     var stage by remember { mutableStateOf("جاهز") }
@@ -150,7 +153,6 @@ private fun ManzlExperienceContent() {
         TourRecordingState.clearSavedUri()
         screen = ManzlScreen.WALK
         scope.launch {
-            // Let the first walkthrough frame reach the screen before the virtual display starts.
             delay(260)
             val metrics = context.resources.displayMetrics
             TourRecordingService.start(
@@ -168,7 +170,9 @@ private fun ManzlExperienceContent() {
         if (uri == null) return@rememberLauncherForActivityResult
         scope.launch {
             error = null
+            canonicalBuilding = null
             building = null
+            registrationApplied = false
             progress = 0
             val decoded = runCatching {
                 withContext(Dispatchers.IO) {
@@ -201,6 +205,7 @@ private fun ManzlExperienceContent() {
         ManzlScreen.CREATE -> CreateHouseScreen(
             drafts = drafts,
             building = building,
+            registrationApplied = registrationApplied,
             progress = progress,
             stage = stage,
             processing = processing,
@@ -219,7 +224,9 @@ private fun ManzlExperienceContent() {
                 if (inputs.isEmpty()) return@CreateHouseScreen
                 processing = true
                 error = null
+                canonicalBuilding = null
                 building = null
+                registrationApplied = false
                 progress = 0
                 stage = "بدء التحليل الهندسي"
 
@@ -243,6 +250,7 @@ private fun ManzlExperienceContent() {
                     }
 
                     result.onSuccess { generatedBuilding ->
+                        canonicalBuilding = generatedBuilding
                         building = generatedBuilding
                         progress = 100
                         val needsRegistrationReview = generatedBuilding.registrationDiagnostics.any {
@@ -259,13 +267,36 @@ private fun ManzlExperienceContent() {
                     processing = false
                 }
             },
+            onApplyRegistration = {
+                val source = canonicalBuilding ?: return@CreateHouseScreen
+                val result = ReviewedRegistrationApplier.applyAllReviewable(source)
+                if (result.appliedPairCount <= 0) {
+                    error = "لا توجد محاذاة موثوقة بما يكفي لتطبيقها تلقائياً بعد موافقتك."
+                } else {
+                    building = result.building
+                    registrationApplied = true
+                    error = null
+                    stage = "تم تطبيق ${result.appliedPairCount} محاذاة على نسخة الجولة فقط"
+                }
+            },
+            onRevertRegistration = {
+                val source = canonicalBuilding
+                if (source != null) {
+                    building = source
+                    registrationApplied = false
+                    error = null
+                    stage = "تم إلغاء محاذاة العرض والعودة للمخططات الأصلية"
+                }
+            },
             onWalk = {
                 error = null
                 recordingPermission.launch(projectionManager.createScreenCaptureIntent())
             },
             onReset = {
                 drafts = emptyList()
+                canonicalBuilding = null
                 building = null
+                registrationApplied = false
                 progress = 0
                 stage = "جاهز"
                 error = null
@@ -295,6 +326,7 @@ private fun ManzlExperienceContent() {
 private fun CreateHouseScreen(
     drafts: List<FloorDraft>,
     building: BuildingPlan?,
+    registrationApplied: Boolean,
     progress: Int,
     stage: String,
     processing: Boolean,
@@ -303,6 +335,8 @@ private fun CreateHouseScreen(
     onPickFirst: () -> Unit,
     onAddFloor: () -> Unit,
     onExecute: () -> Unit,
+    onApplyRegistration: () -> Unit,
+    onRevertRegistration: () -> Unit,
     onWalk: () -> Unit,
     onReset: () -> Unit,
 ) {
@@ -524,11 +558,14 @@ private fun CreateHouseScreen(
                             style = MaterialTheme.typography.bodySmall,
                         )
                     }
-                    if (reviewDiagnostics.isNotEmpty() || unresolvedDiagnostics.isNotEmpty()) {
+                    if (registrationApplied) {
+                        RegistrationAppliedNotice(onRevert = onRevertRegistration)
+                    } else if (reviewDiagnostics.isNotEmpty() || unresolvedDiagnostics.isNotEmpty()) {
                         RegistrationWarning(
                             building = generated,
                             reviewCount = reviewDiagnostics.size,
                             unresolvedCount = unresolvedDiagnostics.size,
+                            onApply = onApplyRegistration,
                         )
                     }
                     Button(
@@ -556,7 +593,9 @@ private fun RegistrationWarning(
     building: BuildingPlan,
     reviewCount: Int,
     unresolvedCount: Int,
+    onApply: () -> Unit,
 ) {
+    val canApply = ReviewedRegistrationApplier.hasApplicableCorrection(building)
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(12.dp),
@@ -564,7 +603,7 @@ private fun RegistrationWarning(
     ) {
         Column(
             modifier = Modifier.padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(5.dp),
+            verticalArrangement = Arrangement.spacedBy(7.dp),
         ) {
             Text(
                 "محاذاة الأدوار تحتاج انتباه",
@@ -585,7 +624,7 @@ private fun RegistrationWarning(
                     if (lowerIndex >= 0 && upperIndex >= 0) {
                         Text(
                             "${floorNameArabic(lowerIndex)} ↔ ${floorNameArabic(upperIndex)}: " +
-                                "اقتراح فقط ΔX ${"%.2f".format(diagnostic.suggestedOffsetXMeters)}م، " +
+                                "اقتراح ΔX ${"%.2f".format(diagnostic.suggestedOffsetXMeters)}م، " +
                                 "ΔZ ${"%.2f".format(diagnostic.suggestedOffsetZMeters)}م • " +
                                 "ثقة ${(diagnostic.confidence * 100).toInt()}%",
                             color = ManzlAmberInk,
@@ -593,6 +632,58 @@ private fun RegistrationWarning(
                         )
                     }
                 }
+            if (canApply) {
+                Text(
+                    "لن يتغير المخطط الأصلي. عند موافقتك ستُنشأ نسخة محاذاة للجولة والـ3D فقط ويمكن إلغاؤها فوراً.",
+                    color = ManzlAmberInk,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Button(
+                    onClick = onApply,
+                    modifier = Modifier.fillMaxWidth().height(46.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = ManzlAmberInk,
+                        contentColor = Color.White,
+                    ),
+                ) {
+                    Text("موافق • طبّق المحاذاة الموثوقة")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RegistrationAppliedNotice(onRevert: () -> Unit) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        color = Color(0xFFE8F2FF),
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(7.dp),
+        ) {
+            Text(
+                "تم تطبيق محاذاة الأدوار على نسخة الجولة فقط",
+                color = Color(0xFF245A92),
+                style = MaterialTheme.typography.titleSmall,
+            )
+            Text(
+                "المخططات الأصلية محفوظة كما رُفعت ولم تتغير أي هندسة مصدرية. يمكنك العودة إليها قبل بدء الجولة.",
+                color = Color(0xFF245A92),
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Button(
+                onClick = onRevert,
+                modifier = Modifier.fillMaxWidth().height(44.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color(0xFFDCE9F7),
+                    contentColor = Color(0xFF245A92),
+                ),
+            ) {
+                Text("إلغاء المحاذاة والعودة للأصل")
+            }
         }
     }
 }
