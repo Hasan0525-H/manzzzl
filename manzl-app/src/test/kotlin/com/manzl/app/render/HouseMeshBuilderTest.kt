@@ -1,6 +1,8 @@
 package com.manzl.app.render
 
+import com.manzl.app.model.DoorHingeSide
 import com.manzl.app.model.DoorOpening
+import com.manzl.app.model.DoorSwingSide
 import com.manzl.app.model.FloorPlan
 import com.manzl.app.model.RoomRegion
 import com.manzl.app.model.Staircase
@@ -62,6 +64,36 @@ class HouseMeshBuilderTest {
 
         assertEquals(3 * 6 * 4 * 6, mesh.trimVertices.size)
         assertEquals(3 * 6 * 6, mesh.trimIndices.size)
+        assertTrue(mesh.trimVertices.all { it.isFinite() })
+    }
+
+    @Test
+    fun `trusted swing evidence adds an open physical door leaf`() {
+        val plan = FloorPlan(
+            widthMeters = 6f,
+            depthMeters = 4f,
+            walls = emptyList(),
+            doors = listOf(
+                DoorOpening(
+                    center = Vec2(0f, 0f),
+                    widthMeters = 1f,
+                    rotationDegrees = 0f,
+                    confidence = 0.9f,
+                    hingeSide = DoorHingeSide.AXIS_START,
+                    swingSide = DoorSwingSide.POSITIVE_NORMAL,
+                    swingConfidence = 0.86f,
+                )
+            ),
+            analysisConfidence = 1f,
+            sourceWidthPx = 1000,
+            sourceHeightPx = 800,
+        )
+
+        val mesh = HouseMeshBuilder.build(plan)
+
+        // Three frame boxes plus one six-face door-leaf box.
+        assertEquals(4 * 6 * 4 * 6, mesh.trimVertices.size)
+        assertEquals(4 * 6 * 6, mesh.trimIndices.size)
         assertTrue(mesh.trimVertices.all { it.isFinite() })
     }
 
