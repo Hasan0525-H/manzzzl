@@ -68,6 +68,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.manzl.app.analysis.BuildingPlanAssembler
 import com.manzl.app.analysis.HybridFloorPlanAnalyzer
+import com.manzl.app.analysis.MetricScaleReviewApplier
 import com.manzl.app.analysis.ProgressSink
 import com.manzl.app.analysis.ReviewedRegistrationApplier
 import com.manzl.app.model.BuildingPlan
@@ -128,8 +129,10 @@ private fun ManzlExperienceContent() {
 
     var screen by remember { mutableStateOf(ManzlScreen.CREATE) }
     var drafts by remember { mutableStateOf<List<FloorDraft>>(emptyList()) }
+    var sourceBuilding by remember { mutableStateOf<BuildingPlan?>(null) }
     var canonicalBuilding by remember { mutableStateOf<BuildingPlan?>(null) }
     var building by remember { mutableStateOf<BuildingPlan?>(null) }
+    var metricScaleOverrides by remember { mutableStateOf<Map<String, Float>>(emptyMap()) }
     var registrationApplied by remember { mutableStateOf(false) }
     var pickerIntent by remember { mutableStateOf(PickerIntent.REPLACE_ALL) }
     var progress by remember { mutableIntStateOf(0) }
@@ -170,8 +173,10 @@ private fun ManzlExperienceContent() {
         if (uri == null) return@rememberLauncherForActivityResult
         scope.launch {
             error = null
+            sourceBuilding = null
             canonicalBuilding = null
             building = null
+            metricScaleOverrides = emptyMap()
             registrationApplied = false
             progress = 0
             val decoded = runCatching {
@@ -205,6 +210,7 @@ private fun ManzlExperienceContent() {
         ManzlScreen.CREATE -> CreateHouseScreen(
             drafts = drafts,
             building = building,
+            metricScaleAdjusted = metricScaleOverrides.isNotEmpty(),
             registrationApplied = registrationApplied,
             progress = progress,
             stage = stage,
@@ -224,8 +230,10 @@ private fun ManzlExperienceContent() {
                 if (inputs.isEmpty()) return@CreateHouseScreen
                 processing = true
                 error = null
+                sourceBuilding = null
                 canonicalBuilding = null
                 building = null
+                metricScaleOverrides = emptyMap()
                 registrationApplied = false
                 progress = 0
                 stage = "بدء التحليل الهندسي"
@@ -250,13 +258,16 @@ private fun ManzlExperienceContent() {
                     }
 
                     result.onSuccess { generatedBuilding ->
+                        sourceBuilding = generatedBuilding
                         canonicalBuilding = generatedBuilding
                         building = generatedBuilding
                         progress = 100
+                        val needsScaleReview = MetricScaleReviewApplier.needsReview(generatedBuilding)
                         val needsRegistrationReview = generatedBuilding.registrationDiagnostics.any {
                             it.status != FloorRegistrationStatus.ALIGNED
                         }
                         stage = when {
+                            needsScaleReview -> "تم البناء • مقياس بعض الأدوار يحتاج تأكيد اختياري"
                             generatedBuilding.levels.size == 1 -> "جاهز للجولة"
                             needsRegistrationReview -> "تم البناء • بعض محاذاة الأدوار تحتاج مراجعة"
                             else -> "تم بناء ${generatedBuilding.levels.size} أدوار وربط السلالم الموثوقة"
@@ -265,6 +276,37 @@ private fun ManzlExperienceContent() {
                         error = it.message ?: "تعذر تحليل المخطط"
                     }
                     processing = false
+                }
+            },
+            onApplyMetricScale = { entered ->
+                val source = sourceBuilding ?: return@CreateHouseScreen
+                val combined = metricScaleOverrides + entered
+                val result = MetricScaleReviewApplier.apply(source, combined)
+                val acceptedIds = result.building.levels
+                    .filter { it.plan.scaleSource == "user_overall_dimension" }
+                    .map { it.id }
+                    .toSet()
+                val acceptedNewInput = entered.keys.any { it in acceptedIds }
+                if (!acceptedNewInput) {
+                    error = "المقاس المدخل بعيد جداً عن المقياس الحالي أو خارج المجال المقبول. راجع الرقم بالمتر."
+                } else {
+                    metricScaleOverrides = combined.filterKeys { it in acceptedIds }
+                    canonicalBuilding = result.building
+                    building = result.building
+                    registrationApplied = false
+                    error = null
+                    stage = "تم اعتماد القياس المؤكد وإعادة ربط هندسة الأدوار"
+                }
+            },
+            onRevertMetricScale = {
+                val source = sourceBuilding
+                if (source != null) {
+                    metricScaleOverrides = emptyMap()
+                    canonicalBuilding = source
+                    building = source
+                    registrationApplied = false
+                    error = null
+                    stage = "تم إلغاء تصحيح القياس والعودة إلى نتيجة التحليل الأصلية"
                 }
             },
             onApplyRegistration = {
@@ -294,8 +336,10 @@ private fun ManzlExperienceContent() {
             },
             onReset = {
                 drafts = emptyList()
+                sourceBuilding = null
                 canonicalBuilding = null
                 building = null
+                metricScaleOverrides = emptyMap()
                 registrationApplied = false
                 progress = 0
                 stage = "جاهز"
@@ -326,6 +370,7 @@ private fun ManzlExperienceContent() {
 private fun CreateHouseScreen(
     drafts: List<FloorDraft>,
     building: BuildingPlan?,
+    metricScaleAdjusted: Boolean,
     registrationApplied: Boolean,
     progress: Int,
     stage: String,
@@ -335,6 +380,8 @@ private fun CreateHouseScreen(
     onPickFirst: () -> Unit,
     onAddFloor: () -> Unit,
     onExecute: () -> Unit,
+    onApplyMetricScale: (Map<String, Float>) -> Unit,
+    onRevertMetricScale: () -> Unit,
     onApplyRegistration: () -> Unit,
     onRevertRegistration: () -> Unit,
     onWalk: () -> Unit,
@@ -556,6 +603,15 @@ private fun CreateHouseScreen(
                             "روابط السلالم الموثوقة بين الأدوار: ${generated.stairLinks.size}. لن يتم اختراع انتقال بين دورين إذا لم تتطابق هندسة السلم.",
                             color = Color(0xFF56715E),
                             style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    if (metricScaleAdjusted) {
+                        MetricScaleAppliedNotice(onRevert = onRevertMetricScale)
+                    }
+                    if (MetricScaleReviewApplier.needsReview(generated)) {
+                        MetricScaleReviewCard(
+                            building = generated,
+                            onApply = onApplyMetricScale,
                         )
                     }
                     if (registrationApplied) {
