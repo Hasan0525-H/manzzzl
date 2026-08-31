@@ -13,7 +13,6 @@ import com.manzl.app.model.Vec2
 import com.manzl.app.model.WallSegment
 import java.nio.FloatBuffer
 import kotlin.math.abs
-import kotlin.math.exp
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sqrt
@@ -23,9 +22,9 @@ import kotlin.math.sqrt
  *
  * Reconstruction is multi-scale: one letterboxed global 512px pass provides topology, then overlapping
  * source-space detail tiles preserve short partitions/openings that would vanish when a 4K sheet is
- * globally reduced to 512px. Semantic, corner and orientation heads are decoded into arbitrary-angle
- * vectors; all vectors map back to original source coordinates and remain proposal-only until the
- * independent raster fidelity adjudicator accepts them.
+ * globally reduced to 512px. The same inference simultaneously decodes wall vectors and door/window/
+ * stair observations; semantic observations are cached for the later fusion stage so ONNX is never
+ * run twice for the same plan. All geometry remains proposal-only until source-raster adjudication.
  */
 internal class ManzlStudentFloorPlanExpert(context: Context) {
     private val models = OnnxAssetModelRepository(context)
@@ -36,9 +35,11 @@ internal class ManzlStudentFloorPlanExpert(context: Context) {
         val proposedWalls: Int,
         val acceptedWalls: Int,
         val inferenceRegions: Int = 0,
+        val semanticObservations: Int = 0,
     )
 
     fun refine(source: Bitmap, seed: FloorPlan): Result {
+        StudentSemanticEvidenceStore.clear(source)
         val environment = models.environmentOrNull()
             ?: return Result(seed, false, 0, 0)
         val session = models.session(UltraModelCatalog.MANZL_RECONSTRUCTION_STUDENT)
@@ -57,6 +58,7 @@ internal class ManzlStudentFloorPlanExpert(context: Context) {
         if (regions.isEmpty()) return Result(seed, true, 0, 0)
 
         val candidates = ArrayList<WallSegment>()
+        val semanticEvidence = ArrayList<SemanticEvidence>()
         var successfulRegions = 0
         for (region in regions) {
             val inferred = inferRegion(
@@ -68,7 +70,8 @@ internal class ManzlStudentFloorPlanExpert(context: Context) {
             )
             if (inferred != null) {
                 successfulRegions++
-                candidates += inferred
+                candidates += inferred.walls
+                semanticEvidence += inferred.semanticEvidence
             }
         }
 
@@ -83,8 +86,18 @@ internal class ManzlStudentFloorPlanExpert(context: Context) {
             }
             .take(MAX_MERGED_STUDENT_CANDIDATES)
 
+        val stableSemantics = SemanticEvidenceConsensus.combine(semanticEvidence)
+        StudentSemanticEvidenceStore.record(source, stableSemantics)
+
         if (uniqueCandidates.isEmpty()) {
-            return Result(seed, true, 0, 0, successfulRegions)
+            return Result(
+                plan = seed,
+                modelAvailable = true,
+                proposedWalls = 0,
+                acceptedWalls = 0,
+                inferenceRegions = successfulRegions,
+                semanticObservations = stableSemantics.size,
+            )
         }
         val adjudicated = adjudicateAgainstSource(source, seed, uniqueCandidates)
         return Result(
@@ -93,6 +106,7 @@ internal class ManzlStudentFloorPlanExpert(context: Context) {
             proposedWalls = uniqueCandidates.size,
             acceptedWalls = adjudicated.second,
             inferenceRegions = successfulRegions,
+            semanticObservations = stableSemantics.size,
         )
     }
 
@@ -102,7 +116,7 @@ internal class ManzlStudentFloorPlanExpert(context: Context) {
         region: StudentInferenceTilePlanner.Region,
         environment: OrtEnvironment,
         session: OrtSession,
-    ): List<WallSegment>? {
+    ): RegionInference? {
         val prepared = prepareLetterboxedInput(source, region)
         val inputData = preprocess(prepared.bitmap)
         val inputTensor = runCatching {
@@ -124,7 +138,7 @@ internal class ManzlStudentFloorPlanExpert(context: Context) {
                     ?: return@use null
                 val orientation = outputs.get(ORIENTATION_OUTPUT_NAME).orElse(null) as? OnnxTensor
                     ?: return@use null
-                wallCandidatesFromOutputs(
+                decodeRegionOutputs(
                     semantic = semantic,
                     corners = corners,
                     orientation = orientation,
@@ -205,7 +219,7 @@ internal class ManzlStudentFloorPlanExpert(context: Context) {
         return result
     }
 
-    private fun wallCandidatesFromOutputs(
+    private fun decodeRegionOutputs(
         semantic: OnnxTensor,
         corners: OnnxTensor,
         orientation: OnnxTensor,
@@ -214,60 +228,30 @@ internal class ManzlStudentFloorPlanExpert(context: Context) {
         sourceHeight: Int,
         inputTransform: LetterboxTransform,
         detailPass: Boolean,
-    ): List<WallSegment> {
-        val plane = INPUT_SIDE * INPUT_SIDE
-        val semanticValues = semantic.floatBuffer?.let { buffer ->
-            if (buffer.remaining() < SEMANTIC_CLASS_COUNT * plane) return emptyList()
-            FloatArray(SEMANTIC_CLASS_COUNT * plane).also(buffer::get)
-        } ?: return emptyList()
-        val cornerValues = corners.floatBuffer?.let { buffer ->
-            if (buffer.remaining() < plane) return emptyList()
-            FloatArray(plane).also(buffer::get)
-        } ?: return emptyList()
-        val orientationValues = orientation.floatBuffer?.let { buffer ->
-            if (buffer.remaining() < 2 * plane) return emptyList()
-            FloatArray(2 * plane).also(buffer::get)
-        } ?: return emptyList()
+    ): RegionInference? {
+        val heads = StudentDenseHeadDecoder.decode(
+            semantic = semantic,
+            corners = corners,
+            orientation = orientation,
+            side = INPUT_SIDE,
+            wallLogitMargin = if (detailPass) DETAIL_MIN_WALL_LOGIT_MARGIN else GLOBAL_MIN_WALL_LOGIT_MARGIN,
+        ) ?: return null
 
-        val wallMask = BooleanArray(plane)
-        val logitMargin = if (detailPass) DETAIL_MIN_WALL_LOGIT_MARGIN else GLOBAL_MIN_WALL_LOGIT_MARGIN
-        for (pixel in 0 until plane) {
-            var bestClass = 0
-            var best = semanticValues[pixel]
-            var runnerUp = Float.NEGATIVE_INFINITY
-            for (clazz in 1 until SEMANTIC_CLASS_COUNT) {
-                val value = semanticValues[clazz * plane + pixel]
-                if (value > best) {
-                    runnerUp = best
-                    best = value
-                    bestClass = clazz
-                } else if (value > runnerUp) {
-                    runnerUp = value
-                }
-            }
-            wallMask[pixel] = bestClass == WALL_CLASS_ID && best - runnerUp >= logitMargin
-        }
-
-        val cornerProbability = FloatArray(plane) { index -> sigmoid(cornerValues[index]) }
-        val orientationX = orientationValues.copyOfRange(0, plane)
-        val orientationY = orientationValues.copyOfRange(plane, plane * 2)
-        val decoded = StudentWallGeometryDecoder.decode(
-            wallMask = wallMask,
-            cornerProbability = cornerProbability,
-            orientationX = orientationX,
-            orientationY = orientationY,
+        val decodedWalls = StudentWallGeometryDecoder.decode(
+            wallMask = heads.wallMask,
+            cornerProbability = heads.cornerProbability,
+            orientationX = heads.orientationX,
+            orientationY = heads.orientationY,
             side = INPUT_SIDE,
             minLengthPx = if (detailPass) DETAIL_MIN_VECTOR_PIXELS else GLOBAL_MIN_VECTOR_PIXELS,
             maxSegments = if (detailPass) MAX_DETAIL_CANDIDATES_PER_REGION else MAX_GLOBAL_CANDIDATES,
         )
-        if (decoded.isEmpty()) return emptyList()
 
         val sourceTransform = PlanRasterTransform.forImage(seed, sourceWidth, sourceHeight)
         val medianThickness = seed.walls.map { it.thicknessMeters }.sorted()
             .let { values -> values.getOrNull(values.size / 2) ?: DEFAULT_WALL_THICKNESS_METERS }
             .coerceIn(MIN_WALL_THICKNESS_METERS, MAX_WALL_THICKNESS_METERS)
-
-        return decoded.mapNotNull { vector ->
+        val walls = decodedWalls.mapNotNull { vector ->
             val sourceStart = inputTransform.modelToSource(vector.x0, vector.y0) ?: return@mapNotNull null
             val sourceEnd = inputTransform.modelToSource(vector.x1, vector.y1) ?: return@mapNotNull null
             val start = sourceTransform.imageToPlan(sourceStart.first, sourceStart.second)
@@ -285,6 +269,15 @@ internal class ManzlStudentFloorPlanExpert(context: Context) {
                 if (accepted.none { existing -> nearlySameWall(existing, candidate) }) accepted += candidate
                 accepted
             }
+
+        val evidence = StudentSemanticEvidenceProjector.project(
+            components = heads.semanticComponents,
+            seed = seed,
+            sourceTransform = sourceTransform,
+            modelToSource = inputTransform::modelToSource,
+            detailPass = detailPass,
+        )
+        return RegionInference(walls = walls, semanticEvidence = evidence)
     }
 
     private fun adjudicateAgainstSource(
@@ -375,13 +368,16 @@ internal class ManzlStudentFloorPlanExpert(context: Context) {
         return sqrt(dx * dx + dz * dz)
     }
 
-    private fun sigmoid(value: Float): Float = (1.0 / (1.0 + exp(-value.toDouble()))).toFloat()
-
     private fun detailRegionLimit(maxHeapBytes: Long): Int = when {
         maxHeapBytes >= LARGE_HEAP_BYTES -> 13
         maxHeapBytes >= MEDIUM_HEAP_BYTES -> 9
         else -> 5
     }
+
+    private data class RegionInference(
+        val walls: List<WallSegment>,
+        val semanticEvidence: List<SemanticEvidence>,
+    )
 
     private data class PreparedInput(
         val bitmap: Bitmap,
@@ -424,8 +420,6 @@ internal class ManzlStudentFloorPlanExpert(context: Context) {
         private const val SEMANTIC_OUTPUT_NAME = "semantic_logits"
         private const val CORNER_OUTPUT_NAME = "corner_logits"
         private const val ORIENTATION_OUTPUT_NAME = "wall_orientation"
-        private const val SEMANTIC_CLASS_COUNT = 9
-        private const val WALL_CLASS_ID = 1
         private const val GLOBAL_MIN_WALL_LOGIT_MARGIN = 0.22f
         private const val DETAIL_MIN_WALL_LOGIT_MARGIN = 0.18f
         private const val GLOBAL_MIN_VECTOR_PIXELS = 18f
