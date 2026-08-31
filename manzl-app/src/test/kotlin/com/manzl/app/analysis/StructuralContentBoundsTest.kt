@@ -36,11 +36,102 @@ class StructuralContentBoundsTest {
     }
 
     @Test
+    fun `dominant wall network ignores long isolated dimension line`() {
+        val house = listOf(
+            seg(250, 180, 850, 180),
+            seg(850, 180, 850, 680),
+            seg(850, 680, 250, 680),
+            seg(250, 680, 250, 180),
+            seg(250, 420, 850, 420),
+            seg(520, 180, 520, 680),
+            seg(680, 180, 680, 420),
+        )
+        val isolatedDimension = seg(40, 90, 1160, 90)
+
+        val bounds = StructuralContentBounds.fromSegments(
+            imageWidth = 1200,
+            imageHeight = 900,
+            segments = house + isolatedDimension,
+        )
+
+        assertTrue(bounds.left in 220..249)
+        assertTrue(bounds.rightExclusive in 851..881)
+        assertTrue(bounds.top in 150..179)
+        assertTrue(bounds.bottomExclusive in 681..711)
+    }
+
+    @Test
+    fun `small disconnected title box does not beat richer house network`() {
+        val house = listOf(
+            seg(180, 140, 820, 140),
+            seg(820, 140, 820, 700),
+            seg(820, 700, 180, 700),
+            seg(180, 700, 180, 140),
+            seg(180, 360, 820, 360),
+            seg(430, 140, 430, 700),
+            seg(620, 140, 620, 360),
+            seg(430, 520, 820, 520),
+        )
+        val titleBox = listOf(
+            seg(930, 650, 1180, 650),
+            seg(1180, 650, 1180, 850),
+            seg(1180, 850, 930, 850),
+            seg(930, 850, 930, 650),
+        )
+
+        val bounds = StructuralContentBounds.fromSegments(
+            imageWidth = 1200,
+            imageHeight = 900,
+            segments = house + titleBox,
+        )
+
+        assertTrue(bounds.rightExclusive < 900)
+        assertTrue(bounds.bottomExclusive < 760)
+        assertTrue(bounds.left < 180)
+        assertTrue(bounds.top < 140)
+    }
+
+    @Test
+    fun `two similarly strong disconnected buildings fail closed to broad envelope`() {
+        val first = rectangleSegments(80, 130, 480, 650) + seg(280, 130, 280, 650)
+        val second = rectangleSegments(700, 160, 1120, 680) + seg(910, 160, 910, 680)
+
+        val bounds = StructuralContentBounds.fromSegments(
+            imageWidth = 1200,
+            imageHeight = 900,
+            segments = first + second,
+        )
+
+        assertTrue(bounds.left <= 80)
+        assertTrue(bounds.rightExclusive >= 1120)
+        assertTrue(bounds.top <= 130)
+        assertTrue(bounds.bottomExclusive >= 680)
+    }
+
+    @Test
     fun `insufficient structural evidence fails closed to full raster`() {
         val bounds = StructuralContentBounds.fromPoints(
             imageWidth = 1000,
             imageHeight = 700,
             points = listOf(300 to 300, 700 to 300),
+        )
+
+        assertEquals(0, bounds.left)
+        assertEquals(0, bounds.top)
+        assertEquals(1000, bounds.rightExclusive)
+        assertEquals(700, bounds.bottomExclusive)
+    }
+
+    @Test
+    fun `sparse segment graph falls back safely`() {
+        val bounds = StructuralContentBounds.fromSegments(
+            imageWidth = 1000,
+            imageHeight = 700,
+            segments = listOf(
+                seg(200, 200, 800, 200),
+                seg(800, 200, 800, 500),
+                seg(800, 500, 200, 500),
+            ),
         )
 
         assertEquals(0, bounds.left)
@@ -117,4 +208,14 @@ class StructuralContentBoundsTest {
         assertEquals(point.x, secondRoundTrip.x, 0.001f)
         assertEquals(point.z, secondRoundTrip.z, 0.001f)
     }
+
+    private fun seg(x0: Int, y0: Int, x1: Int, y1: Int) =
+        RasterStructuralSegment(x0, y0, x1, y1)
+
+    private fun rectangleSegments(left: Int, top: Int, right: Int, bottom: Int) = listOf(
+        seg(left, top, right, top),
+        seg(right, top, right, bottom),
+        seg(right, bottom, left, bottom),
+        seg(left, bottom, left, top),
+    )
 }

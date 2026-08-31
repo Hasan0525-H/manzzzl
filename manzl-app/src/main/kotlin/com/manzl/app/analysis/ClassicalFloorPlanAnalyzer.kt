@@ -62,25 +62,37 @@ class ClassicalFloorPlanAnalyzer(
             val horizontal = mergeParallel(horizontalRaw, mergeDistance)
             val vertical = mergeParallel(verticalRaw, mergeDistance)
 
-            val structuralPoints = buildList {
+            val structuralSegments = buildList {
                 horizontal.forEach { segment ->
-                    add(segment.from to segment.fixed)
-                    add(segment.to to segment.fixed)
+                    add(
+                        RasterStructuralSegment(
+                            x0 = segment.from,
+                            y0 = segment.fixed,
+                            x1 = segment.to,
+                            y1 = segment.fixed,
+                        )
+                    )
                 }
                 vertical.forEach { segment ->
-                    add(segment.fixed to segment.from)
-                    add(segment.fixed to segment.to)
+                    add(
+                        RasterStructuralSegment(
+                            x0 = segment.fixed,
+                            y0 = segment.from,
+                            x1 = segment.fixed,
+                            y1 = segment.to,
+                        )
+                    )
                 }
             }
-            val contentBounds = StructuralContentBounds.fromPoints(
+            val contentBounds = StructuralContentBounds.fromSegments(
                 imageWidth = width,
                 imageHeight = height,
-                points = structuralPoints,
+                segments = structuralSegments,
             )
             val normalizedBounds = contentBounds.normalized(width, height)
 
             coroutineContext.ensureActive()
-            progress.onUpdate(AnalysisUpdate(48, "تحديد حدود الرسم الفعلية وإزالة تأثير الهوامش"))
+            progress.onUpdate(AnalysisUpdate(48, "تحديد شبكة الجدران الرئيسية واستبعاد خطوط الأبعاد المعزولة"))
 
             progress.onUpdate(AnalysisUpdate(56, "قراءة الأبعاد المطبوعة ومعايرة المقياس"))
             val calibration = MetricScaleCalibrator.calibrate(working, contentBounds)
