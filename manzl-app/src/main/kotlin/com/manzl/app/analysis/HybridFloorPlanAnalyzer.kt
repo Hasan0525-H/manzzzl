@@ -14,7 +14,7 @@ import com.manzl.app.model.FloorPlan
  *
  * No provider is allowed to require a network connection in the release build.
  */
-class HybridFloorPlanAnalyzer(
+internal class HybridFloorPlanAnalyzer(
     private val structuralAnalyzer: FloorPlanAnalyzer = ClassicalFloorPlanAnalyzer(),
     private val semanticProviders: List<SemanticEvidenceProvider> = emptyList(),
 ) : FloorPlanAnalyzer {
