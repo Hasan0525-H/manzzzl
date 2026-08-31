@@ -1,7 +1,11 @@
 package com.manzl.app.render
 
+import com.manzl.app.model.DoorOpening
 import com.manzl.app.model.FloorPlan
 import com.manzl.app.model.WallSegment
+import kotlin.math.PI
+import kotlin.math.cos
+import kotlin.math.sin
 import kotlin.math.sqrt
 
 internal data class MeshData(
@@ -9,11 +13,17 @@ internal data class MeshData(
     val wallIndices: IntArray,
     val floorVertices: FloatArray,
     val floorIndices: IntArray,
+    val trimVertices: FloatArray,
+    val trimIndices: IntArray,
 )
 
 internal object HouseMeshBuilder {
 
-    fun build(plan: FloorPlan, wallHeightOverride: Float? = null): MeshData {
+    fun build(
+        plan: FloorPlan,
+        wallHeightOverride: Float? = null,
+        doorHeightOverride: Float? = null,
+    ): MeshData {
         val wallBuilder = GeometryBuilder()
         for (wall in plan.walls) {
             addWall(
@@ -33,11 +43,19 @@ internal object HouseMeshBuilder {
             normal = P3(0f, 1f, 0f),
         )
 
+        val trimBuilder = GeometryBuilder()
+        val doorHeight = doorHeightOverride ?: DEFAULT_DOOR_HEIGHT_METERS
+        for (door in plan.doors) {
+            addDoorFrame(trimBuilder, door, doorHeight)
+        }
+
         return MeshData(
             wallVertices = wallBuilder.vertices.toFloatArray(),
             wallIndices = wallBuilder.indices.toIntArray(),
             floorVertices = floorBuilder.vertices.toFloatArray(),
             floorIndices = floorBuilder.indices.toIntArray(),
+            trimVertices = trimBuilder.vertices.toFloatArray(),
+            trimIndices = trimBuilder.indices.toIntArray(),
         )
     }
 
@@ -76,6 +94,85 @@ internal object HouseMeshBuilder {
         builder.addQuad(a1, b1, c1, d1, P3(0f, 1f, 0f))
     }
 
+    private fun addDoorFrame(builder: GeometryBuilder, door: DoorOpening, doorHeight: Float) {
+        val radians = door.rotationDegrees * (PI.toFloat() / 180f)
+        val alongX = cos(radians)
+        val alongZ = sin(radians)
+        val halfGap = door.widthMeters / 2f
+        val postOffset = halfGap + DOOR_JAMB_WIDTH_METERS / 2f
+
+        addOrientedBox(
+            builder = builder,
+            centerX = door.center.x - alongX * postOffset,
+            centerY = doorHeight / 2f,
+            centerZ = door.center.z - alongZ * postOffset,
+            halfAlong = DOOR_JAMB_WIDTH_METERS / 2f,
+            halfDepth = DOOR_FRAME_DEPTH_METERS / 2f,
+            halfHeight = doorHeight / 2f,
+            alongX = alongX,
+            alongZ = alongZ,
+        )
+        addOrientedBox(
+            builder = builder,
+            centerX = door.center.x + alongX * postOffset,
+            centerY = doorHeight / 2f,
+            centerZ = door.center.z + alongZ * postOffset,
+            halfAlong = DOOR_JAMB_WIDTH_METERS / 2f,
+            halfDepth = DOOR_FRAME_DEPTH_METERS / 2f,
+            halfHeight = doorHeight / 2f,
+            alongX = alongX,
+            alongZ = alongZ,
+        )
+        addOrientedBox(
+            builder = builder,
+            centerX = door.center.x,
+            centerY = doorHeight + DOOR_LINTEL_HEIGHT_METERS / 2f,
+            centerZ = door.center.z,
+            halfAlong = halfGap + DOOR_JAMB_WIDTH_METERS,
+            halfDepth = DOOR_FRAME_DEPTH_METERS / 2f,
+            halfHeight = DOOR_LINTEL_HEIGHT_METERS / 2f,
+            alongX = alongX,
+            alongZ = alongZ,
+        )
+    }
+
+    private fun addOrientedBox(
+        builder: GeometryBuilder,
+        centerX: Float,
+        centerY: Float,
+        centerZ: Float,
+        halfAlong: Float,
+        halfDepth: Float,
+        halfHeight: Float,
+        alongX: Float,
+        alongZ: Float,
+    ) {
+        val normalX = -alongZ
+        val normalZ = alongX
+
+        fun corner(along: Float, depth: Float, y: Float) = P3(
+            x = centerX + alongX * along + normalX * depth,
+            y = centerY + y,
+            z = centerZ + alongZ * along + normalZ * depth,
+        )
+
+        val a0 = corner(-halfAlong, halfDepth, -halfHeight)
+        val b0 = corner(halfAlong, halfDepth, -halfHeight)
+        val c0 = corner(halfAlong, -halfDepth, -halfHeight)
+        val d0 = corner(-halfAlong, -halfDepth, -halfHeight)
+        val a1 = corner(-halfAlong, halfDepth, halfHeight)
+        val b1 = corner(halfAlong, halfDepth, halfHeight)
+        val c1 = corner(halfAlong, -halfDepth, halfHeight)
+        val d1 = corner(-halfAlong, -halfDepth, halfHeight)
+
+        builder.addQuad(a0, b0, b1, a1, P3(normalX, 0f, normalZ))
+        builder.addQuad(c0, d0, d1, c1, P3(-normalX, 0f, -normalZ))
+        builder.addQuad(d0, a0, a1, d1, P3(-alongX, 0f, -alongZ))
+        builder.addQuad(b0, c0, c1, b1, P3(alongX, 0f, alongZ))
+        builder.addQuad(a1, b1, c1, d1, P3(0f, 1f, 0f))
+        builder.addQuad(d0, c0, b0, a0, P3(0f, -1f, 0f))
+    }
+
     private class GeometryBuilder {
         val vertices = ArrayList<Float>()
         val indices = ArrayList<Int>()
@@ -111,5 +208,9 @@ internal object HouseMeshBuilder {
         val z: Float,
     )
 
+    private const val DEFAULT_DOOR_HEIGHT_METERS = 2.20f
+    private const val DOOR_JAMB_WIDTH_METERS = 0.075f
+    private const val DOOR_LINTEL_HEIGHT_METERS = 0.085f
+    private const val DOOR_FRAME_DEPTH_METERS = 0.20f
     private const val FLOATS_PER_VERTEX = 6
 }
