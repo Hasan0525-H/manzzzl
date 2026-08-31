@@ -14,24 +14,10 @@ import kotlin.math.sqrt
 /**
  * Production-facing analyzer facade.
  *
- * 1) deterministic Geometry Engine v2 establishes measured topology, wall faces and metric scale;
- * 2) the extracted wall faces are independently re-rasterized over the source plan;
- * 3) when memory permits, a 2800/3200px pass runs even after a normal PASS; the normal geometry is
- *    re-verified against the same dense raster before candidate selection, so downsampling cannot
- *    hide details behind an easier low-resolution PASS;
- * 4) explicit user corrections, when present, are re-applied to fresh geometry and independently
- *    verified against the original raster; they cannot set PASS directly;
- * 5) GeometryQualityGate blocks 3D unless the selected geometry fidelity report is PASS;
- * 6) a bounded source+geometry overlay is retained for explicit user review;
- * 7) deterministic polygon+rectilinear room topology creates a geometry baseline;
- * 8) bundled on-device semantic providers may label rooms or suggest stairs/openings;
- * 9) a tiny bundled neural patch model may independently confirm door/window/stair symbols;
- * 10) independent semantic observations are combined only when they agree spatially/structurally;
- * 11) GeometryEvidenceFusion accepts only evidence that is geometrically plausible;
- * 12) deterministic topology is re-run after fusion and remains the sole source of truth for 3D;
- * 13) door swing symbols may enrich an accepted opening but never create or move one.
- *
- * No provider is allowed to require a network connection in the release build.
+ * Deterministic measured geometry is authoritative. Semantic providers may classify already measured
+ * features, but cannot create topology. Geometry-only opening-sized gaps stay available internally
+ * for room closure and symbol search, then are removed from the final user-visible plan unless an
+ * independent semantic/user signal confirms that the gap is actually a door.
  */
 internal class HybridFloorPlanAnalyzer(
     private val structuralAnalyzer: FloorPlanAnalyzer = ClassicalFloorPlanAnalyzer(),
@@ -156,7 +142,7 @@ internal class HybridFloorPlanAnalyzer(
             val withDoors = structural.copy(
                 doors = mergeDoors(structural.doors, baselineDoors),
             )
-            val baselineRooms = RoomTopologyEngine.infer(withDoors)
+            val baselineRooms = PolygonRoomInferenceEngine.infer(withDoors) + RoomInferenceEngine.infer(withDoors)
             val baseline = withDoors.copy(
                 rooms = mergeRooms(withDoors.rooms, baselineRooms),
             )
@@ -165,8 +151,7 @@ internal class HybridFloorPlanAnalyzer(
             val semanticEvidence = ArrayList<SemanticEvidence>()
             semanticProviders.forEach { provider ->
                 val providerPlan = if (provider is WindowSymbolEvidenceProvider) {
-                    // Geometry-only door gaps are not sufficient evidence to suppress a real double-line
-                    // window symbol. Door/window conflicts are decided later after swing-arc enrichment.
+                    // A door-sized geometry gap is not enough to suppress a real double-line window.
                     baseline.copy(doors = emptyList())
                 } else {
                     baseline
@@ -192,14 +177,19 @@ internal class HybridFloorPlanAnalyzer(
             val withClassifiedOpenings = OpeningSemanticReconciler.reconcile(withDoorDynamics)
 
             progress.onUpdate(AnalysisUpdate(98, "مراجعة حدود الغرف المائلة والأسقف"))
-            val inferredRooms = RoomTopologyEngine.infer(withClassifiedOpenings)
-            val enriched = withClassifiedOpenings.copy(
+            val inferredRooms = PolygonRoomInferenceEngine.infer(withClassifiedOpenings) +
+                RoomInferenceEngine.infer(withClassifiedOpenings)
+            val topologyEnriched = withClassifiedOpenings.copy(
                 rooms = mergeRooms(withClassifiedOpenings.rooms, inferredRooms),
             )
 
-            GeometryReviewStore.recordFinal(bitmap, enriched)
+            // Geometry-only door candidates have served their topology purpose. Do not let a gap
+            // that merely has a door-like width receive frames, animated leaves or façade joinery.
+            val finalPlan = DoorPresentationPolicy.stripUnclassifiedGaps(topologyEnriched)
+
+            GeometryReviewStore.recordFinal(bitmap, finalPlan)
             progress.onUpdate(AnalysisUpdate(100, "اجتاز المخطط بوابة الجودة وتم تجهيز المنزل للجولة"))
-            enriched
+            finalPlan
         } catch (error: Throwable) {
             GeometryReviewStore.abortPending()
             throw error
