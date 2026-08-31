@@ -17,9 +17,11 @@ import kotlin.math.min
 /**
  * Offline structural analyzer.
  *
- * Deterministic geometry remains the topology authority. A bundled on-device OCR model is used as
- * a narrow AI component for metric-scale calibration from printed dimensions; if OCR confidence is
- * insufficient, the analyzer falls back conservatively rather than fabricating measurements.
+ * Deterministic geometry remains the topology authority. The accepted wall axes first establish a
+ * structural content envelope; metric scale and every image↔plan transform are then measured against
+ * that envelope rather than the full screenshot/page. White margins and asymmetric crops therefore
+ * cannot silently stretch or shift the house. Bundled OCR remains a narrow local AI component for
+ * printed dimensions and low-confidence scale remains reviewable rather than fabricated.
  */
 class ClassicalFloorPlanAnalyzer : FloorPlanAnalyzer {
 
@@ -62,28 +64,48 @@ class ClassicalFloorPlanAnalyzer : FloorPlanAnalyzer {
             val horizontal = mergeParallel(horizontalRaw, mergeDistance)
             val vertical = mergeParallel(verticalRaw, mergeDistance)
 
-            coroutineContext.ensureActive()
-            progress.onUpdate(AnalysisUpdate(55, "قراءة الأبعاد المطبوعة بالذكاء الاصطناعي المحلي"))
-            val calibration = MetricScaleCalibrator.calibrate(working)
+            val structuralPoints = buildList {
+                horizontal.forEach { segment ->
+                    add(segment.from to segment.fixed)
+                    add(segment.to to segment.fixed)
+                }
+                vertical.forEach { segment ->
+                    add(segment.fixed to segment.from)
+                    add(segment.fixed to segment.to)
+                }
+            }
+            val contentBounds = StructuralContentBounds.fromPoints(
+                imageWidth = width,
+                imageHeight = height,
+                points = structuralPoints,
+            )
+            val normalizedBounds = contentBounds.normalized(width, height)
 
             coroutineContext.ensureActive()
-            progress.onUpdate(AnalysisUpdate(65, "تحويل الرسم إلى هندسة مترية"))
+            progress.onUpdate(AnalysisUpdate(52, "تحديد حدود الرسم الفعلية وإزالة تأثير الهوامش"))
 
-            val pxToMeter = calibration.longSideMeters / max(width, height).toFloat()
-            val planWidth = width * pxToMeter
-            val planDepth = height * pxToMeter
+            progress.onUpdate(AnalysisUpdate(58, "قراءة الأبعاد المطبوعة بالذكاء الاصطناعي المحلي"))
+            val calibration = MetricScaleCalibrator.calibrate(working, contentBounds)
+
+            coroutineContext.ensureActive()
+            progress.onUpdate(AnalysisUpdate(67, "تحويل الرسم إلى هندسة مترية"))
+
+            val pxToMeter = calibration.longSideMeters /
+                max(contentBounds.width, contentBounds.height).toFloat()
+            val planWidth = contentBounds.width * pxToMeter
+            val planDepth = contentBounds.height * pxToMeter
 
             val rawWalls = buildList {
                 horizontal.forEach { segment ->
                     add(
                         WallSegment(
                             start = Vec2(
-                                x = segment.from.toCenteredX(width, pxToMeter),
-                                z = segment.fixed.toCenteredZ(height, pxToMeter),
+                                x = segment.from.toCenteredX(contentBounds, pxToMeter),
+                                z = segment.fixed.toCenteredZ(contentBounds, pxToMeter),
                             ),
                             end = Vec2(
-                                x = segment.to.toCenteredX(width, pxToMeter),
-                                z = segment.fixed.toCenteredZ(height, pxToMeter),
+                                x = segment.to.toCenteredX(contentBounds, pxToMeter),
+                                z = segment.fixed.toCenteredZ(contentBounds, pxToMeter),
                             ),
                             confidence = if (preferBlue) 0.92f else 0.72f,
                         )
@@ -93,12 +115,12 @@ class ClassicalFloorPlanAnalyzer : FloorPlanAnalyzer {
                     add(
                         WallSegment(
                             start = Vec2(
-                                x = segment.fixed.toCenteredX(width, pxToMeter),
-                                z = segment.from.toCenteredZ(height, pxToMeter),
+                                x = segment.fixed.toCenteredX(contentBounds, pxToMeter),
+                                z = segment.from.toCenteredZ(contentBounds, pxToMeter),
                             ),
                             end = Vec2(
-                                x = segment.fixed.toCenteredX(width, pxToMeter),
-                                z = segment.to.toCenteredZ(height, pxToMeter),
+                                x = segment.fixed.toCenteredX(contentBounds, pxToMeter),
+                                z = segment.to.toCenteredZ(contentBounds, pxToMeter),
                             ),
                             confidence = if (preferBlue) 0.92f else 0.72f,
                         )
@@ -110,14 +132,14 @@ class ClassicalFloorPlanAnalyzer : FloorPlanAnalyzer {
                 dx * dx + dz * dz >= MIN_WALL_METERS * MIN_WALL_METERS
             }
 
-            progress.onUpdate(AnalysisUpdate(72, "تصحيح تقاطعات الجدران والفجوات الصغيرة"))
+            progress.onUpdate(AnalysisUpdate(74, "تصحيح تقاطعات الجدران والفجوات الصغيرة"))
             val walls = StructuralTopologyReconciler.reconcile(rawWalls)
 
             require(walls.size >= 4) {
                 "لم أتمكن من استخراج جدران كافية. جرّب صورة أوضح أو قص المخطط فقط."
             }
 
-            progress.onUpdate(AnalysisUpdate(80, "بناء حدود الغرف والممرات"))
+            progress.onUpdate(AnalysisUpdate(82, "بناء حدود الغرف والممرات"))
             val densityConfidence = (walls.size / 28f).coerceIn(0.45f, 1f)
             val modeConfidence = if (preferBlue) 0.94f else 0.72f
             val geometryConfidence = (densityConfidence * modeConfidence).coerceIn(0f, 0.97f)
@@ -126,7 +148,7 @@ class ClassicalFloorPlanAnalyzer : FloorPlanAnalyzer {
                 ).coerceIn(0f, 0.97f)
 
             coroutineContext.ensureActive()
-            progress.onUpdate(AnalysisUpdate(89, "استنتاج فتحات الأبواب وربط الغرف"))
+            progress.onUpdate(AnalysisUpdate(90, "استنتاج فتحات الأبواب وربط الغرف"))
 
             val structural = FloorPlan(
                 widthMeters = planWidth,
@@ -137,6 +159,10 @@ class ClassicalFloorPlanAnalyzer : FloorPlanAnalyzer {
                 sourceHeightPx = bitmap.height,
                 scaleConfidence = calibration.confidence,
                 scaleSource = calibration.source,
+                contentLeftFraction = normalizedBounds.left,
+                contentTopFraction = normalizedBounds.top,
+                contentRightFraction = normalizedBounds.right,
+                contentBottomFraction = normalizedBounds.bottom,
             )
             val doors = DoorInferenceEngine.infer(structural)
 
@@ -256,11 +282,11 @@ class ClassicalFloorPlanAnalyzer : FloorPlanAnalyzer {
         return Bitmap.createScaledBitmap(this, targetWidth, targetHeight, true)
     }
 
-    private fun Int.toCenteredX(width: Int, scale: Float): Float =
-        (this - width / 2f) * scale
+    private fun Int.toCenteredX(bounds: PixelContentBounds, scale: Float): Float =
+        (this - (bounds.left + bounds.rightExclusive) * 0.5f) * scale
 
-    private fun Int.toCenteredZ(height: Int, scale: Float): Float =
-        (this - height / 2f) * scale
+    private fun Int.toCenteredZ(bounds: PixelContentBounds, scale: Float): Float =
+        (this - (bounds.top + bounds.bottomExclusive) * 0.5f) * scale
 
     private data class PixelSegment(
         val horizontal: Boolean,
