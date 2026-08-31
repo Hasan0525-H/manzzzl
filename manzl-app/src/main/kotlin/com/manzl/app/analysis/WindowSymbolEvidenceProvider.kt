@@ -22,6 +22,11 @@ import kotlin.math.sqrt
  * the wall's own local frame through [PlanRasterTransform]. Horizontal, vertical and diagonal walls
  * therefore use the same detector; page margins/crop differences cannot move the sampling window.
  *
+ * A geometry-only narrow-gap door guess is intentionally NOT allowed to suppress window detection.
+ * Otherwise every small window could be pre-labelled as a door before this provider sees its real
+ * double-line symbol. Only a door with trusted swing evidence can short-circuit the window proposal;
+ * all other ambiguity is passed to [OpeningSemanticReconciler].
+ *
  * This provider reports semantics only. It never creates a gap or changes wall geometry. The final
  * opening still has to pass GeometryEvidenceFusion's measured-gap host guard.
  */
@@ -62,7 +67,7 @@ internal class WindowSymbolEvidenceProvider : SemanticEvidenceProvider {
         val transform = PlanRasterTransform.forImage(structuralPlan, width, height)
         return buildList {
             for (candidate in candidates) {
-                if (overlapsKnownDoor(candidate, structuralPlan.doors)) continue
+                if (overlapsTrustedSwingDoor(candidate, structuralPlan.doors)) continue
                 val score = symbolScore(
                     pixels = pixels,
                     imageWidth = width,
@@ -85,11 +90,6 @@ internal class WindowSymbolEvidenceProvider : SemanticEvidenceProvider {
         }.deduplicateWindows()
     }
 
-    /**
-     * Samples long line density at normal offsets from the measured wall gap. All sampling happens in
-     * metres in the wall-local frame, while sample density is chosen from the projected pixel scale so
-     * the same thresholds remain stable on anisotropic scans and arbitrary wall angles.
-     */
     private fun symbolScore(
         pixels: IntArray,
         imageWidth: Int,
@@ -158,9 +158,7 @@ internal class WindowSymbolEvidenceProvider : SemanticEvidenceProvider {
         for (i in 0 until bands.lastIndex) {
             for (j in i + 1 until bands.size) {
                 val separationMeters = abs(bands[j].positionMeters - bands[i].positionMeters)
-                if (separationMeters !in MIN_WINDOW_LINE_SEPARATION_METERS..MAX_WINDOW_LINE_SEPARATION_METERS) {
-                    continue
-                }
+                if (separationMeters !in MIN_WINDOW_LINE_SEPARATION_METERS..MAX_WINDOW_LINE_SEPARATION_METERS) continue
                 val density = (bands[i].density + bands[j].density) * 0.5f
                 val separationIdeal = 1f - (
                     abs(separationMeters - IDEAL_WINDOW_LINE_SEPARATION_METERS) /
@@ -252,10 +250,11 @@ internal class WindowSymbolEvidenceProvider : SemanticEvidenceProvider {
         return result
     }
 
-    private fun overlapsKnownDoor(
+    private fun overlapsTrustedSwingDoor(
         gap: MeasuredOpeningGapDetector.Gap,
         doors: List<DoorOpening>,
     ): Boolean = doors.any { door ->
+        if (door.swingConfidence < TRUSTED_SWING_DOOR_CONFIDENCE) return@any false
         val dx = door.center.x - gap.center.x
         val dz = door.center.z - gap.center.z
         val distance = sqrt(dx * dx + dz * dz)
@@ -315,6 +314,7 @@ internal class WindowSymbolEvidenceProvider : SemanticEvidenceProvider {
         private const val MAX_WINDOW_LINE_SEPARATION_METERS = 0.28f
         private const val IDEAL_WINDOW_LINE_SEPARATION_METERS = 0.11f
         private const val MIN_WINDOW_SYMBOL_CONFIDENCE = 0.66f
+        private const val TRUSTED_SWING_DOOR_CONFIDENCE = 0.64f
         private const val DOOR_EXCLUSION_MARGIN_METERS = 0.16f
         private const val DUPLICATE_WINDOW_RADIUS_METERS = 0.32f
     }
