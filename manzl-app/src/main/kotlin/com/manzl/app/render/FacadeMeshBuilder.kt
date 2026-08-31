@@ -6,6 +6,7 @@ import com.manzl.app.model.Vec2
 import com.manzl.app.model.WallSegment
 import com.manzl.app.model.WindowOpening
 import kotlin.math.abs
+import kotlin.math.atan2
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sqrt
@@ -15,7 +16,8 @@ import kotlin.math.sqrt
  *
  * The base wall remains untouched and keeps the interior material. The façade layer is offset a few
  * millimetres from the exposed face, so an interior wall face never becomes stone merely because the
- * opposite side faces outdoors. Door/window cut-outs are copied exactly from canonical openings.
+ * opposite side faces outdoors. Door/window cut-outs are copied exactly from canonical openings and
+ * are associated only with a wall that shares the same measured opening axis.
  *
  * Accepted exterior openings also receive a restrained projected surround. The surround sits outside
  * the canonical opening rather than filling it, and uses real shallow 3D side faces so the existing
@@ -91,6 +93,7 @@ internal object FacadeMeshBuilder {
                 axisZ = axisZ,
                 center = door.center,
                 width = door.widthMeters,
+                rotationDegrees = door.rotationDegrees,
                 bottom = 0f,
                 top = min(doorHeight, wall.heightMeters),
             )?.let(cutouts::add)
@@ -103,6 +106,7 @@ internal object FacadeMeshBuilder {
                 axisZ = axisZ,
                 center = window.center,
                 width = window.widthMeters,
+                rotationDegrees = window.rotationDegrees,
                 bottom = window.sillHeightMeters.coerceAtLeast(0f),
                 top = (window.sillHeightMeters + window.heightMeters).coerceAtMost(wall.heightMeters),
             )?.let(cutouts::add)
@@ -191,12 +195,9 @@ internal object FacadeMeshBuilder {
             )
         }
 
-        // Jambs stay outside the measured opening interval.
         panel(cutout.from - border, cutout.from, cutout.bottom, cutout.top)
         panel(cutout.to, cutout.to + border, cutout.bottom, cutout.top)
-        // Lintel projects above the opening, never across it.
         panel(cutout.from - border, cutout.to + border, cutout.top, cutout.top + border)
-        // A window has a real sill above floor level; doors deliberately receive no bottom strip.
         if (cutout.bottom >= MIN_WINDOW_SILL_FOR_SURROUND_METERS) {
             panel(cutout.from - border, cutout.to + border, cutout.bottom - border, cutout.bottom)
         }
@@ -239,10 +240,16 @@ internal object FacadeMeshBuilder {
         axisZ: Float,
         center: Vec2,
         width: Float,
+        rotationDegrees: Float,
         bottom: Float,
         top: Float,
     ): Cutout? {
         if (width <= 0f || top - bottom <= EPSILON) return null
+        val wallRotation = Math.toDegrees(
+            atan2((wall.end.z - wall.start.z).toDouble(), (wall.end.x - wall.start.x).toDouble())
+        ).toFloat()
+        if (axisAngleDifference(wallRotation, rotationDegrees) > MAX_OPENING_AXIS_ERROR_DEGREES) return null
+
         val relX = center.x - wall.start.x
         val relZ = center.z - wall.start.z
         val along = relX * axisX + relZ * axisZ
@@ -254,6 +261,19 @@ internal object FacadeMeshBuilder {
         val to = min(length, along + half)
         if (to - from < MIN_OPENING_SPAN_METERS) return null
         return Cutout(from, to, bottom.coerceAtLeast(0f), top.coerceAtMost(wall.heightMeters))
+    }
+
+    private fun axisAngleDifference(a: Float, b: Float): Float {
+        val na = normalizeHalfTurn(a)
+        val nb = normalizeHalfTurn(b)
+        val delta = abs(na - nb)
+        return min(delta, 180f - delta)
+    }
+
+    private fun normalizeHalfTurn(value: Float): Float {
+        var result = value % 180f
+        if (result < 0f) result += 180f
+        return result
     }
 
     private fun complementVerticalRanges(voids: List<Pair<Float, Float>>, height: Float): List<Pair<Float, Float>> {
@@ -338,6 +358,7 @@ internal object FacadeMeshBuilder {
     private const val MIN_SURROUND_OPENING_WIDTH_METERS = 0.45f
     private const val MIN_WINDOW_SILL_FOR_SURROUND_METERS = 0.18f
     private const val OPENING_WALL_TOLERANCE_METERS = 0.24f
+    private const val MAX_OPENING_AXIS_ERROR_DEGREES = 14f
     private const val MIN_OPENING_SPAN_METERS = 0.20f
     private const val EPSILON = 0.0001f
 }
