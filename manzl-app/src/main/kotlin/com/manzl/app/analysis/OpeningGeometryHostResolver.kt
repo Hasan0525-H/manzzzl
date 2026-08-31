@@ -49,8 +49,12 @@ internal object OpeningGeometryHostResolver {
 
                 val bux = if (alignment >= 0f) b.ux else -b.ux
                 val buz = if (alignment >= 0f) b.uz else -b.uz
-                val ux = normalizedComponent(a.ux + bux, a.uz + buz, x = true) ?: continue
-                val uz = normalizedComponent(a.ux + bux, a.uz + buz, x = false) ?: continue
+                val axisX = a.ux + bux
+                val axisZ = a.uz + buz
+                val axisLength = sqrt(axisX * axisX + axisZ * axisZ)
+                if (axisLength <= 0.000001f) continue
+                val ux = axisX / axisLength
+                val uz = axisZ / axisLength
                 val nx = -uz
                 val nz = ux
 
@@ -67,8 +71,9 @@ internal object OpeningGeometryHostResolver {
                     axisAngleDifference(candidateRotationDegrees, axisAngle) > MAX_EVIDENCE_ANGLE_ERROR_DEGREES
                 ) continue
 
-                val candidatePerpendicular = abs(
-                    (candidateCenter.x - aMid.x) * nx + (candidateCenter.z - aMid.z) * nz,
+                val candidatePerpendicular = min(
+                    abs((candidateCenter.x - aMid.x) * nx + (candidateCenter.z - aMid.z) * nz),
+                    abs((candidateCenter.x - bMid.x) * nx + (candidateCenter.z - bMid.z) * nz),
                 )
                 if (candidatePerpendicular > MAX_CANDIDATE_LINE_DISTANCE_METERS) continue
 
@@ -93,10 +98,18 @@ internal object OpeningGeometryHostResolver {
                     candidateCenter.x + ux * right.min,
                     candidateCenter.z + uz * right.min,
                 )
-                val gapCenter = Vec2(
+                val midpointOnCandidateAxis = Vec2(
                     (leftPoint.x + rightPoint.x) * 0.5f,
                     (leftPoint.z + rightPoint.z) * 0.5f,
                 )
+                val offsetA = signedLineOffset(midpointOnCandidateAxis, aMid, nx, nz)
+                val offsetB = signedLineOffset(midpointOnCandidateAxis, bMid, nx, nz)
+                val averageOffset = (offsetA + offsetB) * 0.5f
+                val gapCenter = Vec2(
+                    midpointOnCandidateAxis.x - nx * averageOffset,
+                    midpointOnCandidateAxis.z - nz * averageOffset,
+                )
+
                 val supportConfidence = min(a.wall.confidence, b.wall.confidence).coerceIn(0f, 1f)
                 val score =
                     abs(gap - candidateWidthMeters) * 1.45f +
@@ -114,6 +127,9 @@ internal object OpeningGeometryHostResolver {
         }
         return best?.host
     }
+
+    private fun signedLineOffset(point: Vec2, linePoint: Vec2, nx: Float, nz: Float): Float =
+        (point.x - linePoint.x) * nx + (point.z - linePoint.z) * nz
 
     private fun orderOppositeIntervals(a: AxisInterval, b: AxisInterval): Pair<AxisInterval, AxisInterval>? {
         val aLeft = a.max <= CENTER_SIDE_TOLERANCE_METERS
@@ -144,12 +160,6 @@ internal object OpeningGeometryHostResolver {
         var result = value % 180f
         if (result < 0f) result += 180f
         return result
-    }
-
-    private fun normalizedComponent(x: Float, z: Float, xComponent: Boolean? = null, x: Boolean): Float? {
-        val length = sqrt(x * x + z * z)
-        if (length <= 0.000001f) return null
-        return if (x) x / length else z / length
     }
 
     private fun midpoint(wall: WallSegment): Vec2 = Vec2(
