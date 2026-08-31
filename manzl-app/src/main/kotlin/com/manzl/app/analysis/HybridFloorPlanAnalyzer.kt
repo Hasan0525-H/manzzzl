@@ -11,15 +11,16 @@ import kotlin.math.sqrt
 /**
  * Production-facing analyzer facade.
  *
- * 1) deterministic vision establishes measured topology and metric scale;
- * 2) deterministic door/room topology creates a geometry baseline;
- * 3) bundled on-device semantic providers may label rooms or suggest stairs/openings;
- * 4) a tiny bundled neural patch model may independently confirm door/window/stair symbols;
- * 5) independent semantic observations are combined only when they agree spatially/structurally;
- * 6) GeometryEvidenceFusion accepts only evidence that is geometrically plausible;
- * 7) deterministic topology is re-run after fusion and becomes the sole source of truth for 3D;
- * 8) door swing symbols may enrich an accepted opening but never create or move one;
- * 9) door/window conflicts are resolved from symbol-specific evidence before final room topology.
+ * 1) deterministic Geometry Engine v2 establishes measured topology, wall faces and metric scale;
+ * 2) the extracted wall faces are independently re-rasterized over the source plan;
+ * 3) GeometryQualityGate blocks 3D unless the geometry fidelity report is PASS;
+ * 4) deterministic door/room topology creates a geometry baseline;
+ * 5) bundled on-device semantic providers may label rooms or suggest stairs/openings;
+ * 6) a tiny bundled neural patch model may independently confirm door/window/stair symbols;
+ * 7) independent semantic observations are combined only when they agree spatially/structurally;
+ * 8) GeometryEvidenceFusion accepts only evidence that is geometrically plausible;
+ * 9) deterministic topology is re-run after fusion and remains the sole source of truth for 3D;
+ * 10) door swing symbols may enrich an accepted opening but never create or move one.
  *
  * No provider is allowed to require a network connection in the release build.
  */
@@ -41,6 +42,11 @@ internal class HybridFloorPlanAnalyzer(
                 progress.onUpdate(update.copy(percent = remapped))
             },
         )
+
+        GeometryQualityGate.rejectionMessageArabic(structural)?.let { rejection ->
+            progress.onUpdate(AnalysisUpdate(79, "فشل بوابة مطابقة 2D • تم إيقاف بناء البيت"))
+            throw IllegalStateException(rejection)
+        }
 
         progress.onUpdate(AnalysisUpdate(82, "بناء خط أساس للأبواب والغرف"))
         val baselineDoors = DoorInferenceEngine.infer(structural)
@@ -88,7 +94,7 @@ internal class HybridFloorPlanAnalyzer(
             rooms = mergeRooms(withClassifiedOpenings.rooms, inferredRooms),
         )
 
-        progress.onUpdate(AnalysisUpdate(100, "تم تجهيز المنزل للجولة"))
+        progress.onUpdate(AnalysisUpdate(100, "اجتاز المخطط بوابة الجودة وتم تجهيز المنزل للجولة"))
         return enriched
     }
 

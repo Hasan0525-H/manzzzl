@@ -452,8 +452,9 @@ internal object WallGeometryV2 {
     private const val MIN_AXIS_ANGLE_DISTANCE_DEGREES = 7.5f
     private const val PROJECTION_LOW_QUANTILE = 0.08f
     private const val PROJECTION_HIGH_QUANTILE = 0.92f
-    private const val MIN_TILE_SPAN_RATIO = 0.58f
-    private const val MIN_DIAGONAL_CANDIDATE_METERS = 0.70f
+    // Candidate generation is deliberately inclusive; support/confidence and the fidelity gate remain strict.
+    private const val MIN_TILE_SPAN_RATIO = 0.42f
+    private const val MIN_DIAGONAL_CANDIDATE_METERS = 0.42f
     private const val MIN_DIAGONAL_THICKNESS_PX = 2f
     private const val MAX_DIAGONAL_THICKNESS_PX = 30f
     private const val MIN_DIAGONAL_SUPPORT = 0.82f
