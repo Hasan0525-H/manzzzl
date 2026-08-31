@@ -35,6 +35,10 @@ import kotlin.math.sqrt
  * Exterior finish is deliberately uploaded as a separate GPU mesh. The canonical wall batch keeps
  * the interior plaster material, while the side-aware facade batch receives the Saudi stone/plaster
  * material without changing wall topology, collision or opening geometry.
+ *
+ * A single texel-stabilized directional shadow map follows the player. It casts only opaque
+ * architectural geometry, never changes collision/topology, and fails open to unshadowed PBR when a
+ * device cannot provide the required depth-texture framebuffer.
  */
 class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Renderer {
 
@@ -63,6 +67,8 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
 
     @Volatile
     private var doorWorld: InteractiveDoorWorld? = null
+
+    private val shadowMap = DirectionalShadowMap()
 
     private var currentLevelId = ""
     private var walls: GlMesh? = null
@@ -195,6 +201,7 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
         uColor = GLES30.glGetUniformLocation(shaderProgram, "uColor")
         uCameraPosition = GLES30.glGetUniformLocation(shaderProgram, "uCameraPosition")
         uMaterial = GLES30.glGetUniformLocation(shaderProgram, "uMaterial")
+        shadowMap.initialize(::createProgram)
         lastFrameNanos = 0L
         pendingDoorMeshRefresh = true
     }
@@ -287,6 +294,24 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
             refreshDoorLeafMesh()
         }
 
+        // Opaque geometry writes depth from the directional light first. The façade skin is excluded
+        // as a caster because it nearly coincides with the canonical exterior wall; it still receives
+        // shadows during the main PBR pass. Transparent glass never writes to the shadow map.
+        if (
+            shadowMap.begin(
+                focusX = cameraX,
+                focusY = cameraElevationY + SHADOW_FOCUS_HEIGHT_METERS,
+                focusZ = cameraZ,
+            )
+        ) {
+            floor?.let(::drawMesh)
+            walls?.let(::drawMesh)
+            ceiling?.let(::drawMesh)
+            trim?.let(::drawMesh)
+            doorLeaves?.let(::drawMesh)
+            shadowMap.end(width, height)
+        }
+
         GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT or GLES30.GL_DEPTH_BUFFER_BIT)
         if (shaderProgram == 0) return
 
@@ -317,6 +342,7 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
         GLES30.glUseProgram(shaderProgram)
         GLES30.glUniformMatrix4fv(uMvp, 1, false, mvp, 0)
         GLES30.glUniform3f(uCameraPosition, cameraX, eyeY, cameraZ)
+        shadowMap.bindForMainProgram(shaderProgram)
 
         floor?.let {
             applyMaterial(floorColor, alpha = 1f, roughness = 0.48f, metallic = 0.02f, ambientOcclusion = 0.92f)
@@ -584,6 +610,7 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
             trim?.destroy()
             glass?.destroy()
             doorLeaves?.destroy()
+            shadowMap.destroy()
             walls = null
             facade = null
             floor = null
@@ -770,6 +797,7 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
         private const val NANOS_PER_SECOND = 1_000_000_000.0
         private const val FACADE_ROUGHNESS = 0.76f
         private const val FACADE_AMBIENT_OCCLUSION = 0.93f
+        private const val SHADOW_FOCUS_HEIGHT_METERS = 1.55f
         private val MAX_PITCH = (80.0 * PI / 180.0).toFloat()
         private const val STRIDE_BYTES = 6 * Float.SIZE_BYTES
 
@@ -779,13 +807,16 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
             layout(location = 1) in vec3 aNormal;
 
             uniform mat4 uMvp;
+            uniform mat4 uLightMvp;
             out vec3 vNormal;
             out vec3 vWorldPosition;
+            out vec4 vLightSpacePosition;
 
             void main() {
                 gl_Position = uMvp * vec4(aPosition, 1.0);
                 vNormal = aNormal;
                 vWorldPosition = aPosition;
+                vLightSpacePosition = uLightMvp * vec4(aPosition, 1.0);
             }
         """
 
@@ -796,8 +827,12 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
             uniform vec4 uColor;
             uniform vec3 uCameraPosition;
             uniform vec3 uMaterial;
+            uniform sampler2D uShadowMap;
+            uniform float uShadowTexelSize;
+            uniform float uShadowsEnabled;
             in vec3 vNormal;
             in vec3 vWorldPosition;
+            in vec4 vLightSpacePosition;
             out vec4 outColor;
 
             const float PI = 3.14159265359;
@@ -827,6 +862,32 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
                 return f0 + (1.0 - f0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
             }
 
+            float directionalShadowVisibility(float nDotL) {
+                if (uShadowsEnabled < 0.5 || uShadowTexelSize <= 0.0) return 1.0;
+                float safeW = max(abs(vLightSpacePosition.w), 0.0001);
+                vec3 projected = vLightSpacePosition.xyz / safeW;
+                projected = projected * 0.5 + 0.5;
+                if (
+                    projected.x <= 0.0 || projected.x >= 1.0 ||
+                    projected.y <= 0.0 || projected.y >= 1.0 ||
+                    projected.z <= 0.0 || projected.z >= 1.0
+                ) {
+                    return 1.0;
+                }
+
+                float bias = max(0.00115 * (1.0 - nDotL), 0.00038);
+                float lit = 0.0;
+                for (int y = -1; y <= 1; ++y) {
+                    for (int x = -1; x <= 1; ++x) {
+                        vec2 offset = vec2(float(x), float(y)) * uShadowTexelSize;
+                        float closestDepth = texture(uShadowMap, projected.xy + offset).r;
+                        lit += projected.z - bias <= closestDepth ? 1.0 : 0.0;
+                    }
+                }
+                float pcf = lit / 9.0;
+                return mix(0.44, 1.0, pcf);
+            }
+
             void main() {
                 vec3 baseColor = max(uColor.rgb, vec3(0.001));
                 float roughness = clamp(uMaterial.x, 0.06, 1.0);
@@ -835,7 +896,11 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
 
                 vec3 n = normalize(vNormal);
                 vec3 v = normalize(uCameraPosition - vWorldPosition);
-                vec3 l = normalize(vec3(-0.34, 0.88, 0.31));
+                vec3 l = normalize(vec3(
+                    -0.34,
+                    0.88,
+                    0.31
+                ));
                 vec3 h = normalize(v + l);
                 float nDotL = max(dot(n, l), 0.0);
                 float nDotV = max(dot(n, v), 0.001);
@@ -849,7 +914,8 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
                 vec3 kS = f;
                 vec3 kD = (vec3(1.0) - kS) * (1.0 - metallic);
                 vec3 warmDaylight = vec3(1.18, 1.10, 0.99);
-                vec3 direct = (kD * baseColor / PI + specular) * warmDaylight * nDotL;
+                float shadowVisibility = directionalShadowVisibility(nDotL);
+                vec3 direct = (kD * baseColor / PI + specular) * warmDaylight * nDotL * shadowVisibility;
 
                 float upward = max(n.y, 0.0);
                 float downward = max(-n.y, 0.0);
