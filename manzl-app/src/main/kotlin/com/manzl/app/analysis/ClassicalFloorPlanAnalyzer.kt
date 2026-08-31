@@ -17,17 +17,17 @@ import kotlin.math.min
 /**
  * Offline structural analyzer.
  *
- * Deterministic geometry remains the topology authority. The accepted wall axes first establish a
- * structural content envelope; metric scale and every image↔plan transform are then measured against
- * that envelope rather than the full screenshot/page. White margins and asymmetric crops therefore
- * cannot silently stretch or shift the house. Bundled OCR remains a narrow local AI component for
- * printed dimensions and low-confidence scale remains reviewable rather than fabricated.
+ * Geometry Engine v2 keeps deterministic geometry as the topology authority, but no longer treats
+ * the legacy horizontal/vertical scan as the complete house. Axis walls establish a conservative
+ * envelope, then wall-face thickness is measured from the raster and high-support arbitrary-angle
+ * walls are recovered. Finally the resulting wall faces are rasterized back over the source and an
+ * independent fidelity report gates 3D readiness.
  */
 class ClassicalFloorPlanAnalyzer : FloorPlanAnalyzer {
 
     override suspend fun analyze(bitmap: Bitmap, progress: ProgressSink): FloorPlan =
         withContext(Dispatchers.Default) {
-            progress.onUpdate(AnalysisUpdate(4, "تهيئة المخطط"))
+            progress.onUpdate(AnalysisUpdate(4, "تهيئة المخطط بأعلى دقة محلية"))
             val working = bitmap.downscaleForAnalysis(MAX_SIDE)
             val width = working.width
             val height = working.height
@@ -55,11 +55,11 @@ class ClassicalFloorPlanAnalyzer : FloorPlanAnalyzer {
             }
             coroutineContext.ensureActive()
 
-            progress.onUpdate(AnalysisUpdate(28, "اكتشاف محاور الجدران"))
+            progress.onUpdate(AnalysisUpdate(27, "اكتشاف محاور الجدران الأساسية"))
             val horizontalRaw = scanHorizontal(mask, width, height)
             val verticalRaw = scanVertical(mask, width, height)
 
-            progress.onUpdate(AnalysisUpdate(43, "دمج سماكات الجدران وتنظيف الضوضاء"))
+            progress.onUpdate(AnalysisUpdate(39, "دمج خطوط الجدران بدون إغلاق الفتحات المعمارية"))
             val mergeDistance = max(3, min(width, height) / 180)
             val horizontal = mergeParallel(horizontalRaw, mergeDistance)
             val vertical = mergeParallel(verticalRaw, mergeDistance)
@@ -82,13 +82,13 @@ class ClassicalFloorPlanAnalyzer : FloorPlanAnalyzer {
             val normalizedBounds = contentBounds.normalized(width, height)
 
             coroutineContext.ensureActive()
-            progress.onUpdate(AnalysisUpdate(52, "تحديد حدود الرسم الفعلية وإزالة تأثير الهوامش"))
+            progress.onUpdate(AnalysisUpdate(48, "تحديد حدود الرسم الفعلية وإزالة تأثير الهوامش"))
 
-            progress.onUpdate(AnalysisUpdate(58, "قراءة الأبعاد المطبوعة بالذكاء الاصطناعي المحلي"))
+            progress.onUpdate(AnalysisUpdate(56, "قراءة الأبعاد المطبوعة ومعايرة المقياس"))
             val calibration = MetricScaleCalibrator.calibrate(working, contentBounds)
 
             coroutineContext.ensureActive()
-            progress.onUpdate(AnalysisUpdate(67, "تحويل الرسم إلى هندسة مترية"))
+            progress.onUpdate(AnalysisUpdate(64, "تحويل الرسم إلى هندسة مترية"))
 
             val pxToMeter = calibration.longSideMeters /
                 max(contentBounds.width, contentBounds.height).toFloat()
@@ -132,29 +132,38 @@ class ClassicalFloorPlanAnalyzer : FloorPlanAnalyzer {
                 dx * dx + dz * dz >= MIN_WALL_METERS * MIN_WALL_METERS
             }
 
-            progress.onUpdate(AnalysisUpdate(74, "تصحيح تقاطعات الجدران والفجوات الصغيرة"))
-            val walls = StructuralTopologyReconciler.reconcile(rawWalls)
+            progress.onUpdate(AnalysisUpdate(72, "تصحيح التقاطعات الصغيرة مع إبقاء فتحات الأبواب والنوافذ"))
+            val axisWalls = StructuralTopologyReconciler.reconcile(rawWalls)
+
+            progress.onUpdate(AnalysisUpdate(78, "قياس سماكات الجدران واستعادة الجدران المائلة"))
+            val walls = WallGeometryV2.refine(
+                structuralMask = mask,
+                imageWidth = width,
+                imageHeight = height,
+                bounds = contentBounds,
+                pxToMeter = pxToMeter,
+                baseWalls = axisWalls,
+            )
 
             require(walls.size >= 4) {
                 "لم أتمكن من استخراج جدران كافية. جرّب صورة أوضح أو قص المخطط فقط."
             }
 
-            progress.onUpdate(AnalysisUpdate(82, "بناء حدود الغرف والممرات"))
             val densityConfidence = (walls.size / 28f).coerceIn(0.45f, 1f)
             val modeConfidence = if (preferBlue) 0.94f else 0.72f
             val geometryConfidence = (densityConfidence * modeConfidence).coerceIn(0f, 0.97f)
-            val confidence = (
+            val preliminaryConfidence = (
                 geometryConfidence * 0.86f + calibration.confidence.coerceIn(0f, 1f) * 0.14f
                 ).coerceIn(0f, 0.97f)
 
             coroutineContext.ensureActive()
-            progress.onUpdate(AnalysisUpdate(90, "استنتاج فتحات الأبواب وربط الغرف"))
+            progress.onUpdate(AnalysisUpdate(84, "إعادة إسقاط الهندسة على الرسم وقياس التطابق"))
 
-            val structural = FloorPlan(
+            val structuralBase = FloorPlan(
                 widthMeters = planWidth,
                 depthMeters = planDepth,
                 walls = walls,
-                analysisConfidence = confidence,
+                analysisConfidence = preliminaryConfidence,
                 sourceWidthPx = bitmap.width,
                 sourceHeightPx = bitmap.height,
                 scaleConfidence = calibration.confidence,
@@ -164,13 +173,29 @@ class ClassicalFloorPlanAnalyzer : FloorPlanAnalyzer {
                 contentRightFraction = normalizedBounds.right,
                 contentBottomFraction = normalizedBounds.bottom,
             )
+            val fidelity = GeometryFidelityEvaluator.evaluate(
+                structuralMask = mask,
+                imageWidth = width,
+                imageHeight = height,
+                plan = structuralBase,
+            )
+            val confidence = (
+                preliminaryConfidence * 0.62f + fidelity.score * 0.38f
+                ).coerceIn(0f, 0.97f)
+            val structural = structuralBase.copy(
+                analysisConfidence = confidence,
+                geometryFidelity = fidelity,
+            )
+
+            coroutineContext.ensureActive()
+            progress.onUpdate(AnalysisUpdate(91, "استنتاج فتحات الأبواب من الهندسة المقاسة"))
             val doors = DoorInferenceEngine.infer(structural)
 
             coroutineContext.ensureActive()
-            progress.onUpdate(AnalysisUpdate(96, "تجهيز المجسم ثلاثي الأبعاد"))
+            progress.onUpdate(AnalysisUpdate(97, "تثبيت تقرير جودة الهندسة قبل بناء 3D"))
 
             structural.copy(doors = doors).also {
-                progress.onUpdate(AnalysisUpdate(100, "تم تجهيز المنزل للجولة"))
+                progress.onUpdate(AnalysisUpdate(100, "اكتمل استخراج الهندسة وفحص مطابقتها"))
             }
         }
 
@@ -296,8 +321,10 @@ class ClassicalFloorPlanAnalyzer : FloorPlanAnalyzer {
     )
 
     companion object {
-        private const val MAX_SIDE = 1400
+        // Geometry fidelity is more important than analysis speed; 2200 px keeps fine wall/opening
+        // structure that was visibly lost by the old 1400 px cap while remaining practical on-device.
+        private const val MAX_SIDE = 2200
         private const val BLUE_MODE_MIN_RATIO = 0.0014f
-        private const val MIN_WALL_METERS = 0.38f
+        private const val MIN_WALL_METERS = 0.30f
     }
 }

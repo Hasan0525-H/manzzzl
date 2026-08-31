@@ -97,6 +97,8 @@ data class FloorPlan(
     val contentTopFraction: Float = 0f,
     val contentRightFraction: Float = 1f,
     val contentBottomFraction: Float = 1f,
+    /** Independent raster-vs-geometry verification. UNKNOWN is never treated as a pass. */
+    val geometryFidelity: GeometryFidelityReport = GeometryFidelityReport.UNKNOWN,
 )
 
 @Immutable
