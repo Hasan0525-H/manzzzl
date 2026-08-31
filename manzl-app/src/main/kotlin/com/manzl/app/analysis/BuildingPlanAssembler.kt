@@ -33,9 +33,13 @@ internal object BuildingPlanAssembler {
 
         val baseBuilding = BuildingPlan(levels = levels)
         val linked = if (levels.size > 1) StairLevelLinker.link(baseBuilding) else baseBuilding
-        return linked.copy(
+        val assembled = linked.copy(
             registrationDiagnostics = FloorRegistrationDiagnostics.diagnose(linked),
         )
+
+        // Publish the bounded 2D↔geometry overlays only after every uploaded floor has assembled.
+        GeometryReviewStore.commitBuilding(orderedPlans)
+        return assembled
     }
 
     private fun floorToFloorHeight(plan: FloorPlan): Float {

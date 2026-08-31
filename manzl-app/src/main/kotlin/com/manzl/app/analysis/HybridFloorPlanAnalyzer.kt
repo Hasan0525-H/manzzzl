@@ -14,13 +14,14 @@ import kotlin.math.sqrt
  * 1) deterministic Geometry Engine v2 establishes measured topology, wall faces and metric scale;
  * 2) the extracted wall faces are independently re-rasterized over the source plan;
  * 3) GeometryQualityGate blocks 3D unless the geometry fidelity report is PASS;
- * 4) deterministic door/room topology creates a geometry baseline;
- * 5) bundled on-device semantic providers may label rooms or suggest stairs/openings;
- * 6) a tiny bundled neural patch model may independently confirm door/window/stair symbols;
- * 7) independent semantic observations are combined only when they agree spatially/structurally;
- * 8) GeometryEvidenceFusion accepts only evidence that is geometrically plausible;
- * 9) deterministic topology is re-run after fusion and remains the sole source of truth for 3D;
- * 10) door swing symbols may enrich an accepted opening but never create or move one.
+ * 4) a bounded source+geometry overlay is retained for explicit user review;
+ * 5) deterministic door/room topology creates a geometry baseline;
+ * 6) bundled on-device semantic providers may label rooms or suggest stairs/openings;
+ * 7) a tiny bundled neural patch model may independently confirm door/window/stair symbols;
+ * 8) independent semantic observations are combined only when they agree spatially/structurally;
+ * 9) GeometryEvidenceFusion accepts only evidence that is geometrically plausible;
+ * 10) deterministic topology is re-run after fusion and remains the sole source of truth for 3D;
+ * 11) door swing symbols may enrich an accepted opening but never create or move one.
  *
  * No provider is allowed to require a network connection in the release build.
  */
@@ -42,10 +43,12 @@ internal class HybridFloorPlanAnalyzer(
                 progress.onUpdate(update.copy(percent = remapped))
             },
         )
+        GeometryReviewStore.recordStructural(bitmap, structural)
 
         GeometryQualityGate.rejectionMessageArabic(structural)?.let { rejection ->
-            progress.onUpdate(AnalysisUpdate(79, "فشل بوابة مطابقة 2D • تم إيقاف بناء البيت"))
-            throw IllegalStateException(rejection)
+            progress.onUpdate(AnalysisUpdate(79, "فشل بوابة مطابقة 2D • افتح مراجعة التطابق"))
+            GeometryReviewStore.commitFailure(bitmap, structural)
+            throw GeometryQualityRejectedException(structural, rejection)
         }
 
         progress.onUpdate(AnalysisUpdate(82, "بناء خط أساس للأبواب والغرف"))
@@ -94,6 +97,7 @@ internal class HybridFloorPlanAnalyzer(
             rooms = mergeRooms(withClassifiedOpenings.rooms, inferredRooms),
         )
 
+        GeometryReviewStore.recordFinal(bitmap, enriched)
         progress.onUpdate(AnalysisUpdate(100, "اجتاز المخطط بوابة الجودة وتم تجهيز المنزل للجولة"))
         return enriched
     }

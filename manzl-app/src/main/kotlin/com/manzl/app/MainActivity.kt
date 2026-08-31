@@ -4,6 +4,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.core.view.WindowCompat
+import com.manzl.app.ui.GeometryReviewHost
 import com.manzl.app.ui.ManzlExperience
 
 class MainActivity : ComponentActivity() {
@@ -11,7 +12,9 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         WindowCompat.setDecorFitsSystemWindows(window, false)
         setContent {
-            ManzlExperience()
+            GeometryReviewHost {
+                ManzlExperience()
+            }
         }
     }
 }
