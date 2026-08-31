@@ -2,6 +2,7 @@ package com.manzl.app.analysis
 
 import android.graphics.Bitmap
 import com.manzl.app.model.AnalysisUpdate
+import com.manzl.app.model.DoorEvidenceKind
 import com.manzl.app.model.DoorOpening
 import com.manzl.app.model.FloorPlan
 import com.manzl.app.model.GeometryFidelityStatus
@@ -150,7 +151,7 @@ internal class HybridFloorPlanAnalyzer(
         }
 
         return try {
-            progress.onUpdate(AnalysisUpdate(82, "بناء خط أساس للأبواب والغرف متعددة الزوايا"))
+            progress.onUpdate(AnalysisUpdate(82, "بناء خط أساس للفتحات والغرف متعددة الزوايا"))
             val baselineDoors = DoorInferenceEngine.infer(structural)
             val withDoors = structural.copy(
                 doors = mergeDoors(structural.doors, baselineDoors),
@@ -207,7 +208,10 @@ internal class HybridFloorPlanAnalyzer(
 
     private fun mergeDoors(base: List<DoorOpening>, inferred: List<DoorOpening>): List<DoorOpening> =
         (base + inferred)
-            .sortedByDescending { it.confidence }
+            .sortedWith(
+                compareByDescending<DoorOpening> { doorAuthority(it.evidenceKind) }
+                    .thenByDescending { it.confidence }
+            )
             .fold(ArrayList<DoorOpening>()) { result, candidate ->
                 val duplicate = result.any { existing ->
                     val dx = existing.center.x - candidate.center.x
@@ -217,6 +221,12 @@ internal class HybridFloorPlanAnalyzer(
                 if (!duplicate) result += candidate
                 result
             }
+
+    private fun doorAuthority(kind: DoorEvidenceKind): Int = when (kind) {
+        DoorEvidenceKind.MEASURED_GAP -> 0
+        DoorEvidenceKind.SEMANTIC_CONFIRMED -> 1
+        DoorEvidenceKind.USER_CONFIRMED -> 2
+    }
 
     private fun mergeRooms(base: List<RoomRegion>, inferred: List<RoomRegion>): List<RoomRegion> {
         val result = ArrayList<RoomRegion>()
