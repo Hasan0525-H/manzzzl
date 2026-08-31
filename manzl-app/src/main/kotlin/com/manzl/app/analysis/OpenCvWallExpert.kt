@@ -6,7 +6,6 @@ import com.manzl.app.model.Vec2
 import com.manzl.app.model.WallSegment
 import org.opencv.android.OpenCVLoader
 import org.opencv.android.Utils
-import org.opencv.core.CvType
 import org.opencv.core.Mat
 import org.opencv.core.Size
 import org.opencv.imgproc.Imgproc
@@ -18,11 +17,10 @@ import kotlin.math.sqrt
 /**
  * Independent OpenCV expert for the ultra 2D→house reconstruction path.
  *
- * Hough evidence is intentionally proposal-only. It is never allowed to become geometry merely
- * because OpenCV found a long line. Every novel candidate must connect to the already measured wall
- * network and must improve independent raster-vs-geometry coverage without materially reducing
- * precision. This lets OpenCV recover walls missed by the Kotlin scanner while keeping the source
- * raster as the final geometry authority.
+ * The first pass pairs opposite raster wall faces to recover a physical wall centreline and measured
+ * thickness. Only after that does the older single-stroke Hough path look for still-missing walls.
+ * Both passes remain proposal-only: every accepted change must improve independent source-raster
+ * fidelity, so OpenCV never becomes geometry authority.
  */
 internal object OpenCvWallExpert {
 
@@ -34,6 +32,17 @@ internal object OpenCvWallExpert {
     )
 
     fun refine(source: Bitmap, seed: FloorPlan): Result {
+        val faceResult = OpenCvWallFaceExpert.refine(source, seed)
+        val strokeResult = refineStrokeLines(source, faceResult.plan)
+        return Result(
+            plan = strokeResult.plan,
+            proposedCount = faceResult.proposedCount + strokeResult.proposedCount,
+            acceptedCount = faceResult.acceptedCount + strokeResult.acceptedCount,
+            runtimeAvailable = faceResult.runtimeAvailable || strokeResult.runtimeAvailable,
+        )
+    }
+
+    private fun refineStrokeLines(source: Bitmap, seed: FloorPlan): Result {
         if (seed.walls.size < 4 || source.width <= 32 || source.height <= 32) {
             return Result(seed, 0, 0, false)
         }
