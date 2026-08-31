@@ -27,6 +27,25 @@ class DoorInferenceEngineTest {
     }
 
     @Test
+    fun `diagonal measured gap becomes a diagonal door without axis snapping`() {
+        val plan = plan(
+            walls = listOf(
+                WallSegment(start = Vec2(-3f, -3f), end = Vec2(-0.35f, -0.35f)),
+                WallSegment(start = Vec2(0.35f, 0.35f), end = Vec2(3f, 3f)),
+            )
+        )
+
+        val doors = DoorInferenceEngine.infer(plan)
+
+        assertEquals(1, doors.size)
+        val door = doors.single()
+        assertEquals(45f, door.rotationDegrees, 0.25f)
+        assertTrue(door.widthMeters in 0.95f..1.05f)
+        assertTrue(kotlin.math.abs(door.center.x) < 0.03f)
+        assertTrue(kotlin.math.abs(door.center.z) < 0.03f)
+    }
+
+    @Test
     fun `large structural gap is not mislabeled as a door`() {
         val plan = plan(
             walls = listOf(
