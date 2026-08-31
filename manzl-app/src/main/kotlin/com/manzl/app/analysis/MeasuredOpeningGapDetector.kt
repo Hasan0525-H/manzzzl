@@ -15,7 +15,9 @@ import kotlin.math.sqrt
  *
  * This is proposal generation only. It does not decide whether a gap is a door or window and it
  * never changes wall topology. The detector works in the wall's own axis, so diagonal and arbitrary
- * angle walls receive the same treatment as horizontal/vertical walls.
+ * angle walls receive the same treatment as horizontal/vertical walls. Supporting runs must also
+ * have compatible measured wall thickness; fragments from unrelated wall faces are not allowed to
+ * become one opening host.
  */
 internal object MeasuredOpeningGapDetector {
 
@@ -24,6 +26,7 @@ internal object MeasuredOpeningGapDetector {
         val widthMeters: Float,
         val rotationDegrees: Float,
         val supportConfidence: Float,
+        val thicknessAgreement: Float,
     )
 
     fun detect(
@@ -49,6 +52,16 @@ internal object MeasuredOpeningGapDetector {
                 val b = prepared[j]
                 val alignment = a.ux * b.ux + a.uz * b.uz
                 if (abs(alignment) < MIN_COLLINEAR_ALIGNMENT) continue
+
+                val maxThickness = max(a.wall.thicknessMeters, b.wall.thicknessMeters).coerceAtLeast(0.01f)
+                val thicknessDelta = abs(a.wall.thicknessMeters - b.wall.thicknessMeters)
+                val allowedThicknessDelta = max(
+                    MAX_THICKNESS_DELTA_METERS,
+                    maxThickness * MAX_THICKNESS_DELTA_RATIO,
+                )
+                if (thicknessDelta > allowedThicknessDelta) continue
+                val thicknessAgreement =
+                    (1f - thicknessDelta / maxThickness).coerceIn(0f, 1f)
 
                 val alignedBux = if (alignment >= 0f) b.ux else -b.ux
                 val alignedBuz = if (alignment >= 0f) b.uz else -b.uz
@@ -93,6 +106,7 @@ internal object MeasuredOpeningGapDetector {
                     widthMeters = gap,
                     rotationDegrees = rotation,
                     supportConfidence = min(a.wall.confidence, b.wall.confidence).coerceIn(0f, 1f),
+                    thicknessAgreement = thicknessAgreement,
                 )
             }
         }
@@ -100,6 +114,7 @@ internal object MeasuredOpeningGapDetector {
         return candidates
             .sortedWith(
                 compareByDescending<Gap> { it.supportConfidence }
+                    .thenByDescending { it.thicknessAgreement }
                     .thenBy { it.widthMeters }
             )
             .fold(ArrayList<Gap>()) { accepted, candidate ->
@@ -167,6 +182,8 @@ internal object MeasuredOpeningGapDetector {
     private const val MIN_SUPPORT_CONFIDENCE = 0.56f
     private val MIN_COLLINEAR_ALIGNMENT = cos(8.0 * PI / 180.0).toFloat()
     private const val MAX_LINE_SEPARATION_METERS = 0.18f
+    private const val MAX_THICKNESS_DELTA_METERS = 0.08f
+    private const val MAX_THICKNESS_DELTA_RATIO = 0.42f
     private const val DEFAULT_MIN_GAP_METERS = 0.38f
     private const val DEFAULT_MAX_GAP_METERS = 4.35f
     private const val DEFAULT_MAX_RESULTS = 64
