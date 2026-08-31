@@ -17,10 +17,10 @@ import kotlin.math.min
 /**
  * Offline baseline analyzer.
  *
- * The first production milestone deliberately starts with a deterministic geometry path instead
- * of a cloud model. Architectural drawings with blue structural walls (common in exported Saudi
- * residential plans) get a color-aware path; monochrome drawings fall back to a dark-line path.
- * A future ONNX adapter can replace this analyzer without changing the UI or 3D engine.
+ * The production path starts with deterministic geometry instead of a cloud model. Architectural
+ * drawings with blue structural walls get a color-aware path; monochrome drawings fall back to a
+ * dark-line path. Door openings are inferred from collinear structural gaps after metric cleanup.
+ * A future bundled on-device model can add semantic evidence without changing the UI or 3D engine.
  */
 class ClassicalFloorPlanAnalyzer : FloorPlanAnalyzer {
 
@@ -118,16 +118,22 @@ class ClassicalFloorPlanAnalyzer : FloorPlanAnalyzer {
             val confidence = (densityConfidence * modeConfidence).coerceIn(0f, 0.97f)
 
             coroutineContext.ensureActive()
-            progress.onUpdate(AnalysisUpdate(91, "تجهيز المجسم ثلاثي الأبعاد"))
+            progress.onUpdate(AnalysisUpdate(89, "استنتاج فتحات الأبواب وربط الغرف"))
 
-            FloorPlan(
+            val structural = FloorPlan(
                 widthMeters = planWidth,
                 depthMeters = planDepth,
                 walls = walls,
                 analysisConfidence = confidence,
                 sourceWidthPx = bitmap.width,
                 sourceHeightPx = bitmap.height,
-            ).also {
+            )
+            val doors = DoorInferenceEngine.infer(structural)
+
+            coroutineContext.ensureActive()
+            progress.onUpdate(AnalysisUpdate(96, "تجهيز المجسم ثلاثي الأبعاد"))
+
+            structural.copy(doors = doors).also {
                 progress.onUpdate(AnalysisUpdate(100, "تم تجهيز المنزل للجولة"))
             }
         }
