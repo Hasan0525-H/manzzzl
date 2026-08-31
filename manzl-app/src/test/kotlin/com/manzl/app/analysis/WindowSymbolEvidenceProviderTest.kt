@@ -7,6 +7,8 @@ import com.manzl.app.model.WallSegment
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlin.math.roundToInt
+import kotlin.math.sqrt
 
 class WindowSymbolEvidenceProviderTest {
 
@@ -94,6 +96,59 @@ class WindowSymbolEvidenceProviderTest {
         assertEquals(90f, evidence.single().rotationDegrees ?: -1f, 0.001f)
     }
 
+    @Test
+    fun `diagonal double band follows measured wall axis without axis snapping`() {
+        val width = 1000
+        val height = 1000
+        val pixels = IntArray(width * height) { WHITE }
+        val diagonalPlan = FloorPlan(
+            widthMeters = 10f,
+            depthMeters = 10f,
+            walls = listOf(
+                WallSegment(Vec2(-4f, -4f), Vec2(-1f, -1f)),
+                WallSegment(Vec2(1f, 1f), Vec2(4f, 4f)),
+            ),
+            analysisConfidence = 0.94f,
+            sourceWidthPx = width,
+            sourceHeightPx = height,
+        )
+        val axis = 1f / sqrt(2f)
+        val normalX = -axis
+        val normalZ = axis
+        listOf(-0.10f, 0.10f).forEach { normalOffset ->
+            val start = Vec2(
+                x = axis * -1.10f + normalX * normalOffset,
+                z = axis * -1.10f + normalZ * normalOffset,
+            )
+            val end = Vec2(
+                x = axis * 1.10f + normalX * normalOffset,
+                z = axis * 1.10f + normalZ * normalOffset,
+            )
+            drawPlanLine(
+                pixels = pixels,
+                width = width,
+                height = height,
+                planWidthMeters = 10f,
+                planDepthMeters = 10f,
+                start = start,
+                end = end,
+                color = BLACK,
+            )
+        }
+
+        val evidence = WindowSymbolEvidenceProvider().detectFromPixels(
+            pixels,
+            width,
+            height,
+            diagonalPlan,
+        )
+
+        assertEquals(1, evidence.size)
+        assertEquals(SemanticKind.WINDOW, evidence.single().kind)
+        assertEquals(45f, evidence.single().rotationDegrees ?: -1f, 0.6f)
+        assertEquals(sqrt(8f), evidence.single().widthMeters ?: 0f, 0.04f)
+    }
+
     private fun horizontalGapPlan() = FloorPlan(
         widthMeters = 10f,
         depthMeters = 8f,
@@ -126,6 +181,35 @@ class WindowSymbolEvidenceProviderTest {
         color: Int,
     ) {
         for (y in fromY..toY) pixels[y * width + x] = color
+    }
+
+    private fun drawPlanLine(
+        pixels: IntArray,
+        width: Int,
+        height: Int,
+        planWidthMeters: Float,
+        planDepthMeters: Float,
+        start: Vec2,
+        end: Vec2,
+        color: Int,
+    ) {
+        val steps = 260
+        for (step in 0..steps) {
+            val t = step / steps.toFloat()
+            val xMeters = start.x + (end.x - start.x) * t
+            val zMeters = start.z + (end.z - start.z) * t
+            val x = ((xMeters / planWidthMeters + 0.5f) * width).roundToInt()
+            val y = ((zMeters / planDepthMeters + 0.5f) * height).roundToInt()
+            for (dy in -1..1) {
+                for (dx in -1..1) {
+                    val px = x + dx
+                    val py = y + dy
+                    if (px in 0 until width && py in 0 until height) {
+                        pixels[py * width + px] = color
+                    }
+                }
+            }
+        }
     }
 
     companion object {
