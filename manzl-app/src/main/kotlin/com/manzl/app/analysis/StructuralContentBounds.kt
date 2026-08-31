@@ -47,8 +47,8 @@ internal data class NormalizedContentBounds(
     val bottom: Float,
 ) {
     fun validated(): NormalizedContentBounds {
-        val l = left.coerceIn(0f, 1f)
-        val t = top.coerceIn(0f, 1f)
+        val l = left.coerceIn(0f, 1f - MIN_NORMALIZED_SPAN)
+        val t = top.coerceIn(0f, 1f - MIN_NORMALIZED_SPAN)
         val r = right.coerceIn(l + MIN_NORMALIZED_SPAN, 1f)
         val b = bottom.coerceIn(t + MIN_NORMALIZED_SPAN, 1f)
         return NormalizedContentBounds(l, t, r, b)
