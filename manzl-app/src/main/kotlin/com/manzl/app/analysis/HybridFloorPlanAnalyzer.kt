@@ -4,8 +4,10 @@ import android.graphics.Bitmap
 import com.manzl.app.model.AnalysisUpdate
 import com.manzl.app.model.DoorOpening
 import com.manzl.app.model.FloorPlan
+import com.manzl.app.model.GeometryFidelityStatus
 import com.manzl.app.model.RoomRegion
 import com.manzl.app.model.Vec2
+import kotlinx.coroutines.CancellationException
 import kotlin.math.sqrt
 
 /**
@@ -13,15 +15,17 @@ import kotlin.math.sqrt
  *
  * 1) deterministic Geometry Engine v2 establishes measured topology, wall faces and metric scale;
  * 2) the extracted wall faces are independently re-rasterized over the source plan;
- * 3) GeometryQualityGate blocks 3D unless the geometry fidelity report is PASS;
- * 4) a bounded source+geometry overlay is retained for explicit user review;
- * 5) deterministic door/room topology creates a geometry baseline;
- * 6) bundled on-device semantic providers may label rooms or suggest stairs/openings;
- * 7) a tiny bundled neural patch model may independently confirm door/window/stair symbols;
- * 8) independent semantic observations are combined only when they agree spatially/structurally;
- * 9) GeometryEvidenceFusion accepts only evidence that is geometrically plausible;
- * 10) deterministic topology is re-run after fusion and remains the sole source of truth for 3D;
- * 11) door swing symbols may enrich an accepted opening but never create or move one.
+ * 3) if the normal 2200px pass misses PASS and memory permits, the exact same extractor retries at
+ *    2800/3200px; thresholds are never loosened and the stronger independent report wins;
+ * 4) GeometryQualityGate blocks 3D unless the selected geometry fidelity report is PASS;
+ * 5) a bounded source+geometry overlay is retained for explicit user review;
+ * 6) deterministic door/room topology creates a geometry baseline;
+ * 7) bundled on-device semantic providers may label rooms or suggest stairs/openings;
+ * 8) a tiny bundled neural patch model may independently confirm door/window/stair symbols;
+ * 9) independent semantic observations are combined only when they agree spatially/structurally;
+ * 10) GeometryEvidenceFusion accepts only evidence that is geometrically plausible;
+ * 11) deterministic topology is re-run after fusion and remains the sole source of truth for 3D;
+ * 12) door swing symbols may enrich an accepted opening but never create or move one.
  *
  * No provider is allowed to require a network connection in the release build.
  */
@@ -36,17 +40,60 @@ internal class HybridFloorPlanAnalyzer(
 ) : FloorPlanAnalyzer {
 
     override suspend fun analyze(bitmap: Bitmap, progress: ProgressSink): FloorPlan {
-        val structural = structuralAnalyzer.analyze(
+        val primaryStructural = structuralAnalyzer.analyze(
             bitmap = bitmap,
             progress = ProgressSink { update ->
                 val remapped = (update.percent * 0.78f).toInt().coerceIn(0, 78)
                 progress.onUpdate(update.copy(percent = remapped))
             },
         )
+
+        var structural = primaryStructural
+        if (
+            structuralAnalyzer is ClassicalFloorPlanAnalyzer &&
+            primaryStructural.geometryFidelity.status != GeometryFidelityStatus.PASS
+        ) {
+            val retrySide = PrecisionGeometryRetryPolicy.analysisSideOrNull(
+                sourceWidth = bitmap.width,
+                sourceHeight = bitmap.height,
+                maxHeapBytes = Runtime.getRuntime().maxMemory(),
+            )
+            if (retrySide != null) {
+                progress.onUpdate(
+                    AnalysisUpdate(
+                        79,
+                        "المطابقة لم تصل PASS • إعادة فحص هندسي أدق حتى ${retrySide}px بدون تخفيف الشروط",
+                    )
+                )
+                val retry = try {
+                    ClassicalFloorPlanAnalyzer(maxAnalysisSide = retrySide).analyze(
+                        bitmap = bitmap,
+                        progress = ProgressSink { update ->
+                            progress.onUpdate(
+                                AnalysisUpdate(
+                                    79,
+                                    "فحص الدقة الإضافي • ${update.messageArabic}",
+                                )
+                            )
+                        },
+                    )
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (_: OutOfMemoryError) {
+                    null
+                } catch (_: RuntimeException) {
+                    null
+                }
+                if (retry != null) {
+                    structural = GeometryRetryChooser.choose(primaryStructural, retry)
+                }
+            }
+        }
+
         GeometryReviewStore.recordStructural(bitmap, structural)
 
         GeometryQualityGate.rejectionMessageArabic(structural)?.let { rejection ->
-            progress.onUpdate(AnalysisUpdate(79, "فشل بوابة مطابقة 2D • افتح مراجعة التطابق"))
+            progress.onUpdate(AnalysisUpdate(80, "فشل بوابة مطابقة 2D • افتح مراجعة التطابق"))
             GeometryReviewStore.commitFailure(structural)
             throw GeometryQualityRejectedException(structural, rejection)
         }

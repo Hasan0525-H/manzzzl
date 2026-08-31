@@ -22,13 +22,24 @@ import kotlin.math.min
  * envelope, then wall-face thickness is measured from the raster and high-support arbitrary-angle
  * walls are recovered. Finally the resulting wall faces are rasterized back over the source and an
  * independent fidelity report gates 3D readiness.
+ *
+ * [maxAnalysisSide] is intentionally configurable so a memory-safe precision retry can re-run the
+ * exact same algorithm with more source pixels. Quality thresholds are not relaxed on retry.
  */
-class ClassicalFloorPlanAnalyzer : FloorPlanAnalyzer {
+class ClassicalFloorPlanAnalyzer(
+    private val maxAnalysisSide: Int = DEFAULT_MAX_SIDE,
+) : FloorPlanAnalyzer {
+
+    init {
+        require(maxAnalysisSide >= MIN_SUPPORTED_ANALYSIS_SIDE) {
+            "Analysis side must be at least $MIN_SUPPORTED_ANALYSIS_SIDE px"
+        }
+    }
 
     override suspend fun analyze(bitmap: Bitmap, progress: ProgressSink): FloorPlan =
         withContext(Dispatchers.Default) {
             progress.onUpdate(AnalysisUpdate(4, "تهيئة المخطط بأعلى دقة محلية"))
-            val working = bitmap.downscaleForAnalysis(MAX_SIDE)
+            val working = bitmap.downscaleForAnalysis(maxAnalysisSide)
             val width = working.width
             val height = working.height
             require(width > 32 && height > 32) { "الصورة صغيرة جداً للتحليل" }
@@ -321,9 +332,10 @@ class ClassicalFloorPlanAnalyzer : FloorPlanAnalyzer {
     )
 
     companion object {
-        // Geometry fidelity is more important than analysis speed; 2200 px keeps fine wall/opening
-        // structure that was visibly lost by the old 1400 px cap while remaining practical on-device.
-        private const val MAX_SIDE = 2200
+        // Geometry fidelity is more important than analysis speed; 2200 px is the normal pass.
+        // A bounded memory-aware retry may raise this to 2800/3200 without relaxing validation.
+        private const val DEFAULT_MAX_SIDE = 2200
+        private const val MIN_SUPPORTED_ANALYSIS_SIDE = 1400
         private const val BLUE_MODE_MIN_RATIO = 0.0014f
         private const val MIN_WALL_METERS = 0.30f
     }
