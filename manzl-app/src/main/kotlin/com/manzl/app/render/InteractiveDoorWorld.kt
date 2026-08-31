@@ -38,6 +38,7 @@ internal class InteractiveDoorWorld(building: BuildingPlan) {
             )
         }
     }
+    private val doorsByLevel = doors.groupBy { it.key.levelId }
 
     /**
      * Advances all door animations. Returns true when at least one pose changed enough to require a
@@ -94,7 +95,7 @@ internal class InteractiveDoorWorld(building: BuildingPlan) {
         to: Vec2,
         radius: Float = CollisionWorld.DEFAULT_PLAYER_RADIUS,
     ): Vec2 {
-        val levelDoors = doors.filter { it.key.levelId == levelId }
+        val levelDoors = doorsByLevel[levelId].orEmpty()
         if (levelDoors.isEmpty()) return to
 
         val dx = to.x - from.x
@@ -109,7 +110,8 @@ internal class InteractiveDoorWorld(building: BuildingPlan) {
         var result = from
         repeat(steps) {
             var candidate = Vec2(result.x + stepX, result.z + stepZ)
-            repeat(COLLISION_RESOLUTION_PASSES) {
+            var pass = 0
+            while (pass < COLLISION_RESOLUTION_PASSES) {
                 var changed = false
                 for (runtime in levelDoors) {
                     val resolved = resolveLeafPenetration(candidate, runtime.pose(), radius)
@@ -118,7 +120,8 @@ internal class InteractiveDoorWorld(building: BuildingPlan) {
                         changed = true
                     }
                 }
-                if (!changed) return@repeat
+                if (!changed) break
+                pass++
             }
             result = candidate
         }
@@ -131,7 +134,9 @@ internal class InteractiveDoorWorld(building: BuildingPlan) {
     fun interactiveDoorCount(): Int = doors.size
 
     internal fun angleDegrees(levelId: String, doorIndex: Int): Float? =
-        doors.firstOrNull { it.key == DoorKey(levelId, doorIndex) }?.angleDegrees
+        doorsByLevel[levelId]
+            ?.firstOrNull { it.key.doorIndex == doorIndex }
+            ?.angleDegrees
 
     private fun resolveLeafPenetration(candidate: Vec2, pose: DoorLeafPose, radius: Float): Vec2 {
         val start = pose.hinge
