@@ -22,8 +22,9 @@ import kotlin.math.sqrt
  * independent semantic/user signal confirms that the gap is actually a door.
  *
  * The ultra path can run a distilled Raster2Seq/RoomFormer student first, then an independent OpenCV
- * expert. Neither becomes geometry authority: every novel wall must improve independent source-raster
- * fidelity without a material precision regression before it is admitted into the measured plan.
+ * expert, then MobileSAM only as a boundary refiner. None becomes geometry authority: every novel
+ * wall must improve independent source-raster fidelity, and MobileSAM may only move existing wall
+ * faces within strict physical limits before the source raster independently verifies the result.
  *
  * A second reconstruction gate runs after semantics/topology. It blocks 3D when strong wall gaps are
  * still unclassified or when trusted closed-room coverage is too sparse to construct real floors and
@@ -38,6 +39,7 @@ internal class HybridFloorPlanAnalyzer(
         TinySemanticPatchEvidenceProvider(),
     ),
     private val onDeviceStudent: ManzlStudentFloorPlanExpert? = UltraReconstructionRuntime.createStudentExpertOrNull(),
+    private val boundaryRefiner: MobileSamBoundaryRefiner? = UltraReconstructionRuntime.createBoundaryRefinerOrNull(),
 ) : FloorPlanAnalyzer {
 
     override suspend fun analyze(bitmap: Bitmap, progress: ProgressSink): FloorPlan {
@@ -156,6 +158,30 @@ internal class HybridFloorPlanAnalyzer(
                         "OpenCV اقترح ${openCvResult.proposedCount} خطاً وقبل التحقق ${openCvResult.acceptedCount} جداراً فقط",
                     )
                 )
+            }
+
+            boundaryRefiner?.let { refiner ->
+                progress.onUpdate(AnalysisUpdate(79, "MobileSAM يدقق وجوه الجدران ونهاياتها على الصورة الأصلية"))
+                val refined = try {
+                    withContext(Dispatchers.Default) {
+                        refiner.refine(bitmap, structural)
+                    }
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (_: OutOfMemoryError) {
+                    null
+                } catch (_: RuntimeException) {
+                    null
+                }
+                if (refined?.accepted == true) {
+                    structural = refined.plan
+                    progress.onUpdate(
+                        AnalysisUpdate(
+                            79,
+                            "MobileSAM دقق ${refined.refinedWalls} من ${refined.attemptedWalls} جداراً واجتاز إعادة المطابقة",
+                        )
+                    )
+                }
             }
         }
 
