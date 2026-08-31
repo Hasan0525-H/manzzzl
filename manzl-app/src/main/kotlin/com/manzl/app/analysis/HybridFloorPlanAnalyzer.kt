@@ -37,7 +37,7 @@ internal class HybridFloorPlanAnalyzer(
         WindowSymbolEvidenceProvider(),
         TinySemanticPatchEvidenceProvider(),
     ),
-    private val onDeviceStudent: ManzlStudentFloorPlanExpert? = null,
+    private val onDeviceStudent: ManzlStudentFloorPlanExpert? = UltraReconstructionRuntime.createStudentExpertOrNull(),
 ) : FloorPlanAnalyzer {
 
     override suspend fun analyze(bitmap: Bitmap, progress: ProgressSink): FloorPlan {
