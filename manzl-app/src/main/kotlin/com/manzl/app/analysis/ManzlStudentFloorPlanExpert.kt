@@ -157,8 +157,8 @@ internal class ManzlStudentFloorPlanExpert(context: Context) {
                 )
             }
             result.sortedByDescending { distance(it.start, it.end) }
-                .fold(ArrayList()) { accepted, candidate ->
-                    if (accepted.none { nearlySameWall(it, candidate) }) accepted += candidate
+                .fold(ArrayList<WallSegment>()) { accepted, candidate ->
+                    if (accepted.none { existing -> nearlySameWall(existing, candidate) }) accepted += candidate
                     accepted
                 }
                 .take(MAX_STUDENT_CANDIDATES)
