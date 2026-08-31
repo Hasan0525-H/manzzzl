@@ -18,9 +18,8 @@ import kotlin.math.sin
  * Detects the conventional quarter-circle door swing symbol around an already validated opening.
  *
  * This is deliberately an enrichment pass, not a topology detector: it cannot create, move or
- * resize a door. It only records hinge/swing metadata when raster evidence around an existing
- * geometrically accepted opening is sufficiently strong and unambiguous. Ambiguous symbols remain
- * UNKNOWN so the renderer never invents a hinge.
+ * resize a door. All plan↔raster sampling uses the structural content envelope saved by the wall
+ * analyzer, preventing screenshot margins from shifting arc hypotheses away from the real door.
  */
 internal object DoorSwingArcDetector {
 
@@ -54,10 +53,8 @@ internal object DoorSwingArcDetector {
             return plan.doors
         }
 
-        val pixelsPerMeter = min(
-            widthPx / plan.widthMeters,
-            heightPx / plan.depthMeters,
-        )
+        val transform = PlanRasterTransform.forImage(plan, widthPx, heightPx)
+        val pixelsPerMeter = min(transform.pixelsPerMeterX, transform.pixelsPerMeterZ)
         if (!pixelsPerMeter.isFinite() || pixelsPerMeter < MIN_PIXELS_PER_METER) return plan.doors
 
         return plan.doors.map { door ->
@@ -70,9 +67,7 @@ internal object DoorSwingArcDetector {
             } else {
                 detectDoor(
                     door = door,
-                    plan = plan,
-                    widthPx = widthPx,
-                    heightPx = heightPx,
+                    transform = transform,
                     pixelsPerMeter = pixelsPerMeter,
                     inkAt = inkAt,
                 ) ?: door
@@ -82,9 +77,7 @@ internal object DoorSwingArcDetector {
 
     private fun detectDoor(
         door: DoorOpening,
-        plan: FloorPlan,
-        widthPx: Int,
-        heightPx: Int,
+        transform: PlanRasterTransform,
         pixelsPerMeter: Float,
         inkAt: (Int, Int) -> Float,
     ): DoorOpening? {
@@ -106,7 +99,6 @@ internal object DoorSwingArcDetector {
                     x = door.center.x + axis.x * halfWidth * hingeSign,
                     z = door.center.z + axis.z * halfWidth * hingeSign,
                 )
-                // Closed leaf points from the hinge to the opposite jamb.
                 val closedDirectionSign = -hingeSign
                 val closedDirection = Vec2(
                     x = axis.x * closedDirectionSign,
@@ -121,9 +113,7 @@ internal object DoorSwingArcDetector {
                         closedDirection = closedDirection,
                         targetNormal = targetNormal,
                         radiusMeters = leafRadius,
-                        plan = plan,
-                        widthPx = widthPx,
-                        heightPx = heightPx,
+                        transform = transform,
                         localRadiusPx = samplingRadiusPx,
                         inkAt = inkAt,
                     )
@@ -155,9 +145,7 @@ internal object DoorSwingArcDetector {
         closedDirection: Vec2,
         targetNormal: Vec2,
         radiusMeters: Float,
-        plan: FloorPlan,
-        widthPx: Int,
-        heightPx: Int,
+        transform: PlanRasterTransform,
         localRadiusPx: Int,
         inkAt: (Int, Int) -> Float,
     ): Float {
@@ -177,8 +165,13 @@ internal object DoorSwingArcDetector {
                 x = hinge.x + direction.x * radiusMeters,
                 z = hinge.z + direction.z * radiusMeters,
             )
-            val pixel = pointToPixel(point, plan, widthPx, heightPx)
-            val strength = maxInkAround(pixel.first, pixel.second, localRadiusPx, inkAt)
+            val pixel = transform.planToImage(point)
+            val strength = maxInkAround(
+                pixel.first.roundToInt(),
+                pixel.second.roundToInt(),
+                localRadiusPx,
+                inkAt,
+            )
             total += strength
             if (strength >= COVERED_POINT_STRENGTH) covered++
             when {
@@ -198,20 +191,6 @@ internal object DoorSwingArcDetector {
                 coverage * COVERAGE_WEIGHT +
                 continuity * CONTINUITY_WEIGHT
             ).coerceIn(0f, 1f)
-    }
-
-    private fun pointToPixel(
-        point: Vec2,
-        plan: FloorPlan,
-        widthPx: Int,
-        heightPx: Int,
-    ): Pair<Int, Int> {
-        val normalizedX = point.x / plan.widthMeters + 0.5f
-        val normalizedZ = point.z / plan.depthMeters + 0.5f
-        return Pair(
-            (normalizedX * widthPx).roundToInt(),
-            (normalizedZ * heightPx).roundToInt(),
-        )
     }
 
     private fun maxInkAround(
