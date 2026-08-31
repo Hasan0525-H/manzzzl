@@ -33,7 +33,9 @@ class OpenAirRoomPolicyTest {
 
     @Test
     fun `weak courtyard label fails closed and remains covered`() {
-        val weak = room(label = "فناء", confidence = 0.61f)
+        // Keep this above the mesh ceiling threshold while below the open-air semantic threshold.
+        // That isolates the policy under test: uncertain OCR must not punch a roof opening.
+        val weak = room(label = "فناء", confidence = 0.70f)
 
         val mesh = HouseMeshBuilder.build(plan(weak))
 
