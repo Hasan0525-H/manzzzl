@@ -1,6 +1,8 @@
 package com.manzl.app.render
 
+import com.manzl.app.model.DoorHingeSide
 import com.manzl.app.model.DoorOpening
+import com.manzl.app.model.DoorSwingSide
 import com.manzl.app.model.FloorPlan
 import com.manzl.app.model.RoomRegion
 import com.manzl.app.model.Staircase
@@ -76,6 +78,7 @@ internal object HouseMeshBuilder {
         val glassBuilder = GeometryBuilder()
         for (door in plan.doors) {
             addDoorFrame(trimBuilder, door, doorHeight)
+            addDoorLeafIfKnown(trimBuilder, door, doorHeight)
         }
         for (window in plan.windows) {
             addWindowFrame(trimBuilder, window)
@@ -494,6 +497,49 @@ internal object HouseMeshBuilder {
         )
     }
 
+    /**
+     * Adds an open physical leaf only when the raster supplied an unambiguous hinge and swing side.
+     * Unknown doors stay as clear framed openings rather than receiving fabricated geometry.
+     */
+    private fun addDoorLeafIfKnown(builder: GeometryBuilder, door: DoorOpening, doorHeight: Float) {
+        if (
+            door.hingeSide == DoorHingeSide.UNKNOWN ||
+            door.swingSide == DoorSwingSide.UNKNOWN ||
+            door.swingConfidence < MIN_DOOR_SWING_RENDER_CONFIDENCE
+        ) {
+            return
+        }
+
+        val axis = directionForRotation(door.rotationDegrees)
+        val normalX = -axis.second
+        val normalZ = axis.first
+        val hingeSign = if (door.hingeSide == DoorHingeSide.AXIS_START) -1f else 1f
+        val hingeX = door.center.x + axis.first * door.widthMeters * 0.5f * hingeSign
+        val hingeZ = door.center.z + axis.second * door.widthMeters * 0.5f * hingeSign
+        val closedSign = -hingeSign
+        val closedX = axis.first * closedSign
+        val closedZ = axis.second * closedSign
+        val swingSign = if (door.swingSide == DoorSwingSide.POSITIVE_NORMAL) 1f else -1f
+        val targetX = normalX * swingSign
+        val targetZ = normalZ * swingSign
+        val openAngle = DOOR_DEFAULT_OPEN_ANGLE_DEGREES * (PI.toFloat() / 180f)
+        val leafX = closedX * cos(openAngle) + targetX * sin(openAngle)
+        val leafZ = closedZ * cos(openAngle) + targetZ * sin(openAngle)
+        val leafLength = (door.widthMeters - DOOR_LEAF_JAMB_GAP_METERS).coerceAtLeast(MIN_DOOR_LEAF_LENGTH_METERS)
+
+        addOrientedBox(
+            builder = builder,
+            centerX = hingeX + leafX * leafLength * 0.5f,
+            centerY = doorHeight * 0.5f,
+            centerZ = hingeZ + leafZ * leafLength * 0.5f,
+            halfAlong = leafLength * 0.5f,
+            halfDepth = DOOR_LEAF_THICKNESS_METERS * 0.5f,
+            halfHeight = (doorHeight - DOOR_LEAF_TOP_GAP_METERS).coerceAtLeast(1.8f) * 0.5f,
+            alongX = leafX,
+            alongZ = leafZ,
+        )
+    }
+
     private fun addWindowFrame(builder: GeometryBuilder, window: WindowOpening) {
         val direction = directionForRotation(window.rotationDegrees)
         val halfWidth = window.widthMeters / 2f
@@ -642,6 +688,12 @@ internal object HouseMeshBuilder {
     private const val DOOR_JAMB_WIDTH_METERS = 0.075f
     private const val DOOR_LINTEL_HEIGHT_METERS = 0.085f
     private const val DOOR_FRAME_DEPTH_METERS = 0.20f
+    private const val DOOR_LEAF_THICKNESS_METERS = 0.042f
+    private const val DOOR_LEAF_JAMB_GAP_METERS = 0.055f
+    private const val DOOR_LEAF_TOP_GAP_METERS = 0.035f
+    private const val MIN_DOOR_LEAF_LENGTH_METERS = 0.45f
+    private const val DOOR_DEFAULT_OPEN_ANGLE_DEGREES = 78f
+    private const val MIN_DOOR_SWING_RENDER_CONFIDENCE = 0.66f
     private const val WINDOW_FRAME_WIDTH_METERS = 0.055f
     private const val WINDOW_FRAME_DEPTH_METERS = 0.15f
     private const val WINDOW_GLASS_THICKNESS_METERS = 0.014f
