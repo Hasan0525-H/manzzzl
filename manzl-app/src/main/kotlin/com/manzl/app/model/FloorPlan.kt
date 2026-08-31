@@ -38,6 +38,21 @@ enum class DoorSwingSide {
     UNKNOWN,
 }
 
+/**
+ * Why a measured wall gap is allowed to be presented as a door.
+ *
+ * [MEASURED_GAP] is deliberately not a door classification: it only means that deterministic wall
+ * geometry contains an opening-sized gap. Rendering must not add door joinery merely because the gap
+ * has a door-like width. [SEMANTIC_CONFIRMED] requires independent raster/AI symbol evidence, while
+ * [USER_CONFIRMED] is reserved for an explicit user semantic correction.
+ */
+@Immutable
+enum class DoorEvidenceKind {
+    MEASURED_GAP,
+    SEMANTIC_CONFIRMED,
+    USER_CONFIRMED,
+}
+
 @Immutable
 data class DoorOpening(
     val center: Vec2,
@@ -47,6 +62,7 @@ data class DoorOpening(
     val hingeSide: DoorHingeSide = DoorHingeSide.UNKNOWN,
     val swingSide: DoorSwingSide = DoorSwingSide.UNKNOWN,
     val swingConfidence: Float = 0f,
+    val evidenceKind: DoorEvidenceKind = DoorEvidenceKind.MEASURED_GAP,
 )
 
 @Immutable
