@@ -57,6 +57,10 @@ dependencies {
     implementation(libs.androidx.material3)
     implementation(libs.androidx.material.icons.extended)
 
+    // Bundled ML Kit OCR model. The model is packaged inside the APK, so metric calibration works
+    // immediately in airplane mode and never needs a Google Play model download or API call.
+    implementation("com.google.mlkit:text-recognition:16.0.1")
+
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
