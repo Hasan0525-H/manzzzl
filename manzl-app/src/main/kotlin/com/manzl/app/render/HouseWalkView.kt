@@ -7,7 +7,6 @@ import android.opengl.Matrix
 import android.view.MotionEvent
 import com.manzl.app.analysis.StairLevelLinker
 import com.manzl.app.design.HouseRenderProfile
-import com.manzl.app.design.ReferenceDrivenDesignEngine
 import com.manzl.app.model.BuildingPlan
 import com.manzl.app.model.FloorPlan
 import com.manzl.app.model.Vec2
@@ -32,11 +31,18 @@ import kotlin.math.sqrt
  * locally on the phone. The left side of the surface is a dynamic analog stick (touch and drag);
  * the right side controls free-look. Two fingers can be used simultaneously, matching modern mobile
  * first-person controls.
+ *
+ * Exterior finish is deliberately uploaded as a separate GPU mesh. The canonical wall batch keeps
+ * the interior plaster material, while the side-aware facade batch receives the Saudi stone/plaster
+ * material without changing wall topology, collision or opening geometry.
  */
 class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Renderer {
 
     @Volatile
     private var pendingMesh: MeshData? = null
+
+    @Volatile
+    private var pendingFacadeMesh: FacadeMesh? = null
 
     @Volatile
     private var pendingSpawn: BuildingSpawn? = null
@@ -60,6 +66,7 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
 
     private var currentLevelId = ""
     private var walls: GlMesh? = null
+    private var facade: GlMesh? = null
     private var floor: GlMesh? = null
     private var ceiling: GlMesh? = null
     private var trim: GlMesh? = null
@@ -72,6 +79,7 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
     private var uMaterial = -1
 
     private var wallColor = floatArrayOf(0.94f, 0.92f, 0.87f)
+    private var facadeColor = floatArrayOf(0.67f, 0.58f, 0.46f)
     private var floorColor = floatArrayOf(0.73f, 0.68f, 0.59f)
     private var ceilingColor = floatArrayOf(0.98f, 0.975f, 0.96f)
     private var trimColor = floatArrayOf(0.34f, 0.24f, 0.17f)
@@ -128,16 +136,16 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
         } else {
             building
         }
-        val firstLevel = prepared.levels.minByOrNull { it.levelIndex } ?: return
         val world = MultiLevelWalkWorld(prepared)
-        val design = ReferenceDrivenDesignEngine.synthesize(firstLevel.plan)
+        val scene = WalkthroughSceneAssembler.build(prepared)
 
         walkWorld = world
         doorWorld = InteractiveDoorWorld(prepared)
         pendingDoorMeshRefresh = true
         pendingSpawn = world.findInitialSpawn(PLAYER_RADIUS)
-        pendingDesign = design
-        pendingMesh = BuildingMeshBuilder.build(prepared)
+        pendingDesign = scene.primaryDesign
+        pendingMesh = scene.staticMesh
+        pendingFacadeMesh = scene.facadeMesh
     }
 
     fun setMovementInput(forward: Float, strafe: Float) {
@@ -210,12 +218,22 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
             trim = uploadMesh(mesh.trimVertices, mesh.trimIndices)
             glass = uploadMesh(mesh.glassVertices, mesh.glassIndices)
         }
+        pendingFacadeMesh?.let { mesh ->
+            pendingFacadeMesh = null
+            facade?.destroy()
+            facade = uploadMesh(mesh.vertices, mesh.indices)
+        }
         pendingDesign?.let { design ->
             pendingDesign = null
             wallColor = floatArrayOf(
                 design.palette.wall.r,
                 design.palette.wall.g,
                 design.palette.wall.b,
+            )
+            facadeColor = floatArrayOf(
+                design.palette.stone.r,
+                design.palette.stone.g,
+                design.palette.stone.b,
             )
             floorColor = floatArrayOf(
                 design.palette.floor.r,
@@ -306,6 +324,16 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
         }
         walls?.let {
             applyMaterial(wallColor, alpha = 1f, roughness = 0.82f, metallic = 0f, ambientOcclusion = 0.95f)
+            drawMesh(it)
+        }
+        facade?.let {
+            applyMaterial(
+                facadeColor,
+                alpha = 1f,
+                roughness = FACADE_ROUGHNESS,
+                metallic = 0f,
+                ambientOcclusion = FACADE_AMBIENT_OCCLUSION,
+            )
             drawMesh(it)
         }
         ceiling?.let {
@@ -550,12 +578,14 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
         stopMovement()
         queueEvent {
             walls?.destroy()
+            facade?.destroy()
             floor?.destroy()
             ceiling?.destroy()
             trim?.destroy()
             glass?.destroy()
             doorLeaves?.destroy()
             walls = null
+            facade = null
             floor = null
             ceiling = null
             trim = null
@@ -738,6 +768,8 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
         private const val LEVEL_TRANSITION_VELOCITY_RETAIN = 0.72f
         private const val MAX_FRAME_STEP_SECONDS = 0.05f
         private const val NANOS_PER_SECOND = 1_000_000_000.0
+        private const val FACADE_ROUGHNESS = 0.76f
+        private const val FACADE_AMBIENT_OCCLUSION = 0.93f
         private val MAX_PITCH = (80.0 * PI / 180.0).toFloat()
         private const val STRIDE_BYTES = 6 * Float.SIZE_BYTES
 
