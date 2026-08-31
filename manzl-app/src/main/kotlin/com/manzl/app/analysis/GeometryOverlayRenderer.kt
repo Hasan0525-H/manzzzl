@@ -8,6 +8,7 @@ import com.manzl.app.model.FloorPlan
 import com.manzl.app.model.GeometryFidelityIssueKind
 import com.manzl.app.model.GeometryFidelityStatus
 import com.manzl.app.model.Vec2
+import com.manzl.app.model.WallSegment
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.max
@@ -16,8 +17,9 @@ import kotlin.math.sin
 /**
  * Renders the extracted geometry directly over the uploaded plan.
  *
- * This is a development/user trust surface, not a decorative preview: if a wall is missing or shifted
- * the mismatch is visible before the user is allowed into 3D. The source bitmap is never modified.
+ * This is a development/user trust surface, not a decorative preview: if a wall is missing, shifted
+ * or stops just short of a real junction, the mismatch is visible before the user is allowed into
+ * 3D. The source bitmap is never modified.
  */
 internal object GeometryOverlayRenderer {
 
@@ -62,6 +64,10 @@ internal object GeometryOverlayRenderer {
             canvas.drawCircle(ax, ay, radius, endpointPaint)
             canvas.drawCircle(bx, by, radius, endpointPaint)
         }
+
+        // Draw these after walls so the exact crack remains visible instead of being hidden under the
+        // regular amber/green endpoint dots. The marker is diagnostic only and never snaps geometry.
+        drawTopologyNearMisses(canvas, plan, transform, pixelsPerMeter)
 
         val doorPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
@@ -135,6 +141,58 @@ internal object GeometryOverlayRenderer {
         }
     }
 
+    private fun drawTopologyNearMisses(
+        canvas: Canvas,
+        plan: FloorPlan,
+        transform: PlanRasterTransform,
+        pixelsPerMeter: Float,
+    ) {
+        val nearMisses = WallTopologyIntegrity.findNearMissJunctions(plan)
+        if (nearMisses.isEmpty()) return
+
+        val connectorPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeCap = Paint.Cap.ROUND
+            strokeWidth = max(2.5f, pixelsPerMeter * 0.035f)
+            color = Color.argb(240, 210, 24, 74)
+        }
+        val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = max(2.5f, pixelsPerMeter * 0.04f)
+            color = Color.argb(245, 210, 24, 74)
+        }
+        val centerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.FILL
+            color = Color.argb(245, 255, 219, 65)
+        }
+
+        nearMisses.forEach { issue ->
+            val target = plan.walls.getOrNull(issue.targetWallIndex) ?: return@forEach
+            val projected = projectOntoSegment(issue.endpoint, target)
+            val (ex, ey) = transform.planToImage(issue.endpoint)
+            val (tx, ty) = transform.planToImage(projected)
+            val radius = max(7f, pixelsPerMeter * TOPOLOGY_MARKER_RADIUS_METERS)
+
+            canvas.drawLine(ex, ey, tx, ty, connectorPaint)
+            canvas.drawCircle(ex, ey, radius, ringPaint)
+            canvas.drawCircle(ex, ey, max(2.5f, radius * 0.24f), centerPaint)
+            canvas.drawCircle(tx, ty, max(4f, radius * 0.55f), ringPaint)
+        }
+    }
+
+    private fun projectOntoSegment(point: Vec2, wall: WallSegment): Vec2 {
+        val vx = wall.end.x - wall.start.x
+        val vz = wall.end.z - wall.start.z
+        val lengthSq = vx * vx + vz * vz
+        if (lengthSq <= 0.000001f) return wall.start
+        val t = (((point.x - wall.start.x) * vx + (point.z - wall.start.z) * vz) / lengthSq)
+            .coerceIn(0f, 1f)
+        return Vec2(
+            x = wall.start.x + vx * t,
+            z = wall.start.z + vz * t,
+        )
+    }
+
     private fun drawOpeningAxis(
         canvas: Canvas,
         transform: PlanRasterTransform,
@@ -158,4 +216,5 @@ internal object GeometryOverlayRenderer {
     private const val DEFAULT_MAX_SIDE = 1200
     private const val MIN_WALL_STROKE_PX = 2.5f
     private const val MIN_ENDPOINT_RADIUS_PX = 2.2f
+    private const val TOPOLOGY_MARKER_RADIUS_METERS = 0.08f
 }
