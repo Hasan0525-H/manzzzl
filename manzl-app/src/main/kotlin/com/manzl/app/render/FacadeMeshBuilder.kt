@@ -16,6 +16,11 @@ import kotlin.math.sqrt
  * The base wall remains untouched and keeps the interior material. The façade layer is offset a few
  * millimetres from the exposed face, so an interior wall face never becomes stone merely because the
  * opposite side faces outdoors. Door/window cut-outs are copied exactly from canonical openings.
+ *
+ * Accepted exterior openings also receive a restrained projected surround. The surround sits outside
+ * the canonical opening rather than filling it, and uses real shallow 3D side faces so the existing
+ * PBR light can produce readable depth around Saudi-style windows and entrances without modifying
+ * collision, wall thickness or the measured opening itself.
  */
 internal object FacadeMeshBuilder {
 
@@ -133,6 +138,98 @@ internal object FacadeMeshBuilder {
                 builder.addQuad(a, b, c, d, P3(normalX, 0f, normalZ))
             }
         }
+
+        cutouts.forEach { cutout ->
+            addOpeningSurround(
+                builder = builder,
+                wall = wall,
+                wallLength = length,
+                axisX = axisX,
+                axisZ = axisZ,
+                normalX = normalX,
+                normalZ = normalZ,
+                faceOffset = faceOffset,
+                cutout = cutout,
+            )
+        }
+    }
+
+    private fun addOpeningSurround(
+        builder: SurfaceBuilder,
+        wall: WallSegment,
+        wallLength: Float,
+        axisX: Float,
+        axisZ: Float,
+        normalX: Float,
+        normalZ: Float,
+        faceOffset: Float,
+        cutout: Cutout,
+    ) {
+        if (cutout.to - cutout.from < MIN_SURROUND_OPENING_WIDTH_METERS) return
+        val border = SURROUND_BORDER_METERS
+        val outerOffset = faceOffset + SURROUND_PROJECTION_METERS
+
+        fun panel(from: Float, to: Float, bottom: Float, top: Float) {
+            val safeFrom = from.coerceIn(0f, wallLength)
+            val safeTo = to.coerceIn(0f, wallLength)
+            val safeBottom = bottom.coerceIn(0f, wall.heightMeters)
+            val safeTop = top.coerceIn(0f, wall.heightMeters)
+            if (safeTo - safeFrom <= EPSILON || safeTop - safeBottom <= EPSILON) return
+            addProjectedPanel(
+                builder = builder,
+                wall = wall,
+                axisX = axisX,
+                axisZ = axisZ,
+                normalX = normalX,
+                normalZ = normalZ,
+                baseOffset = faceOffset,
+                outerOffset = outerOffset,
+                from = safeFrom,
+                to = safeTo,
+                bottom = safeBottom,
+                top = safeTop,
+            )
+        }
+
+        // Jambs stay outside the measured opening interval.
+        panel(cutout.from - border, cutout.from, cutout.bottom, cutout.top)
+        panel(cutout.to, cutout.to + border, cutout.bottom, cutout.top)
+        // Lintel projects above the opening, never across it.
+        panel(cutout.from - border, cutout.to + border, cutout.top, cutout.top + border)
+        // A window has a real sill above floor level; doors deliberately receive no bottom strip.
+        if (cutout.bottom >= MIN_WINDOW_SILL_FOR_SURROUND_METERS) {
+            panel(cutout.from - border, cutout.to + border, cutout.bottom - border, cutout.bottom)
+        }
+    }
+
+    private fun addProjectedPanel(
+        builder: SurfaceBuilder,
+        wall: WallSegment,
+        axisX: Float,
+        axisZ: Float,
+        normalX: Float,
+        normalZ: Float,
+        baseOffset: Float,
+        outerOffset: Float,
+        from: Float,
+        to: Float,
+        bottom: Float,
+        top: Float,
+    ) {
+        val baseA = pointOnFace(wall, axisX, axisZ, normalX, normalZ, baseOffset, from, bottom)
+        val baseB = pointOnFace(wall, axisX, axisZ, normalX, normalZ, baseOffset, to, bottom)
+        val baseC = pointOnFace(wall, axisX, axisZ, normalX, normalZ, baseOffset, to, top)
+        val baseD = pointOnFace(wall, axisX, axisZ, normalX, normalZ, baseOffset, from, top)
+        val outerA = pointOnFace(wall, axisX, axisZ, normalX, normalZ, outerOffset, from, bottom)
+        val outerB = pointOnFace(wall, axisX, axisZ, normalX, normalZ, outerOffset, to, bottom)
+        val outerC = pointOnFace(wall, axisX, axisZ, normalX, normalZ, outerOffset, to, top)
+        val outerD = pointOnFace(wall, axisX, axisZ, normalX, normalZ, outerOffset, from, top)
+
+        builder.addQuad(outerA, outerB, outerC, outerD, P3(normalX, 0f, normalZ))
+        builder.addQuad(baseA, outerA, outerD, baseD, P3(-axisX, 0f, -axisZ))
+        builder.addQuad(outerB, baseB, baseC, outerC, P3(axisX, 0f, axisZ))
+        builder.addQuad(baseA, baseB, outerB, outerA, P3(0f, -1f, 0f))
+        builder.addQuad(outerD, outerC, baseC, baseD, P3(0f, 1f, 0f))
     }
 
     private fun projectCutout(
@@ -236,6 +333,10 @@ internal object FacadeMeshBuilder {
     private const val DEFAULT_DOOR_HEIGHT_METERS = 2.20f
     private const val DEFAULT_MIN_EXPOSURE_CONFIDENCE = 0.70f
     private const val SKIN_OFFSET_METERS = 0.006f
+    private const val SURROUND_BORDER_METERS = 0.075f
+    private const val SURROUND_PROJECTION_METERS = 0.035f
+    private const val MIN_SURROUND_OPENING_WIDTH_METERS = 0.45f
+    private const val MIN_WINDOW_SILL_FOR_SURROUND_METERS = 0.18f
     private const val OPENING_WALL_TOLERANCE_METERS = 0.24f
     private const val MIN_OPENING_SPAN_METERS = 0.20f
     private const val EPSILON = 0.0001f
