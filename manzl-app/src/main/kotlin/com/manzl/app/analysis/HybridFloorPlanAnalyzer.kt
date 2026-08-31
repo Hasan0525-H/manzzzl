@@ -14,10 +14,11 @@ import kotlin.math.sqrt
  * 1) deterministic vision establishes measured topology and metric scale;
  * 2) deterministic door/room topology creates a geometry baseline;
  * 3) bundled on-device semantic providers may label rooms or suggest stairs/openings;
- * 4) GeometryEvidenceFusion accepts only evidence that is geometrically plausible;
- * 5) deterministic topology is re-run after fusion and becomes the sole source of truth for 3D;
- * 6) door swing symbols may enrich an accepted opening but never create or move one;
- * 7) door/window conflicts are resolved from symbol-specific evidence before final room topology.
+ * 4) independent semantic observations are combined only when they agree spatially/structurally;
+ * 5) GeometryEvidenceFusion accepts only evidence that is geometrically plausible;
+ * 6) deterministic topology is re-run after fusion and becomes the sole source of truth for 3D;
+ * 7) door swing symbols may enrich an accepted opening but never create or move one;
+ * 8) door/window conflicts are resolved from symbol-specific evidence before final room topology.
  *
  * No provider is allowed to require a network connection in the release build.
  */
@@ -62,8 +63,11 @@ internal class HybridFloorPlanAnalyzer(
             semanticEvidence += provider.analyze(bitmap, providerPlan)
         }
 
-        progress.onUpdate(AnalysisUpdate(92, "مطابقة الدلالات مع هندسة المخطط"))
-        val reconciled = GeometryEvidenceFusion.fuse(baseline, semanticEvidence)
+        progress.onUpdate(AnalysisUpdate(91, "دمج الأدلة المستقلة المتفقة"))
+        val consensusEvidence = SemanticEvidenceConsensus.combine(semanticEvidence)
+
+        progress.onUpdate(AnalysisUpdate(93, "مطابقة الدلالات مع هندسة المخطط"))
+        val reconciled = GeometryEvidenceFusion.fuse(baseline, consensusEvidence)
 
         progress.onUpdate(AnalysisUpdate(95, "مراجعة مرشحات الأبواب والنوافذ"))
         val inferredDoors = DoorInferenceEngine.infer(reconciled)
