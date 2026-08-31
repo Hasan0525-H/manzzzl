@@ -1,7 +1,6 @@
 package com.manzl.app.render
 
 import com.manzl.app.model.FloorPlan
-import com.manzl.app.model.Vec2
 import com.manzl.app.model.WallSegment
 import kotlin.math.sqrt
 
@@ -14,10 +13,13 @@ internal data class MeshData(
 
 internal object HouseMeshBuilder {
 
-    fun build(plan: FloorPlan): MeshData {
+    fun build(plan: FloorPlan, wallHeightOverride: Float? = null): MeshData {
         val wallBuilder = GeometryBuilder()
         for (wall in plan.walls) {
-            addWall(wallBuilder, wall)
+            addWall(
+                builder = wallBuilder,
+                wall = if (wallHeightOverride == null) wall else wall.copy(heightMeters = wallHeightOverride),
+            )
         }
 
         val floorBuilder = GeometryBuilder()
