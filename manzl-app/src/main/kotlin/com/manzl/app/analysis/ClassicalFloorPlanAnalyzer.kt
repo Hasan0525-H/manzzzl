@@ -15,12 +15,11 @@ import kotlin.math.max
 import kotlin.math.min
 
 /**
- * Offline baseline analyzer.
+ * Offline structural analyzer.
  *
- * The production path starts with deterministic geometry instead of a cloud model. Architectural
- * drawings with blue structural walls get a color-aware path; monochrome drawings fall back to a
- * dark-line path. Door openings are inferred from collinear structural gaps after metric cleanup.
- * A future bundled on-device model can add semantic evidence without changing the UI or 3D engine.
+ * Deterministic geometry remains the topology authority. A bundled on-device OCR model is used as
+ * a narrow AI component for metric-scale calibration from printed dimensions; if OCR confidence is
+ * insufficient, the analyzer falls back conservatively rather than fabricating measurements.
  */
 class ClassicalFloorPlanAnalyzer : FloorPlanAnalyzer {
 
@@ -54,20 +53,23 @@ class ClassicalFloorPlanAnalyzer : FloorPlanAnalyzer {
             }
             coroutineContext.ensureActive()
 
-            progress.onUpdate(AnalysisUpdate(30, "اكتشاف محاور الجدران"))
+            progress.onUpdate(AnalysisUpdate(28, "اكتشاف محاور الجدران"))
             val horizontalRaw = scanHorizontal(mask, width, height)
             val verticalRaw = scanVertical(mask, width, height)
 
-            progress.onUpdate(AnalysisUpdate(47, "دمج سماكات الجدران وتنظيف الضوضاء"))
+            progress.onUpdate(AnalysisUpdate(43, "دمج سماكات الجدران وتنظيف الضوضاء"))
             val mergeDistance = max(3, min(width, height) / 180)
             val horizontal = mergeParallel(horizontalRaw, mergeDistance)
             val vertical = mergeParallel(verticalRaw, mergeDistance)
 
             coroutineContext.ensureActive()
-            progress.onUpdate(AnalysisUpdate(63, "تحويل الرسم إلى هندسة مترية"))
+            progress.onUpdate(AnalysisUpdate(55, "قراءة الأبعاد المطبوعة بالذكاء الاصطناعي المحلي"))
+            val calibration = MetricScaleCalibrator.calibrate(working)
 
-            val longestSideMeters = DEFAULT_LONG_SIDE_METERS
-            val pxToMeter = longestSideMeters / max(width, height).toFloat()
+            coroutineContext.ensureActive()
+            progress.onUpdate(AnalysisUpdate(65, "تحويل الرسم إلى هندسة مترية"))
+
+            val pxToMeter = calibration.longSideMeters / max(width, height).toFloat()
             val planWidth = width * pxToMeter
             val planDepth = height * pxToMeter
 
@@ -112,13 +114,16 @@ class ClassicalFloorPlanAnalyzer : FloorPlanAnalyzer {
                 "لم أتمكن من استخراج جدران كافية. جرّب صورة أوضح أو قص المخطط فقط."
             }
 
-            progress.onUpdate(AnalysisUpdate(78, "بناء حدود الغرف والممرات"))
+            progress.onUpdate(AnalysisUpdate(77, "بناء حدود الغرف والممرات"))
             val densityConfidence = (walls.size / 28f).coerceIn(0.45f, 1f)
             val modeConfidence = if (preferBlue) 0.94f else 0.72f
-            val confidence = (densityConfidence * modeConfidence).coerceIn(0f, 0.97f)
+            val geometryConfidence = (densityConfidence * modeConfidence).coerceIn(0f, 0.97f)
+            val confidence = (
+                geometryConfidence * 0.86f + calibration.confidence.coerceIn(0f, 1f) * 0.14f
+                ).coerceIn(0f, 0.97f)
 
             coroutineContext.ensureActive()
-            progress.onUpdate(AnalysisUpdate(89, "استنتاج فتحات الأبواب وربط الغرف"))
+            progress.onUpdate(AnalysisUpdate(88, "استنتاج فتحات الأبواب وربط الغرف"))
 
             val structural = FloorPlan(
                 widthMeters = planWidth,
@@ -127,6 +132,8 @@ class ClassicalFloorPlanAnalyzer : FloorPlanAnalyzer {
                 analysisConfidence = confidence,
                 sourceWidthPx = bitmap.width,
                 sourceHeightPx = bitmap.height,
+                scaleConfidence = calibration.confidence,
+                scaleSource = calibration.source,
             )
             val doors = DoorInferenceEngine.infer(structural)
 
@@ -202,7 +209,6 @@ class ClassicalFloorPlanAnalyzer : FloorPlanAnalyzer {
             }
         }
 
-        // Dimension lines and text strokes tend to be much shorter than structural runs.
         val lengths = merged.map { it.to - it.from }.sorted()
         if (lengths.isEmpty()) return emptyList()
         val median = lengths[lengths.size / 2].coerceAtLeast(1)
@@ -263,7 +269,6 @@ class ClassicalFloorPlanAnalyzer : FloorPlanAnalyzer {
     companion object {
         private const val MAX_SIDE = 1400
         private const val BLUE_MODE_MIN_RATIO = 0.0014f
-        private const val DEFAULT_LONG_SIDE_METERS = 14f
         private const val MIN_WALL_METERS = 0.38f
     }
 }
