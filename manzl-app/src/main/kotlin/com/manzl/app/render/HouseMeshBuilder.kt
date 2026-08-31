@@ -11,6 +11,7 @@ import com.manzl.app.model.WallSegment
 import com.manzl.app.model.WindowOpening
 import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.min
@@ -200,6 +201,7 @@ internal object HouseMeshBuilder {
                 wall = wall,
                 center = door.center,
                 width = door.widthMeters,
+                rotationDegrees = door.rotationDegrees,
                 bottom = 0f,
                 top = min(doorHeight, wall.heightMeters),
             )?.let(openings::add)
@@ -209,6 +211,7 @@ internal object HouseMeshBuilder {
                 wall = wall,
                 center = window.center,
                 width = window.widthMeters,
+                rotationDegrees = window.rotationDegrees,
                 bottom = window.sillHeightMeters.coerceAtLeast(0f),
                 top = (window.sillHeightMeters + window.heightMeters).coerceAtMost(wall.heightMeters),
             )?.let(openings::add)
@@ -255,6 +258,7 @@ internal object HouseMeshBuilder {
         wall: WallSegment,
         center: Vec2,
         width: Float,
+        rotationDegrees: Float,
         bottom: Float,
         top: Float,
     ): WallCutout? {
@@ -264,6 +268,9 @@ internal object HouseMeshBuilder {
         val lengthSq = dx * dx + dz * dz
         if (lengthSq < EPSILON) return null
         val length = sqrt(lengthSq)
+        val wallRotation = Math.toDegrees(atan2(dz.toDouble(), dx.toDouble())).toFloat()
+        if (axisAngleDifference(wallRotation, rotationDegrees) > MAX_OPENING_AXIS_ERROR_DEGREES) return null
+
         val projection = ((center.x - wall.start.x) * dx + (center.z - wall.start.z) * dz) / lengthSq
         val projectedX = wall.start.x + dx * projection.coerceIn(0f, 1f)
         val projectedZ = wall.start.z + dz * projection.coerceIn(0f, 1f)
@@ -283,6 +290,19 @@ internal object HouseMeshBuilder {
             bottom = bottom,
             top = top,
         )
+    }
+
+    private fun axisAngleDifference(a: Float, b: Float): Float {
+        val na = normalizeHalfTurn(a)
+        val nb = normalizeHalfTurn(b)
+        val delta = abs(na - nb)
+        return min(delta, 180f - delta)
+    }
+
+    private fun normalizeHalfTurn(value: Float): Float {
+        var result = value % 180f
+        if (result < 0f) result += 180f
+        return result
     }
 
     private fun complementVerticalSpans(
@@ -702,6 +722,7 @@ internal object HouseMeshBuilder {
     private const val WINDOW_GLASS_THICKNESS_METERS = 0.014f
     private const val WINDOW_GLASS_INSET_METERS = 0.045f
     private const val OPENING_ASSOCIATION_METERS = 0.30f
+    private const val MAX_OPENING_AXIS_ERROR_DEGREES = 14f
     private const val OPENING_EDGE_EPSILON = 0.001f
     private const val MIN_SOLID_SLICE_METERS = 0.012f
     private const val MIN_FLOOR_ROOM_CONFIDENCE = 0.68f
