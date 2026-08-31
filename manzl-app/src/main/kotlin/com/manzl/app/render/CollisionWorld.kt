@@ -52,8 +52,14 @@ internal class CollisionWorld(private val plan: FloorPlan) {
         return result
     }
 
-    /** Finds a collision-free point near the plan centre so a generated model never starts in a wall/window. */
+    /**
+     * Prefer a collision-free point inside trusted room geometry. This avoids spawning the player
+     * in exterior drawing margins or other empty regions merely because the bitmap centre is clear.
+     * If room evidence is insufficient, retain the deterministic centre/grid fallback.
+     */
     fun findSpawn(radius: Float = DEFAULT_PLAYER_RADIUS): Vec2 {
+        WalkableSpawnResolver.find(plan, radius, ::isClear)?.let { return it }
+
         val centre = Vec2(0f, 0f)
         if (isClear(centre, radius)) return centre
 
@@ -97,7 +103,8 @@ internal class CollisionWorld(private val plan: FloorPlan) {
         var x = candidate.x.coerceIn(-halfWidth, halfWidth)
         var z = candidate.z.coerceIn(-halfDepth, halfDepth)
 
-        repeat(RESOLUTION_PASSES) {
+        var pass = 0
+        while (pass < RESOLUTION_PASSES) {
             var changed = false
             for (barrier in barriers) {
                 val wall = barrier.wall
@@ -140,7 +147,8 @@ internal class CollisionWorld(private val plan: FloorPlan) {
                 z = z.coerceIn(-halfDepth, halfDepth)
                 changed = true
             }
-            if (!changed) return@repeat
+            if (!changed) break
+            pass++
         }
 
         return Vec2(x, z)
