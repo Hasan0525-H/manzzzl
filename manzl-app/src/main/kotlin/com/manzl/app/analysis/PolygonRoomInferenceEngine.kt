@@ -252,6 +252,30 @@ internal object PolygonRoomInferenceEngine {
     }
 
     private fun candidateFromCycle(graph: Graph, rawCycle: List<Int>): FaceCandidate? {
+        // Read confidence/opening evidence from the original half-edge cycle before visual polygon
+        // simplification. Collinear simplification can legitimately remove the two graph nodes on
+        // either side of a door/window gap; querying only the simplified vertices would then look for
+        // a non-existent direct edge and incorrectly reject an otherwise closed room.
+        var totalBoundaryLength = 0f
+        var openingBoundaryLength = 0f
+        var weightedConfidence = 0f
+        var minEdgeConfidence = 1f
+        for (index in rawCycle.indices) {
+            val a = rawCycle[index]
+            val b = rawCycle[(index + 1) % rawCycle.size]
+            val edge = graph.edgeBetween(a, b) ?: return null
+            val edgeLength = distance(graph.nodes[a].point, graph.nodes[b].point)
+            if (edgeLength <= 1e-5f) continue
+            totalBoundaryLength += edgeLength
+            weightedConfidence += edge.confidence * edgeLength
+            minEdgeConfidence = min(minEdgeConfidence, edge.confidence)
+            if (edge.kind == EdgeKind.OPENING) openingBoundaryLength += edgeLength
+        }
+        if (totalBoundaryLength <= 1e-5f) return null
+        val openingFraction = openingBoundaryLength / totalBoundaryLength
+        if (openingFraction > MAX_OPENING_BOUNDARY_FRACTION) return null
+        val meanEdgeConfidence = (weightedConfidence / totalBoundaryLength).coerceIn(0f, 1f)
+
         val simplifiedIds = simplifyCollinear(graph, rawCycle)
         if (simplifiedIds.size < 3 || simplifiedIds.size > MAX_FACE_VERTICES) return null
         val polygon = simplifiedIds.map { graph.nodes[it].point }
@@ -268,20 +292,6 @@ internal object PolygonRoomInferenceEngine {
         val compactness = (4f * PI.toFloat() * area / (perimeter * perimeter)).coerceIn(0f, 1f)
         if (compactness < MIN_COMPACTNESS) return null
 
-        val edgeConfidences = ArrayList<Float>()
-        var openingEdges = 0
-        for (index in simplifiedIds.indices) {
-            val a = simplifiedIds[index]
-            val b = simplifiedIds[(index + 1) % simplifiedIds.size]
-            val edge = graph.edgeBetween(a, b) ?: return null
-            edgeConfidences += edge.confidence
-            if (edge.kind == EdgeKind.OPENING) openingEdges++
-        }
-        val openingFraction = openingEdges.toFloat() / simplifiedIds.size.toFloat()
-        if (openingFraction > MAX_OPENING_EDGE_FRACTION) return null
-
-        val meanEdgeConfidence = edgeConfidences.average().toFloat().coerceIn(0f, 1f)
-        val minEdgeConfidence = edgeConfidences.minOrNull() ?: return null
         val areaPlausibility = when (area) {
             in 3.0f..55f -> 1f
             in 1.5f..80f -> 0.86f
@@ -485,7 +495,7 @@ internal object PolygonRoomInferenceEngine {
     private const val MIN_DOOR_BOUNDARY_CONFIDENCE = 0.58f
     private const val MIN_WINDOW_BOUNDARY_CONFIDENCE = 0.66f
     private const val OPENING_CONFIDENCE_FACTOR = 0.90f
-    private const val MAX_OPENING_EDGE_FRACTION = 0.36f
+    private const val MAX_OPENING_BOUNDARY_FRACTION = 0.36f
     private const val MIN_ROOM_AREA_SQ_METERS = 1.5f
     private const val MAX_ROOM_AREA_SQ_METERS = 120f
     private const val MIN_COMPACTNESS = 0.075f
