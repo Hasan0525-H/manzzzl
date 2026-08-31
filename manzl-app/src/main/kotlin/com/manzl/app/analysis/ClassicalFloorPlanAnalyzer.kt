@@ -1,7 +1,6 @@
 package com.manzl.app.analysis
 
 import android.graphics.Bitmap
-import android.graphics.Color
 import com.manzl.app.model.AnalysisUpdate
 import com.manzl.app.model.FloorPlan
 import com.manzl.app.model.Vec2
@@ -49,21 +48,9 @@ class ClassicalFloorPlanAnalyzer(
             coroutineContext.ensureActive()
 
             progress.onUpdate(AnalysisUpdate(14, "فصل الجدران عن النصوص والرموز"))
-            var blueStructuralCount = 0
-            for (color in pixels) {
-                if (isBlueStructural(color)) blueStructuralCount++
-            }
-            val preferBlue = blueStructuralCount >= (pixels.size * BLUE_MODE_MIN_RATIO).toInt()
-
-            val mask = BooleanArray(pixels.size)
-            for (index in pixels.indices) {
-                val color = pixels[index]
-                mask[index] = if (preferBlue) {
-                    isBlueStructural(color)
-                } else {
-                    isMonochromeStructural(color)
-                }
-            }
+            val structuralRaster = StructuralRasterMask.classify(pixels)
+            val preferBlue = structuralRaster.preferBlue
+            val mask = structuralRaster.mask
             coroutineContext.ensureActive()
 
             progress.onUpdate(AnalysisUpdate(27, "اكتشاف محاور الجدران الأساسية"))
@@ -287,28 +274,6 @@ class ClassicalFloorPlanAnalyzer(
         return overlap.toFloat() / shorter.toFloat()
     }
 
-    private fun isBlueStructural(color: Int): Boolean {
-        val r = Color.red(color)
-        val g = Color.green(color)
-        val b = Color.blue(color)
-        val maxChannel = max(r, max(g, b))
-        val minChannel = min(r, min(g, b))
-        val saturation = maxChannel - minChannel
-        return b >= 105 &&
-            b > r * 1.18f &&
-            b > g * 1.04f &&
-            saturation >= 38
-    }
-
-    private fun isMonochromeStructural(color: Int): Boolean {
-        val r = Color.red(color)
-        val g = Color.green(color)
-        val b = Color.blue(color)
-        val luminance = (r * 0.2126f) + (g * 0.7152f) + (b * 0.0722f)
-        val chroma = max(r, max(g, b)) - min(r, min(g, b))
-        return luminance <= 112f && chroma <= 58
-    }
-
     private fun Bitmap.downscaleForAnalysis(maxSide: Int): Bitmap {
         val longest = max(width, height)
         if (longest <= maxSide) return this
@@ -336,7 +301,6 @@ class ClassicalFloorPlanAnalyzer(
         // A bounded memory-aware retry may raise this to 2800/3200 without relaxing validation.
         private const val DEFAULT_MAX_SIDE = 2200
         private const val MIN_SUPPORTED_ANALYSIS_SIDE = 1400
-        private const val BLUE_MODE_MIN_RATIO = 0.0014f
         private const val MIN_WALL_METERS = 0.30f
     }
 }

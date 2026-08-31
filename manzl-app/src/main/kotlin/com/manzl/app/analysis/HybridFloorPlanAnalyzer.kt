@@ -17,15 +17,17 @@ import kotlin.math.sqrt
  * 2) the extracted wall faces are independently re-rasterized over the source plan;
  * 3) if the normal 2200px pass misses PASS and memory permits, the exact same extractor retries at
  *    2800/3200px; thresholds are never loosened and the stronger independent report wins;
- * 4) GeometryQualityGate blocks 3D unless the selected geometry fidelity report is PASS;
- * 5) a bounded source+geometry overlay is retained for explicit user review;
- * 6) deterministic polygon+rectilinear room topology creates a geometry baseline;
- * 7) bundled on-device semantic providers may label rooms or suggest stairs/openings;
- * 8) a tiny bundled neural patch model may independently confirm door/window/stair symbols;
- * 9) independent semantic observations are combined only when they agree spatially/structurally;
- * 10) GeometryEvidenceFusion accepts only evidence that is geometrically plausible;
- * 11) deterministic topology is re-run after fusion and remains the sole source of truth for 3D;
- * 12) door swing symbols may enrich an accepted opening but never create or move one.
+ * 4) explicit user corrections, when present, are re-applied to fresh geometry and independently
+ *    verified against the original raster; they cannot set PASS directly;
+ * 5) GeometryQualityGate blocks 3D unless the selected geometry fidelity report is PASS;
+ * 6) a bounded source+geometry overlay is retained for explicit user review;
+ * 7) deterministic polygon+rectilinear room topology creates a geometry baseline;
+ * 8) bundled on-device semantic providers may label rooms or suggest stairs/openings;
+ * 9) a tiny bundled neural patch model may independently confirm door/window/stair symbols;
+ * 10) independent semantic observations are combined only when they agree spatially/structurally;
+ * 11) GeometryEvidenceFusion accepts only evidence that is geometrically plausible;
+ * 12) deterministic topology is re-run after fusion and remains the sole source of truth for 3D;
+ * 13) door swing symbols may enrich an accepted opening but never create or move one.
  *
  * No provider is allowed to require a network connection in the release build.
  */
@@ -90,7 +92,33 @@ internal class HybridFloorPlanAnalyzer(
             }
         }
 
-        GeometryReviewStore.recordStructural(bitmap, structural)
+        val extractedStructural = structural
+        val explicitCorrections = GeometryReviewStore.correctionsFor(bitmap)
+        if (explicitCorrections.isNotEmpty()) {
+            progress.onUpdate(AnalysisUpdate(79, "إعادة تطبيق تصحيحاتك الهندسية والتحقق منها على الصورة الأصلية"))
+            val corrected = try {
+                GeometryCorrectionEngine.applyAndVerify(
+                    source = bitmap,
+                    plan = extractedStructural,
+                    corrections = explicitCorrections,
+                )
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: OutOfMemoryError) {
+                null
+            } catch (_: RuntimeException) {
+                null
+            }
+            if (corrected != null && corrected.appliedCount > 0) {
+                structural = corrected.plan
+            }
+        }
+
+        GeometryReviewStore.recordStructural(
+            source = bitmap,
+            plan = structural,
+            basePlan = extractedStructural,
+        )
 
         GeometryQualityGate.rejectionMessageArabic(structural)?.let { rejection ->
             progress.onUpdate(AnalysisUpdate(80, "فشل بوابة مطابقة 2D • افتح مراجعة التطابق"))
