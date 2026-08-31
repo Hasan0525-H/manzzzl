@@ -51,6 +51,7 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
     private var walls: GlMesh? = null
     private var floor: GlMesh? = null
     private var trim: GlMesh? = null
+    private var glass: GlMesh? = null
     private var shaderProgram = 0
     private var uMvp = -1
     private var uColor = -1
@@ -58,6 +59,7 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
     private var wallColor = floatArrayOf(0.94f, 0.92f, 0.87f)
     private var floorColor = floatArrayOf(0.73f, 0.68f, 0.59f)
     private var trimColor = floatArrayOf(0.34f, 0.24f, 0.17f)
+    private var glassColor = floatArrayOf(0.68f, 0.78f, 0.80f)
 
     private val projection = FloatArray(16)
     private val view = FloatArray(16)
@@ -100,7 +102,6 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
         )
     }
 
-    /** Allows a Compose/custom overlay to drive the same analog movement pipeline if desired. */
     fun setMovementInput(forward: Float, strafe: Float) {
         movementForward = forward.coerceIn(-1f, 1f)
         movementStrafe = strafe.coerceIn(-1f, 1f)
@@ -111,7 +112,6 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
         movementStrafe = 0f
     }
 
-    /** Compatibility controls used by the milestone-1 arrow buttons. */
     fun moveForward(amountMeters: Float) {
         queueEvent { moveImmediate(localForwardMeters = amountMeters, localStrafeMeters = 0f) }
     }
@@ -139,6 +139,8 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
         GLES30.glClearColor(0.90f, 0.92f, 0.94f, 1f)
         GLES30.glEnable(GLES30.GL_DEPTH_TEST)
         GLES30.glDepthFunc(GLES30.GL_LEQUAL)
+        GLES30.glEnable(GLES30.GL_BLEND)
+        GLES30.glBlendFunc(GLES30.GL_SRC_ALPHA, GLES30.GL_ONE_MINUS_SRC_ALPHA)
         shaderProgram = createProgram(VERTEX_SHADER, FRAGMENT_SHADER)
         uMvp = GLES30.glGetUniformLocation(shaderProgram, "uMvp")
         uColor = GLES30.glGetUniformLocation(shaderProgram, "uColor")
@@ -156,9 +158,11 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
             walls?.destroy()
             floor?.destroy()
             trim?.destroy()
+            glass?.destroy()
             walls = uploadMesh(mesh.wallVertices, mesh.wallIndices)
             floor = uploadMesh(mesh.floorVertices, mesh.floorIndices)
             trim = uploadMesh(mesh.trimVertices, mesh.trimIndices)
+            glass = uploadMesh(mesh.glassVertices, mesh.glassIndices)
         }
         pendingDesign?.let { design ->
             pendingDesign = null
@@ -176,6 +180,11 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
                 design.palette.wood.r,
                 design.palette.wood.g,
                 design.palette.wood.b,
+            )
+            glassColor = floatArrayOf(
+                (design.palette.ceiling.r * 0.72f).coerceIn(0f, 1f),
+                (design.palette.ceiling.g * 0.82f).coerceIn(0f, 1f),
+                (design.palette.ceiling.b * 0.88f).coerceIn(0f, 1f),
             )
         }
         pendingSpawn?.let { spawn ->
@@ -238,6 +247,12 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
             GLES30.glUniform4f(uColor, trimColor[0], trimColor[1], trimColor[2], 1f)
             drawMesh(it)
         }
+        glass?.let {
+            GLES30.glDepthMask(false)
+            GLES30.glUniform4f(uColor, glassColor[0], glassColor[1], glassColor[2], 0.38f)
+            drawMesh(it)
+            GLES30.glDepthMask(true)
+        }
     }
 
     private fun updateMovement(deltaSeconds: Float) {
@@ -262,7 +277,6 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
         val desiredX = (forwardX * forward + rightX * strafe) * targetSpeed
         val desiredZ = (forwardZ * forward + rightZ * strafe) * targetSpeed
 
-        // Exponential response is frame-rate independent and feels less robotic than instant speed.
         val response = 1f - exp((-MOVEMENT_RESPONSE * deltaSeconds).toDouble()).toFloat()
         velocityX += (desiredX - velocityX) * response
         velocityZ += (desiredZ - velocityZ) * response
@@ -282,7 +296,6 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
             radius = PLAYER_RADIUS,
         ) ?: Vec2(intendedX, intendedZ)
 
-        // Kill only the blocked component so the player naturally slides along walls/corners.
         if (abs(moved.x - intendedX) > COLLISION_VELOCITY_TOLERANCE) velocityX *= COLLISION_DAMPING
         if (abs(moved.z - intendedZ) > COLLISION_VELOCITY_TOLERANCE) velocityZ *= COLLISION_DAMPING
         cameraX = moved.x
@@ -413,9 +426,11 @@ class HouseWalkView(context: Context) : GLSurfaceView(context), GLSurfaceView.Re
             walls?.destroy()
             floor?.destroy()
             trim?.destroy()
+            glass?.destroy()
             walls = null
             floor = null
             trim = null
+            glass = null
             if (shaderProgram != 0) {
                 GLES30.glDeleteProgram(shaderProgram)
                 shaderProgram = 0
