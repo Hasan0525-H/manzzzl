@@ -57,15 +57,7 @@ internal object HouseMeshBuilder {
         }
 
         val floorBuilder = GeometryBuilder()
-        val halfWidth = plan.widthMeters / 2f + 0.25f
-        val halfDepth = plan.depthMeters / 2f + 0.25f
-        floorBuilder.addQuad(
-            a = P3(-halfWidth, 0f, -halfDepth),
-            b = P3(halfWidth, 0f, -halfDepth),
-            c = P3(halfWidth, 0f, halfDepth),
-            d = P3(-halfWidth, 0f, halfDepth),
-            normal = P3(0f, 1f, 0f),
-        )
+        addInteriorFloorSurfaces(floorBuilder, plan)
 
         val acceptedStairs = plan.stairs.filter { it.confidence >= MIN_STAIR_RENDER_CONFIDENCE }
         acceptedStairs.forEach { staircase ->
@@ -102,6 +94,84 @@ internal object HouseMeshBuilder {
             glassVertices = glassBuilder.vertices.toFloatArray(),
             glassIndices = glassBuilder.indices.toIntArray(),
         )
+    }
+
+    /**
+     * Prefer validated room polygons when they cover enough of the detected plan. This preserves
+     * courtyards/voids instead of blindly pouring one giant floor slab across the whole footprint.
+     * Sparse room evidence falls back to the old bounded slab so an incomplete detector cannot make
+     * most of the house disappear.
+     */
+    private fun addInteriorFloorSurfaces(builder: GeometryBuilder, plan: FloorPlan) {
+        val planArea = (plan.widthMeters * plan.depthMeters).coerceAtLeast(EPSILON)
+        val rooms = plan.rooms.filter { room ->
+            val area = PolygonTriangulator.polygonArea(room.polygon)
+            room.confidence >= MIN_FLOOR_ROOM_CONFIDENCE &&
+                room.polygon.size >= 3 &&
+                area in MIN_FLOOR_POLYGON_AREA_SQ_METERS..MAX_FLOOR_POLYGON_AREA_SQ_METERS
+        }
+        val evidenceArea = rooms.sumOf { PolygonTriangulator.polygonArea(it.polygon).toDouble() }.toFloat()
+        val coverage = evidenceArea / planArea
+
+        if (rooms.isNotEmpty() && coverage >= MIN_ROOM_FLOOR_COVERAGE_RATIO) {
+            var rendered = 0
+            rooms.forEach { room ->
+                if (addRoomFloor(builder, room)) rendered++
+            }
+            if (rendered > 0) return
+        }
+
+        addFallbackFloor(builder, plan)
+    }
+
+    private fun addFallbackFloor(builder: GeometryBuilder, plan: FloorPlan) {
+        val halfWidth = plan.widthMeters / 2f + 0.25f
+        val halfDepth = plan.depthMeters / 2f + 0.25f
+        builder.addQuad(
+            a = P3(-halfWidth, 0f, -halfDepth),
+            b = P3(halfWidth, 0f, -halfDepth),
+            c = P3(halfWidth, 0f, halfDepth),
+            d = P3(-halfWidth, 0f, halfDepth),
+            normal = P3(0f, 1f, 0f),
+        )
+    }
+
+    private fun addRoomFloor(builder: GeometryBuilder, room: RoomRegion): Boolean {
+        val minX = room.polygon.minOfOrNull { it.x } ?: return false
+        val maxX = room.polygon.maxOfOrNull { it.x } ?: return false
+        val minZ = room.polygon.minOfOrNull { it.z } ?: return false
+        val maxZ = room.polygon.maxOfOrNull { it.z } ?: return false
+        val rectangular = room.polygon.size >= 4 && room.polygon.all { point ->
+            val onXEdge = abs(point.x - minX) <= RECTANGLE_CORNER_TOLERANCE_METERS ||
+                abs(point.x - maxX) <= RECTANGLE_CORNER_TOLERANCE_METERS
+            val onZEdge = abs(point.z - minZ) <= RECTANGLE_CORNER_TOLERANCE_METERS ||
+                abs(point.z - maxZ) <= RECTANGLE_CORNER_TOLERANCE_METERS
+            onXEdge && onZEdge
+        }
+
+        if (rectangular) {
+            if (maxX - minX <= EPSILON || maxZ - minZ <= EPSILON) return false
+            builder.addQuad(
+                a = P3(minX, 0f, minZ),
+                b = P3(maxX, 0f, minZ),
+                c = P3(maxX, 0f, maxZ),
+                d = P3(minX, 0f, maxZ),
+                normal = P3(0f, 1f, 0f),
+            )
+            return true
+        }
+
+        val triangles = PolygonTriangulator.triangulate(room.polygon)
+        if (triangles.isEmpty()) return false
+        triangles.forEach { triangle ->
+            builder.addTriangle(
+                a = P3(triangle.a.x, 0f, triangle.a.z),
+                b = P3(triangle.c.x, 0f, triangle.c.z),
+                c = P3(triangle.b.x, 0f, triangle.b.z),
+                normal = P3(0f, 1f, 0f),
+            )
+        }
+        return true
     }
 
     private fun addWallWithOpenings(
@@ -322,8 +392,6 @@ internal object HouseMeshBuilder {
             return
         }
 
-        // Concave L/U-shaped rooms keep their true measured outline. Ear clipping fails closed if
-        // the contour is invalid, so we never replace a difficult room with a misleading rectangle.
         val triangles = PolygonTriangulator.triangulate(room.polygon)
         if (triangles.isEmpty()) return
         triangles.forEach { triangle ->
@@ -581,6 +649,10 @@ internal object HouseMeshBuilder {
     private const val OPENING_ASSOCIATION_METERS = 0.30f
     private const val OPENING_EDGE_EPSILON = 0.001f
     private const val MIN_SOLID_SLICE_METERS = 0.012f
+    private const val MIN_FLOOR_ROOM_CONFIDENCE = 0.68f
+    private const val MIN_FLOOR_POLYGON_AREA_SQ_METERS = 1.2f
+    private const val MAX_FLOOR_POLYGON_AREA_SQ_METERS = 120f
+    private const val MIN_ROOM_FLOOR_COVERAGE_RATIO = 0.32f
     private const val MIN_CEILING_ROOM_CONFIDENCE = 0.68f
     private const val MIN_CEILING_SPAN_METERS = 0.75f
     private const val MIN_CEILING_POLYGON_AREA_SQ_METERS = 1.2f
