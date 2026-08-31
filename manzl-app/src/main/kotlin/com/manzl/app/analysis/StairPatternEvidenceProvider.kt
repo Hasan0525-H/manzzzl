@@ -192,7 +192,9 @@ internal object StairPatternDetector {
             if (deltas.size < MIN_TREADS - 1) continue
             val medianSpacing = median(deltas)
             val minSpacing = max(2f, alongPixels / 420f)
-            val maxSpacing = max(minSpacing + 1f, alongPixels / 24f)
+            // CAD stair treads can be visually sparse in a cropped drawing; permit spacing up to
+            // about 1/18 of the analysis dimension, then rely on regularity and length consistency.
+            val maxSpacing = max(minSpacing + 1f, alongPixels / 18f)
             if (medianSpacing !in minSpacing..maxSpacing) continue
 
             val spacingError = deltas.sumOf { delta ->
