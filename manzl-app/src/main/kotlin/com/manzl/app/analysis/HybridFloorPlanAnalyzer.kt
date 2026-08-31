@@ -19,7 +19,7 @@ import kotlin.math.sqrt
  *    2800/3200px; thresholds are never loosened and the stronger independent report wins;
  * 4) GeometryQualityGate blocks 3D unless the selected geometry fidelity report is PASS;
  * 5) a bounded source+geometry overlay is retained for explicit user review;
- * 6) deterministic door/room topology creates a geometry baseline;
+ * 6) deterministic polygon+rectilinear room topology creates a geometry baseline;
  * 7) bundled on-device semantic providers may label rooms or suggest stairs/openings;
  * 8) a tiny bundled neural patch model may independently confirm door/window/stair symbols;
  * 9) independent semantic observations are combined only when they agree spatially/structurally;
@@ -99,12 +99,12 @@ internal class HybridFloorPlanAnalyzer(
         }
 
         return try {
-            progress.onUpdate(AnalysisUpdate(82, "بناء خط أساس للأبواب والغرف"))
+            progress.onUpdate(AnalysisUpdate(82, "بناء خط أساس للأبواب والغرف متعددة الزوايا"))
             val baselineDoors = DoorInferenceEngine.infer(structural)
             val withDoors = structural.copy(
                 doors = mergeDoors(structural.doors, baselineDoors),
             )
-            val baselineRooms = RoomInferenceEngine.infer(withDoors)
+            val baselineRooms = RoomTopologyEngine.infer(withDoors)
             val baseline = withDoors.copy(
                 rooms = mergeRooms(withDoors.rooms, baselineRooms),
             )
@@ -139,8 +139,8 @@ internal class HybridFloorPlanAnalyzer(
             )
             val withClassifiedOpenings = OpeningSemanticReconciler.reconcile(withDoorDynamics)
 
-            progress.onUpdate(AnalysisUpdate(98, "مراجعة حدود الغرف والأسقف"))
-            val inferredRooms = RoomInferenceEngine.infer(withClassifiedOpenings)
+            progress.onUpdate(AnalysisUpdate(98, "مراجعة حدود الغرف المائلة والأسقف"))
+            val inferredRooms = RoomTopologyEngine.infer(withClassifiedOpenings)
             val enriched = withClassifiedOpenings.copy(
                 rooms = mergeRooms(withClassifiedOpenings.rooms, inferredRooms),
             )
