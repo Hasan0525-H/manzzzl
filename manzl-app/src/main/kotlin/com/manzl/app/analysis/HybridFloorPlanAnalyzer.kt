@@ -5,32 +5,43 @@ import com.manzl.app.model.AnalysisUpdate
 import com.manzl.app.model.FloorPlan
 
 /**
- * Production-facing analyzer façade.
+ * Production-facing analyzer facade.
  *
- * Stage 1 uses deterministic vision for topology. Stage 2 enriches the structural result with
- * doorway semantics. The interface is intentionally ready for a future bundled on-device model:
- * neural evidence can be fused here without letting a generative system replace measured geometry.
+ * 1) deterministic vision establishes measured topology;
+ * 2) optional bundled on-device AI providers report semantic evidence;
+ * 3) GeometryEvidenceFusion accepts only evidence that is geometrically plausible;
+ * 4) the reconciled FloorPlan becomes the sole source of truth for 3D generation.
+ *
+ * No provider is allowed to require a network connection in the release build.
  */
 class HybridFloorPlanAnalyzer(
     private val structuralAnalyzer: FloorPlanAnalyzer = ClassicalFloorPlanAnalyzer(),
+    private val semanticProviders: List<SemanticEvidenceProvider> = emptyList(),
 ) : FloorPlanAnalyzer {
 
     override suspend fun analyze(bitmap: Bitmap, progress: ProgressSink): FloorPlan {
         val structural = structuralAnalyzer.analyze(
             bitmap = bitmap,
             progress = ProgressSink { update ->
-                // Reserve the final 8% for topology/semantic reconciliation.
-                val remapped = (update.percent * 0.92f).toInt().coerceIn(0, 92)
+                // Reserve the final 14% for semantic inference and geometry reconciliation.
+                val remapped = (update.percent * 0.86f).toInt().coerceIn(0, 86)
                 progress.onUpdate(update.copy(percent = remapped))
             },
         )
 
-        progress.onUpdate(AnalysisUpdate(94, "استنتاج فتحات الأبواب وربط الغرف"))
-        val inferredDoors = DoorInferenceEngine.infer(structural)
+        progress.onUpdate(AnalysisUpdate(89, "تحليل الأبواب والنوافذ والسلالم محلياً"))
+        val semanticEvidence = ArrayList<SemanticEvidence>()
+        semanticProviders.forEach { provider ->
+            semanticEvidence += provider.analyze(bitmap, structural)
+        }
 
-        progress.onUpdate(AnalysisUpdate(97, "مراجعة قابلية المشي بين الفراغات"))
-        val enriched = structural.copy(
-            doors = mergeDoors(structural, inferredDoors),
+        progress.onUpdate(AnalysisUpdate(94, "مطابقة نتائج الذكاء الاصطناعي مع هندسة المخطط"))
+        val reconciled = GeometryEvidenceFusion.fuse(structural, semanticEvidence)
+
+        progress.onUpdate(AnalysisUpdate(97, "مراجعة مسارات الحركة والفراغات"))
+        val inferredDoors = DoorInferenceEngine.infer(reconciled)
+        val enriched = reconciled.copy(
+            doors = mergeDoors(reconciled, inferredDoors),
         )
 
         progress.onUpdate(AnalysisUpdate(100, "تم تجهيز المنزل للجولة"))
