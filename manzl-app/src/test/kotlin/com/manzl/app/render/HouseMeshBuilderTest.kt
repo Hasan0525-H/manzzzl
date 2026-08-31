@@ -120,10 +120,80 @@ class HouseMeshBuilderTest {
 
         val mesh = HouseMeshBuilder.build(plan, wallHeightOverride = 3.1f)
 
-        // Six polygon vertices -> four ear-clipped triangles; three vertices and six floats each.
         assertEquals(4 * 3 * 6, mesh.ceilingVertices.size)
         assertEquals(4 * 3, mesh.ceilingIndices.size)
         assertTrue(mesh.ceilingVertices.all { it.isFinite() })
+    }
+
+    @Test
+    fun `room derived floors preserve a central courtyard void`() {
+        val left = RoomRegion(
+            id = "left-wing",
+            polygon = listOf(
+                Vec2(-5f, -4f),
+                Vec2(-1f, -4f),
+                Vec2(-1f, 4f),
+                Vec2(-5f, 4f),
+            ),
+            confidence = 0.95f,
+        )
+        val right = RoomRegion(
+            id = "right-wing",
+            polygon = listOf(
+                Vec2(1f, -4f),
+                Vec2(5f, -4f),
+                Vec2(5f, 4f),
+                Vec2(1f, 4f),
+            ),
+            confidence = 0.95f,
+        )
+        val plan = FloorPlan(
+            widthMeters = 10f,
+            depthMeters = 8f,
+            walls = emptyList(),
+            rooms = listOf(left, right),
+            analysisConfidence = 1f,
+            sourceWidthPx = 1200,
+            sourceHeightPx = 960,
+        )
+
+        val mesh = HouseMeshBuilder.build(plan)
+
+        // Two separate rectangular floor quads. A global fallback slab would have only one quad.
+        assertEquals(2 * 4 * 6, mesh.floorVertices.size)
+        assertEquals(2 * 6, mesh.floorIndices.size)
+        val xPositions = mesh.floorVertices.toList().chunked(6).map { it[0] }
+        assertTrue(xPositions.none { it > -1f && it < 1f })
+    }
+
+    @Test
+    fun `sparse room evidence keeps conservative whole plan fallback floor`() {
+        val room = RoomRegion(
+            id = "single-small-room",
+            polygon = listOf(
+                Vec2(-2f, -2f),
+                Vec2(2f, -2f),
+                Vec2(2f, 2f),
+                Vec2(-2f, 2f),
+            ),
+            confidence = 0.96f,
+        )
+        val plan = FloorPlan(
+            widthMeters = 10f,
+            depthMeters = 10f,
+            walls = emptyList(),
+            rooms = listOf(room),
+            analysisConfidence = 1f,
+            sourceWidthPx = 1200,
+            sourceHeightPx = 1200,
+        )
+
+        val mesh = HouseMeshBuilder.build(plan)
+
+        assertEquals(4 * 6, mesh.floorVertices.size)
+        assertEquals(6, mesh.floorIndices.size)
+        val xPositions = mesh.floorVertices.toList().chunked(6).map { it[0] }
+        assertEquals(5.25f, xPositions.maxOrNull() ?: 0f, 0.001f)
     }
 
     @Test
