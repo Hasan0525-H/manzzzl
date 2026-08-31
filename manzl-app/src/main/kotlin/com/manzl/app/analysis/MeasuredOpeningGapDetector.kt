@@ -102,7 +102,7 @@ internal object MeasuredOpeningGapDetector {
                 compareByDescending<Gap> { it.supportConfidence }
                     .thenBy { it.widthMeters }
             )
-            .fold(ArrayList()) { accepted, candidate ->
+            .fold(ArrayList<Gap>()) { accepted, candidate ->
                 val duplicate = accepted.any { existing -> sameGap(existing, candidate) }
                 if (!duplicate) accepted += candidate
                 accepted
