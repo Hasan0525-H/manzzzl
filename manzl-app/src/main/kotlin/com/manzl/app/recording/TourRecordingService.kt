@@ -13,7 +13,9 @@ import android.media.MediaRecorder
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.provider.MediaStore
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
@@ -25,10 +27,8 @@ import kotlin.math.min
 /**
  * Local-only screen recorder for walkthrough sessions.
  *
- * The current milestone uses MediaProjection -> MediaRecorder -> H.264/MP4. It never uploads the
- * recording. On stop, the temporary MP4 is copied into MediaStore under Movies/Manzl so it is
- * visible to the user's gallery/files apps. A future renderer-to-encoder path can replace capture
- * without changing the user-facing recording lifecycle.
+ * MediaProjection -> MediaRecorder -> H.264/MP4. The recording is never uploaded. On stop, the
+ * temporary MP4 is copied to Movies/Manzl through MediaStore.
  */
 class TourRecordingService : Service() {
 
@@ -37,6 +37,12 @@ class TourRecordingService : Service() {
     private var recorder: MediaRecorder? = null
     private var tempFile: File? = null
     private val stopping = AtomicBoolean(false)
+
+    private val projectionCallback = object : MediaProjection.Callback() {
+        override fun onStop() {
+            if (!stopping.get()) stopCapture(save = true)
+        }
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -55,6 +61,7 @@ class TourRecordingService : Service() {
 
     private fun startCapture(intent: Intent) {
         if (recorder != null) return
+        stopping.set(false)
         startForeground(NOTIFICATION_ID, notification("جارٍ تسجيل جولة منزل"))
 
         val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, Int.MIN_VALUE)
@@ -70,6 +77,7 @@ class TourRecordingService : Service() {
 
         val projectionManager = getSystemService(MediaProjectionManager::class.java)
         val projection = projectionManager.getMediaProjection(resultCode, resultData)
+        projection.registerCallback(projectionCallback, Handler(Looper.getMainLooper()))
         mediaProjection = projection
 
         val (width, height) = normalizedVideoSize(requestedWidth, requestedHeight)
@@ -126,7 +134,10 @@ class TourRecordingService : Service() {
         }
         runCatching { virtualDisplay?.release() }
         virtualDisplay = null
-        runCatching { mediaProjection?.stop() }
+        mediaProjection?.let { projection ->
+            runCatching { projection.unregisterCallback(projectionCallback) }
+            runCatching { projection.stop() }
+        }
         mediaProjection = null
 
         val savedUri = if (save && output != null && output.exists() && output.length() > MIN_VALID_MP4_BYTES) {
@@ -208,7 +219,6 @@ class TourRecordingService : Service() {
             w = (w * scale).toInt()
             h = (h * scale).toInt()
         }
-        // Most H.264 encoders require even dimensions.
         w -= w % 2
         h -= h % 2
         return w.coerceAtLeast(320) to h.coerceAtLeast(320)
