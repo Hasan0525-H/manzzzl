@@ -53,7 +53,7 @@ class CollisionWorldTest {
     }
 
     @Test
-    fun `door metadata cuts a traversable passage through a continuous wall`() {
+    fun `same axis door metadata permits its continuous wall span`() {
         val wall = WallSegment(start = Vec2(0f, -3f), end = Vec2(0f, 3f), thicknessMeters = 0.18f)
         val world = CollisionWorld(
             plan(
@@ -62,7 +62,7 @@ class CollisionWorldTest {
                     DoorOpening(
                         center = Vec2(0f, 0f),
                         widthMeters = 1.05f,
-                        rotationDegrees = 0f,
+                        rotationDegrees = 90f,
                         confidence = 0.95f,
                     )
                 ),
@@ -77,6 +77,33 @@ class CollisionWorldTest {
         )
 
         assertTrue("door opening did not allow passage: ${result.x}", result.x > 0.6f)
+    }
+
+    @Test
+    fun `nearby perpendicular door cannot punch passage through wrong wall`() {
+        val wall = WallSegment(start = Vec2(0f, -3f), end = Vec2(0f, 3f), thicknessMeters = 0.18f)
+        val world = CollisionWorld(
+            plan(
+                walls = listOf(wall),
+                doors = listOf(
+                    DoorOpening(
+                        center = Vec2(0f, 0f),
+                        widthMeters = 1.05f,
+                        rotationDegrees = 0f,
+                        confidence = 0.98f,
+                    )
+                ),
+            )
+        )
+
+        val result = world.move(
+            position = Vec2(-1.1f, 0f),
+            deltaX = 2.2f,
+            deltaZ = 0f,
+            radius = CollisionWorld.DEFAULT_PLAYER_RADIUS,
+        )
+
+        assertTrue("crossing door incorrectly opened the wall: ${result.x}", result.x < -0.25f)
     }
 
     @Test
