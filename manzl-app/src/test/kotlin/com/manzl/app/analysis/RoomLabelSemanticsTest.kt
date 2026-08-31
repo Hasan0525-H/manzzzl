@@ -17,6 +17,22 @@ class RoomLabelSemanticsTest {
     }
 
     @Test
+    fun `recognizes open air and vertical circulation labels used in Saudi plans`() {
+        assertEquals("فناء", RoomLabelSemantics.match("COURTYARD")?.labelArabic)
+        assertEquals("حوش", RoomLabelSemantics.match("حوش خلفي")?.labelArabic)
+        assertEquals("منور", RoomLabelSemantics.match("LIGHT WELL")?.labelArabic)
+        assertEquals("مرآب", RoomLabelSemantics.match("CAR PARKING")?.labelArabic)
+        assertEquals("مصعد", RoomLabelSemantics.match("ELEVATOR")?.labelArabic)
+        assertEquals("درج", RoomLabelSemantics.match("STAIRCASE")?.labelArabic)
+    }
+
+    @Test
+    fun `wash basin is not confused with laundry`() {
+        assertEquals("مغاسل", RoomLabelSemantics.match("WASH BASIN")?.labelArabic)
+        assertEquals("غسيل", RoomLabelSemantics.match("LAUNDRY")?.labelArabic)
+    }
+
+    @Test
     fun `keeps unknown drawing notes out of room semantics`() {
         assertNull(RoomLabelSemantics.match("A-103"))
         assertNull(RoomLabelSemantics.match("SECTION DETAIL"))
