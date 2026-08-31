@@ -95,6 +95,38 @@ class HouseMeshBuilderTest {
     }
 
     @Test
+    fun `concave L shaped room uses triangulated ceiling instead of bounding rectangle`() {
+        val room = RoomRegion(
+            id = "l-room",
+            polygon = listOf(
+                Vec2(-2f, -2f),
+                Vec2(2f, -2f),
+                Vec2(2f, 0f),
+                Vec2(0f, 0f),
+                Vec2(0f, 2f),
+                Vec2(-2f, 2f),
+            ),
+            confidence = 0.94f,
+        )
+        val plan = FloorPlan(
+            widthMeters = 6f,
+            depthMeters = 6f,
+            walls = emptyList(),
+            rooms = listOf(room),
+            analysisConfidence = 1f,
+            sourceWidthPx = 1000,
+            sourceHeightPx = 1000,
+        )
+
+        val mesh = HouseMeshBuilder.build(plan, wallHeightOverride = 3.1f)
+
+        // Six polygon vertices -> four ear-clipped triangles; three vertices and six floats each.
+        assertEquals(4 * 3 * 6, mesh.ceilingVertices.size)
+        assertEquals(4 * 3, mesh.ceilingIndices.size)
+        assertTrue(mesh.ceilingVertices.all { it.isFinite() })
+    }
+
+    @Test
     fun `accepted staircase becomes solid steps and preserves stairwell opening`() {
         val room = RoomRegion(
             id = "stair-room",
