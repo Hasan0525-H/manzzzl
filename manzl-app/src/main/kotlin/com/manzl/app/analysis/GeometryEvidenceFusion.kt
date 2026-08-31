@@ -1,5 +1,6 @@
 package com.manzl.app.analysis
 
+import com.manzl.app.model.DoorEvidenceKind
 import com.manzl.app.model.DoorOpening
 import com.manzl.app.model.FloorPlan
 import com.manzl.app.model.RoomRegion
@@ -65,6 +66,12 @@ internal object GeometryEvidenceFusion {
             widthMeters = host.widthMeters,
             rotationDegrees = host.rotationDegrees,
             confidence = fusedOpeningConfidence(item.confidence, host.supportConfidence),
+            evidenceKind = when (item.source) {
+                EvidenceSource.USER_CORRECTION -> DoorEvidenceKind.USER_CONFIRMED
+                EvidenceSource.LOCAL_AI,
+                EvidenceSource.CLASSICAL_CV,
+                -> DoorEvidenceKind.SEMANTIC_CONFIRMED
+            },
         )
     }
 
@@ -124,7 +131,19 @@ internal object GeometryEvidenceFusion {
 
     private fun mergeDoor(target: MutableList<DoorOpening>, candidate: DoorOpening) {
         val index = target.indexOfFirst { squaredDistance(it.center, candidate.center) < DUPLICATE_OPENING_DISTANCE_SQ }
-        if (index < 0) target += candidate else if (candidate.confidence > target[index].confidence) target[index] = candidate
+        if (index < 0) {
+            target += candidate
+            return
+        }
+        val existing = target[index]
+        val candidateAuthority = doorAuthority(candidate.evidenceKind)
+        val existingAuthority = doorAuthority(existing.evidenceKind)
+        if (
+            candidateAuthority > existingAuthority ||
+            (candidateAuthority == existingAuthority && candidate.confidence > existing.confidence)
+        ) {
+            target[index] = candidate
+        }
     }
 
     private fun mergeWindow(target: MutableList<WindowOpening>, candidate: WindowOpening) {
@@ -158,6 +177,12 @@ internal object GeometryEvidenceFusion {
             )
             else -> existing
         }
+    }
+
+    private fun doorAuthority(kind: DoorEvidenceKind): Int = when (kind) {
+        DoorEvidenceKind.MEASURED_GAP -> 0
+        DoorEvidenceKind.SEMANTIC_CONFIRMED -> 1
+        DoorEvidenceKind.USER_CONFIRMED -> 2
     }
 
     private fun normalizeRotation(value: Float): Float {
