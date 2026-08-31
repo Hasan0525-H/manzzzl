@@ -1,5 +1,5 @@
 {
-  "schema": 1,
+  "schema": 2,
   "checkedAt": "2026-09-01",
   "costPolicy": "zero-paid-services",
   "teachers": [
@@ -8,9 +8,19 @@
       "repository": "https://github.com/Cornell-VAILab/Raster2Seq.git",
       "modelHub": "https://huggingface.co/haopt/Raster2Seq",
       "codeLicense": "MIT",
+      "officialModelRepositoryLicense": "MIT",
       "role": "global raster-to-vector room/polygon teacher",
+      "selectedCheckpoint": {
+        "key": "raster2graph-512",
+        "revision": "6be66814dcc2420f0a3ac87591ba4b6e1b0b44b8",
+        "path": "Raster2Graph-512/checkpoint.pth",
+        "sha256": "5736bf4fe1ebd8ef6cca63ea51c2c3f8971d6d1848dd9049fc5ca251bf565229",
+        "bytes": 1130134240,
+        "publishedRoomF1": 98.1,
+        "inputSize": 512
+      },
       "shipInPublicApk": false,
-      "notes": "Teacher-only until checkpoint/dataset-derived redistribution rights are audited for the exact selected checkpoint."
+      "notes": "Official checkpoint repository is marked MIT. The 1.13 GB teacher stays development-time because it is far too large for the Android runtime; it generates vectors/pseudo-labels for the Manzl student."
     },
     {
       "id": "roomformer",
@@ -18,7 +28,7 @@
       "codeLicense": "MIT",
       "role": "independent polygon/topology cross-check teacher",
       "shipInPublicApk": false,
-      "notes": "Teacher-only; exact pretrained checkpoint dataset terms must be respected."
+      "notes": "Teacher-only; exact pretrained checkpoint dataset terms must be respected before selecting a weight file."
     },
     {
       "id": "mobilesam",
@@ -26,7 +36,7 @@
       "codeLicense": "Apache-2.0",
       "role": "high-resolution boundary refiner",
       "shipInPublicApk": true,
-      "notes": "Prefer a verified universal ONNX export and retain license/attribution with packaged assets."
+      "notes": "Use the verified universal ONNX export and retain license/attribution with packaged assets."
     }
   ],
   "runtimeLibraries": [
