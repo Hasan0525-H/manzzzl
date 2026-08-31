@@ -3,6 +3,7 @@ package com.manzl.app.render
 import com.manzl.app.model.DoorOpening
 import com.manzl.app.model.FloorPlan
 import com.manzl.app.model.RoomRegion
+import com.manzl.app.model.Staircase
 import com.manzl.app.model.Vec2
 import com.manzl.app.model.WallSegment
 import org.junit.Assert.assertEquals
@@ -59,7 +60,6 @@ class HouseMeshBuilderTest {
 
         val mesh = HouseMeshBuilder.build(plan)
 
-        // Three boxes, six quads per box, four vertices per quad, six floats per vertex.
         assertEquals(3 * 6 * 4 * 6, mesh.trimVertices.size)
         assertEquals(3 * 6 * 6, mesh.trimIndices.size)
         assertTrue(mesh.trimVertices.all { it.isFinite() })
@@ -92,5 +92,47 @@ class HouseMeshBuilderTest {
         assertEquals(4 * 6, mesh.ceilingVertices.size)
         assertEquals(6, mesh.ceilingIndices.size)
         assertTrue(mesh.ceilingVertices.all { it.isFinite() })
+    }
+
+    @Test
+    fun `accepted staircase becomes solid steps and preserves stairwell opening`() {
+        val room = RoomRegion(
+            id = "stair-room",
+            polygon = listOf(
+                Vec2(-2f, -2f),
+                Vec2(2f, -2f),
+                Vec2(2f, 2f),
+                Vec2(-2f, 2f),
+            ),
+            confidence = 0.94f,
+        )
+        val stair = Staircase(
+            center = Vec2(0f, 0f),
+            widthMeters = 1.1f,
+            runMeters = 3.2f,
+            rotationDegrees = 90f,
+            stepCount = 8,
+            floorToFloorHeightMeters = 3.2f,
+            confidence = 0.90f,
+        )
+        val plan = FloorPlan(
+            widthMeters = 7f,
+            depthMeters = 6f,
+            walls = emptyList(),
+            stairs = listOf(stair),
+            rooms = listOf(room),
+            analysisConfidence = 1f,
+            sourceWidthPx = 1000,
+            sourceHeightPx = 800,
+        )
+
+        val mesh = HouseMeshBuilder.build(plan)
+
+        val expectedFloorVertices = (1 * 4 * 6) + (8 * 6 * 4 * 6)
+        val expectedFloorIndices = 6 + (8 * 6 * 6)
+        assertEquals(expectedFloorVertices, mesh.floorVertices.size)
+        assertEquals(expectedFloorIndices, mesh.floorIndices.size)
+        assertTrue(mesh.floorVertices.all { it.isFinite() })
+        assertTrue(mesh.ceilingVertices.isEmpty())
     }
 }
