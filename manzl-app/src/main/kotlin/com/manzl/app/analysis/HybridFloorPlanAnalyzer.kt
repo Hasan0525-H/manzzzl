@@ -15,8 +15,9 @@ import kotlin.math.sqrt
  *
  * 1) deterministic Geometry Engine v2 establishes measured topology, wall faces and metric scale;
  * 2) the extracted wall faces are independently re-rasterized over the source plan;
- * 3) if the normal 2200px pass misses PASS and memory permits, the exact same extractor retries at
- *    2800/3200px; thresholds are never loosened and the stronger independent report wins;
+ * 3) when memory permits, a 2800/3200px pass runs even after a normal PASS; the normal geometry is
+ *    re-verified against the same dense raster before candidate selection, so downsampling cannot
+ *    hide details behind an easier low-resolution PASS;
  * 4) explicit user corrections, when present, are re-applied to fresh geometry and independently
  *    verified against the original raster; they cannot set PASS directly;
  * 5) GeometryQualityGate blocks 3D unless the selected geometry fidelity report is PASS;
@@ -51,24 +52,27 @@ internal class HybridFloorPlanAnalyzer(
         )
 
         var structural = primaryStructural
-        if (
-            structuralAnalyzer is ClassicalFloorPlanAnalyzer &&
-            primaryStructural.geometryFidelity.status != GeometryFidelityStatus.PASS
-        ) {
-            val retrySide = PrecisionGeometryRetryPolicy.analysisSideOrNull(
+        if (structuralAnalyzer is ClassicalFloorPlanAnalyzer) {
+            val precisionSide = PrecisionGeometryRetryPolicy.analysisSideOrNull(
                 sourceWidth = bitmap.width,
                 sourceHeight = bitmap.height,
                 maxHeapBytes = Runtime.getRuntime().maxMemory(),
             )
-            if (retrySide != null) {
+            if (precisionSide != null) {
+                val primaryWasPass = primaryStructural.geometryFidelity.status == GeometryFidelityStatus.PASS
                 progress.onUpdate(
                     AnalysisUpdate(
                         79,
-                        "المطابقة لم تصل PASS • إعادة فحص هندسي أدق حتى ${retrySide}px بدون تخفيف الشروط",
+                        if (primaryWasPass) {
+                            "تأكيد PASS على دقة أعلى حتى ${precisionSide}px قبل السماح ببناء 3D"
+                        } else {
+                            "المطابقة لم تصل PASS • إعادة فحص هندسي أدق حتى ${precisionSide}px بدون تخفيف الشروط"
+                        },
                     )
                 )
+
                 val retry = try {
-                    ClassicalFloorPlanAnalyzer(maxAnalysisSide = retrySide).analyze(
+                    ClassicalFloorPlanAnalyzer(maxAnalysisSide = precisionSide).analyze(
                         bitmap = bitmap,
                         progress = ProgressSink { update ->
                             progress.onUpdate(
@@ -86,8 +90,27 @@ internal class HybridFloorPlanAnalyzer(
                 } catch (_: RuntimeException) {
                     null
                 }
-                if (retry != null) {
-                    structural = GeometryRetryChooser.choose(primaryStructural, retry)
+
+                val primaryVerifiedAtDenseRaster = try {
+                    HighResolutionFidelityVerifier.verify(
+                        source = bitmap,
+                        plan = primaryStructural,
+                        analysisSide = precisionSide,
+                    )
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (_: OutOfMemoryError) {
+                    null
+                } catch (_: RuntimeException) {
+                    null
+                }
+
+                structural = when {
+                    retry != null && primaryVerifiedAtDenseRaster != null ->
+                        GeometryRetryChooser.choose(primaryVerifiedAtDenseRaster, retry)
+                    retry != null -> retry
+                    primaryVerifiedAtDenseRaster != null -> primaryVerifiedAtDenseRaster
+                    else -> primaryStructural
                 }
             }
         }

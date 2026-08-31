@@ -5,9 +5,12 @@ import com.manzl.app.model.GeometryFidelityStatus
 import kotlin.math.max
 
 /**
- * Memory-aware second-pass policy used only when the normal 2200px geometry pass does not reach PASS.
- * It never lowers thresholds: the retry merely provides more source pixels to the same deterministic
- * extractor and independent fidelity evaluator.
+ * Memory-aware high-precision pass policy.
+ *
+ * When the source contains more pixels than the normal 2200px pass and heap headroom is safe, Manzl
+ * performs a 2800/3200px extraction even if the normal pass already reports PASS. The normal geometry
+ * is then re-verified against the same dense source evidence before either candidate is selected.
+ * Thresholds are never lowered: this is additional evidence, not a route around the quality gate.
  */
 internal object PrecisionGeometryRetryPolicy {
 
@@ -34,7 +37,7 @@ internal object PrecisionGeometryRetryPolicy {
     private const val LARGE_HEAP_BYTES = 448L * 1024L * 1024L
 }
 
-/** Chooses a retry only from independent geometry-fidelity evidence, never from visual preference. */
+/** Chooses candidates only after they have been judged on comparable independent fidelity evidence. */
 internal object GeometryRetryChooser {
 
     fun choose(primary: FloorPlan, retry: FloorPlan): FloorPlan {
