@@ -31,7 +31,7 @@ internal data class GeometryReviewState(
     val revision: Long = 0L,
 ) {
     val hasBlockingFloor: Boolean
-        get() = items.any { it.plan.geometryFidelity.status != GeometryFidelityStatus.PASS }
+        get() = items.any { !GeometryQualityGate.isReadyFor3d(it.plan) }
 }
 
 /**
@@ -40,6 +40,12 @@ internal data class GeometryReviewState(
  * Explicit user corrections are retained by source-Bitmap identity for the life of the current
  * draft set. A subsequent Execute re-applies them to a fresh extraction and re-runs the independent
  * fidelity gate. No stored correction can directly set PASS.
+ *
+ * The runtime gate is stricter than the aggregate fidelity enum: a floor can have aggregate PASS but
+ * still be rejected for a severe localized mismatch or a physical near-miss wall junction. Review
+ * copies are therefore downgraded to REVIEW_REQUIRED while the canonical measured plan remains
+ * unchanged. This keeps correction tools available and prevents a green PASS badge from contradicting
+ * the actual 3D gate.
  */
 internal object GeometryReviewStore {
     private val lock = Any()
@@ -54,7 +60,8 @@ internal object GeometryReviewStore {
         plan: FloorPlan,
         basePlan: FloorPlan = plan,
     ) {
-        val overlay = renderOverlay(source, plan)
+        val reviewPlan = reviewSafePlan(plan)
+        val overlay = renderOverlay(source, reviewPlan)
         synchronized(lock) {
             if (pending.isEmpty()) {
                 // A first floor whose Bitmap identity was never part of the current draft set marks a
@@ -71,13 +78,14 @@ internal object GeometryReviewStore {
                 source = source,
                 basePlan = basePlan,
                 overlay = overlay,
-                plan = plan,
+                plan = reviewPlan,
             )
         }
     }
 
     suspend fun recordFinal(source: Bitmap, plan: FloorPlan) {
-        val overlay = renderOverlay(source, plan)
+        val reviewPlan = reviewSafePlan(plan)
+        val overlay = renderOverlay(source, reviewPlan)
         synchronized(lock) {
             knownProjectSources[source] = true
             if (pending.isEmpty()) {
@@ -87,7 +95,7 @@ internal object GeometryReviewStore {
                     source = source,
                     basePlan = plan,
                     overlay = overlay,
-                    plan = plan,
+                    plan = reviewPlan,
                 )
                 return
             }
@@ -96,7 +104,7 @@ internal object GeometryReviewStore {
             pending[pending.lastIndex] = last.copy(
                 source = source,
                 overlay = overlay,
-                plan = plan,
+                plan = reviewPlan,
             )
         }
     }
@@ -131,7 +139,8 @@ internal object GeometryReviewStore {
             corrections = replay,
         )
         if (verified.appliedCount <= 0) return item
-        val overlay = renderOverlay(item.source, verified.plan)
+        val reviewPlan = reviewSafePlan(verified.plan)
+        val overlay = renderOverlay(item.source, reviewPlan)
 
         return synchronized(lock) {
             val current = _state.value
@@ -144,7 +153,7 @@ internal object GeometryReviewStore {
             knownProjectSources[item.source] = true
             val previous = current.items[index]
             if (!previous.overlay.isRecycled) previous.overlay.recycle()
-            val updated = previous.copy(overlay = overlay, plan = verified.plan)
+            val updated = previous.copy(overlay = overlay, plan = reviewPlan)
             val items = current.items.toMutableList().also { it[index] = updated }
             _state.value = current.copy(
                 items = items,
@@ -174,7 +183,8 @@ internal object GeometryReviewStore {
                 corrections = remaining,
             ).plan
         }
-        val overlay = renderOverlay(item.source, verifiedPlan)
+        val reviewPlan = reviewSafePlan(verifiedPlan)
+        val overlay = renderOverlay(item.source, reviewPlan)
 
         return synchronized(lock) {
             val current = _state.value
@@ -187,7 +197,7 @@ internal object GeometryReviewStore {
             else correctionsBySource[item.source] = ArrayList(remaining)
             val previous = current.items[index]
             if (!previous.overlay.isRecycled) previous.overlay.recycle()
-            val updated = previous.copy(overlay = overlay, plan = verifiedPlan)
+            val updated = previous.copy(overlay = overlay, plan = reviewPlan)
             val items = current.items.toMutableList().also { it[index] = updated }
             _state.value = current.copy(
                 items = items,
@@ -202,7 +212,8 @@ internal object GeometryReviewStore {
         val item = synchronized(lock) {
             _state.value.items.firstOrNull { it.floorIndex == floorIndex }
         } ?: return null
-        val overlay = renderOverlay(item.source, item.basePlan)
+        val reviewPlan = reviewSafePlan(item.basePlan)
+        val overlay = renderOverlay(item.source, reviewPlan)
         return synchronized(lock) {
             correctionsBySource.remove(item.source)
             val current = _state.value
@@ -213,7 +224,7 @@ internal object GeometryReviewStore {
             }
             val previous = current.items[index]
             if (!previous.overlay.isRecycled) previous.overlay.recycle()
-            val updated = previous.copy(overlay = overlay, plan = item.basePlan)
+            val updated = previous.copy(overlay = overlay, plan = reviewPlan)
             val items = current.items.toMutableList().also { it[index] = updated }
             _state.value = current.copy(
                 items = items,
@@ -228,7 +239,7 @@ internal object GeometryReviewStore {
         synchronized(lock) {
             if (pending.isEmpty()) return
             val last = pending.last()
-            pending[pending.lastIndex] = last.copy(plan = plan)
+            pending[pending.lastIndex] = last.copy(plan = reviewSafePlan(plan))
             publish(autoOpen = true)
         }
     }
@@ -242,7 +253,7 @@ internal object GeometryReviewStore {
                 val item = pending[index]
                 resolved += item.copy(
                     floorIndex = index,
-                    plan = orderedPlans[index],
+                    plan = reviewSafePlan(orderedPlans[index]),
                 )
             }
             _state.value = GeometryReviewState(
@@ -293,6 +304,15 @@ internal object GeometryReviewStore {
             revision = _state.value.revision + 1L,
         )
         pending.clear()
+    }
+
+    private fun reviewSafePlan(plan: FloorPlan): FloorPlan {
+        if (GeometryQualityGate.isReadyFor3d(plan)) return plan
+        val report = plan.geometryFidelity
+        if (report.status != GeometryFidelityStatus.PASS) return plan
+        return plan.copy(
+            geometryFidelity = report.copy(status = GeometryFidelityStatus.REVIEW_REQUIRED),
+        )
     }
 
     private suspend fun renderOverlay(source: Bitmap, plan: FloorPlan): Bitmap =
