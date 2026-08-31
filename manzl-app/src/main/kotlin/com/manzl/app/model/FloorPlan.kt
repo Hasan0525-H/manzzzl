@@ -66,6 +66,8 @@ data class FloorPlan(
     val analysisConfidence: Float,
     val sourceWidthPx: Int,
     val sourceHeightPx: Int,
+    val scaleConfidence: Float = 0f,
+    val scaleSource: String = "unknown",
 )
 
 @Immutable
