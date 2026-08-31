@@ -125,24 +125,14 @@ internal object OpenCvWallFaceExpert {
                     imageHeight = working.height,
                     plan = trial,
                 )
-                val scoreGain = report.score - currentReport.score
-                val coverageGain = report.wallCoverage - currentReport.wallCoverage
-                val precisionGain = report.wallPrecision - currentReport.wallPrecision
-                val endpointLoss = currentReport.endpointSupport - report.endpointSupport
+                val changeKind = if (replacementIndex >= 0) {
+                    GeometryCandidateAdjudicator.ChangeKind.REPLACEMENT
+                } else {
+                    GeometryCandidateAdjudicator.ChangeKind.ADDITION
+                }
+                val decision = GeometryCandidateAdjudicator.decide(currentReport, report, changeKind)
 
-                val acceptReplacement = replacementIndex >= 0 &&
-                    scoreGain >= MIN_REPLACEMENT_SCORE_GAIN &&
-                    coverageGain >= -MAX_REPLACEMENT_COVERAGE_LOSS &&
-                    precisionGain >= MIN_REPLACEMENT_PRECISION_GAIN &&
-                    endpointLoss <= MAX_ENDPOINT_SUPPORT_LOSS
-
-                val acceptAddition = replacementIndex < 0 &&
-                    coverageGain >= MIN_ADDITION_COVERAGE_GAIN &&
-                    precisionGain >= -MAX_ADDITION_PRECISION_LOSS &&
-                    scoreGain >= -MAX_ADDITION_SCORE_LOSS &&
-                    endpointLoss <= MAX_ENDPOINT_SUPPORT_LOSS
-
-                if (acceptReplacement || acceptAddition) {
+                if (decision.accepted) {
                     current = trial.copy(geometryFidelity = report)
                     currentReport = report
                     accepted++
@@ -314,15 +304,8 @@ internal object OpenCvWallFaceExpert {
     private const val MIN_REPLACEMENT_ALIGNMENT = 0.992f
     private const val MAX_REPLACEMENT_CENTER_DISTANCE_METERS = 0.30f
     private const val MIN_REPLACEMENT_OVERLAP_RATIO = 0.54f
-    private const val MIN_REPLACEMENT_SCORE_GAIN = 0.0015f
-    private const val MAX_REPLACEMENT_COVERAGE_LOSS = 0.004f
-    private const val MIN_REPLACEMENT_PRECISION_GAIN = 0.001f
 
     private const val CONNECTION_METERS = 0.34f
-    private const val MIN_ADDITION_COVERAGE_GAIN = 0.0030f
-    private const val MAX_ADDITION_PRECISION_LOSS = 0.007f
-    private const val MAX_ADDITION_SCORE_LOSS = 0.0015f
-    private const val MAX_ENDPOINT_SUPPORT_LOSS = 0.025f
 
     private const val MIN_DUPLICATE_ALIGNMENT = 0.991f
     private const val DUPLICATE_LINE_DISTANCE_METERS = 0.12f
