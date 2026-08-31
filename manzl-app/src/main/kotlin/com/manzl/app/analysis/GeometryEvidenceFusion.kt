@@ -5,21 +5,22 @@ import com.manzl.app.model.FloorPlan
 import com.manzl.app.model.RoomRegion
 import com.manzl.app.model.Staircase
 import com.manzl.app.model.Vec2
-import com.manzl.app.model.WallSegment
 import com.manzl.app.model.WindowOpening
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
-import kotlin.math.sqrt
 
 /**
  * Canonical geometry guard between semantic observations and the generated house.
  *
  * A local model/provider is allowed to suggest semantics, never to silently rewrite measured
- * topology. Doors/windows must sit close to a detected wall; rooms must be bounded and have
- * meaningful area; stairs must fit plausible residential dimensions. Explicit user corrections
- * receive a lower confidence threshold but still pass basic geometry safety checks.
+ * topology. Doors/windows are accepted only when two measured wall runs already prove a matching
+ * opening gap; semantic evidence cannot punch a hole through a continuous wall. The host resolver
+ * also derives opening center/width/rotation from wall geometry, including arbitrary-angle walls.
+ * Rooms must be bounded and have meaningful area; stairs must fit plausible residential dimensions.
+ * Explicit user semantic corrections receive a lower confidence threshold but still pass the same
+ * geometry safety checks.
  */
 internal object GeometryEvidenceFusion {
 
@@ -52,28 +53,36 @@ internal object GeometryEvidenceFusion {
     private fun acceptDoor(plan: FloorPlan, item: SemanticEvidence): DoorOpening? {
         val width = item.widthMeters ?: return null
         if (width !in MIN_DOOR_WIDTH..MAX_DOOR_WIDTH) return null
-        val wall = nearestWall(plan.walls, item.center) ?: return null
-        if (distanceToWall(wall, item.center) > OPENING_WALL_DISTANCE) return null
-        val rotation = item.rotationDegrees ?: wallRotation(wall)
+        val host = OpeningGeometryHostResolver.resolve(
+            walls = plan.walls,
+            candidateCenter = item.center,
+            candidateWidthMeters = width,
+            candidateRotationDegrees = item.rotationDegrees,
+        ) ?: return null
+        if (host.widthMeters !in MIN_DOOR_WIDTH..MAX_DOOR_WIDTH) return null
         return DoorOpening(
-            center = projectOntoWall(wall, item.center),
-            widthMeters = width,
-            rotationDegrees = normalizeAxisRotation(rotation),
-            confidence = item.confidence,
+            center = host.center,
+            widthMeters = host.widthMeters,
+            rotationDegrees = host.rotationDegrees,
+            confidence = fusedOpeningConfidence(item.confidence, host.supportConfidence),
         )
     }
 
     private fun acceptWindow(plan: FloorPlan, item: SemanticEvidence): WindowOpening? {
         val width = item.widthMeters ?: return null
         if (width !in MIN_WINDOW_WIDTH..MAX_WINDOW_WIDTH) return null
-        val wall = nearestWall(plan.walls, item.center) ?: return null
-        if (distanceToWall(wall, item.center) > OPENING_WALL_DISTANCE) return null
-        val rotation = item.rotationDegrees ?: wallRotation(wall)
+        val host = OpeningGeometryHostResolver.resolve(
+            walls = plan.walls,
+            candidateCenter = item.center,
+            candidateWidthMeters = width,
+            candidateRotationDegrees = item.rotationDegrees,
+        ) ?: return null
+        if (host.widthMeters !in MIN_WINDOW_WIDTH..MAX_WINDOW_WIDTH) return null
         return WindowOpening(
-            center = projectOntoWall(wall, item.center),
-            widthMeters = width,
-            rotationDegrees = normalizeAxisRotation(rotation),
-            confidence = item.confidence,
+            center = host.center,
+            widthMeters = host.widthMeters,
+            rotationDegrees = host.rotationDegrees,
+            confidence = fusedOpeningConfidence(item.confidence, host.supportConfidence),
         )
     }
 
@@ -108,6 +117,10 @@ internal object GeometryEvidenceFusion {
             confidence = item.confidence,
         )
     }
+
+    private fun fusedOpeningConfidence(semantic: Float, structural: Float): Float =
+        (semantic.coerceIn(0f, 1f) * 0.84f + structural.coerceIn(0f, 1f) * 0.16f)
+            .coerceIn(0f, 0.98f)
 
     private fun mergeDoor(target: MutableList<DoorOpening>, candidate: DoorOpening) {
         val index = target.indexOfFirst { squaredDistance(it.center, candidate.center) < DUPLICATE_OPENING_DISTANCE_SQ }
@@ -145,44 +158,6 @@ internal object GeometryEvidenceFusion {
             )
             else -> existing
         }
-    }
-
-    private fun nearestWall(walls: List<WallSegment>, point: Vec2): WallSegment? =
-        walls.minByOrNull { distanceToWall(it, point) }
-
-    private fun distanceToWall(wall: WallSegment, point: Vec2): Float {
-        val projected = projectOntoWall(wall, point)
-        return sqrt(squaredDistance(projected, point))
-    }
-
-    private fun projectOntoWall(wall: WallSegment, point: Vec2): Vec2 {
-        val vx = wall.end.x - wall.start.x
-        val vz = wall.end.z - wall.start.z
-        val lengthSq = vx * vx + vz * vz
-        if (lengthSq <= 0.000001f) return wall.start
-        val t = (((point.x - wall.start.x) * vx + (point.z - wall.start.z) * vz) / lengthSq)
-            .coerceIn(0f, 1f)
-        return Vec2(
-            wall.start.x + vx * t,
-            wall.start.z + vz * t,
-        )
-    }
-
-    private fun wallRotation(wall: WallSegment): Float {
-        val dx = abs(wall.end.x - wall.start.x)
-        val dz = abs(wall.end.z - wall.start.z)
-        return if (dx >= dz) 0f else 90f
-    }
-
-    private fun normalizeAxisRotation(value: Float): Float {
-        val normalized = normalizeRotation(value)
-        return if (normalized in 45f..135f || normalized in 225f..315f) 90f else 0f
-    }
-
-    private fun normalizeRotation(value: Float): Float {
-        var result = value % 360f
-        if (result < 0f) result += 360f
-        return result
     }
 
     private fun insideBounds(plan: FloorPlan, point: Vec2, margin: Float): Boolean {
@@ -246,7 +221,6 @@ internal object GeometryEvidenceFusion {
     private const val DEFAULT_FLOOR_TO_FLOOR = 3.20f
     private const val TARGET_RISER_HEIGHT = 0.175f
     private const val MIN_ROOM_AREA = 2.0f
-    private const val OPENING_WALL_DISTANCE = 0.36f
     private const val DUPLICATE_OPENING_DISTANCE_SQ = 0.18f * 0.18f
     private const val DUPLICATE_STAIR_DISTANCE_SQ = 0.60f * 0.60f
     private const val DUPLICATE_ROOM_CENTER_DISTANCE_SQ = 0.75f * 0.75f
