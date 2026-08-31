@@ -17,12 +17,36 @@ data class WallSegment(
     val confidence: Float = 1f,
 )
 
+/**
+ * Hinge endpoint relative to the opening axis defined by [DoorOpening.rotationDegrees].
+ * AXIS_START is centre - axis * width/2, AXIS_END is centre + axis * width/2.
+ */
+@Immutable
+enum class DoorHingeSide {
+    AXIS_START,
+    AXIS_END,
+    UNKNOWN,
+}
+
+/**
+ * Side of the wall to which the leaf swings, relative to the opening axis normal (-sin, cos).
+ */
+@Immutable
+enum class DoorSwingSide {
+    NEGATIVE_NORMAL,
+    POSITIVE_NORMAL,
+    UNKNOWN,
+}
+
 @Immutable
 data class DoorOpening(
     val center: Vec2,
     val widthMeters: Float,
     val rotationDegrees: Float,
     val confidence: Float,
+    val hingeSide: DoorHingeSide = DoorHingeSide.UNKNOWN,
+    val swingSide: DoorSwingSide = DoorSwingSide.UNKNOWN,
+    val swingConfidence: Float = 0f,
 )
 
 @Immutable
