@@ -160,6 +160,12 @@ internal object GeometryEvidenceFusion {
         }
     }
 
+    private fun normalizeRotation(value: Float): Float {
+        var result = value % 360f
+        if (result < 0f) result += 360f
+        return result
+    }
+
     private fun insideBounds(plan: FloorPlan, point: Vec2, margin: Float): Boolean {
         val halfWidth = plan.widthMeters / 2f - margin
         val halfDepth = plan.depthMeters / 2f - margin
