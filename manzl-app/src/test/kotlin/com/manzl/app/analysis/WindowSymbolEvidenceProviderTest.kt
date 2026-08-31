@@ -1,6 +1,8 @@
 package com.manzl.app.analysis
 
+import com.manzl.app.model.DoorHingeSide
 import com.manzl.app.model.DoorOpening
+import com.manzl.app.model.DoorSwingSide
 import com.manzl.app.model.FloorPlan
 import com.manzl.app.model.Vec2
 import com.manzl.app.model.WallSegment
@@ -49,19 +51,46 @@ class WindowSymbolEvidenceProviderTest {
     }
 
     @Test
-    fun `known door occupying the same gap excludes window inference`() {
+    fun `geometry only door guess does not suppress real window symbol`() {
         val width = 1000
         val height = 800
         val pixels = IntArray(width * height) { WHITE }
-        drawHorizontal(pixels, width, y = 390, fromX = 430, toX = 570, color = BLACK)
-        drawHorizontal(pixels, width, y = 410, fromX = 430, toX = 570, color = BLACK)
-        val plan = horizontalGapPlan().copy(
+        drawHorizontal(pixels, width, y = 390, fromX = 455, toX = 545, color = BLACK)
+        drawHorizontal(pixels, width, y = 410, fromX = 455, toX = 545, color = BLACK)
+        val plan = narrowHorizontalGapPlan().copy(
             doors = listOf(
                 DoorOpening(
                     center = Vec2(0f, 0f),
-                    widthMeters = 1f,
+                    widthMeters = 1.2f,
                     rotationDegrees = 0f,
-                    confidence = 0.9f,
+                    confidence = 0.89f,
+                )
+            )
+        )
+
+        val evidence = WindowSymbolEvidenceProvider().detectFromPixels(pixels, width, height, plan)
+
+        assertEquals(1, evidence.size)
+        assertEquals(SemanticKind.WINDOW, evidence.single().kind)
+    }
+
+    @Test
+    fun `trusted door swing occupying same gap excludes window inference`() {
+        val width = 1000
+        val height = 800
+        val pixels = IntArray(width * height) { WHITE }
+        drawHorizontal(pixels, width, y = 390, fromX = 455, toX = 545, color = BLACK)
+        drawHorizontal(pixels, width, y = 410, fromX = 455, toX = 545, color = BLACK)
+        val plan = narrowHorizontalGapPlan().copy(
+            doors = listOf(
+                DoorOpening(
+                    center = Vec2(0f, 0f),
+                    widthMeters = 1.2f,
+                    rotationDegrees = 0f,
+                    confidence = 0.91f,
+                    hingeSide = DoorHingeSide.AXIS_START,
+                    swingSide = DoorSwingSide.POSITIVE_NORMAL,
+                    swingConfidence = 0.86f,
                 )
             )
         )
@@ -155,6 +184,18 @@ class WindowSymbolEvidenceProviderTest {
         walls = listOf(
             WallSegment(Vec2(-4f, 0f), Vec2(-1f, 0f)),
             WallSegment(Vec2(1f, 0f), Vec2(4f, 0f)),
+        ),
+        analysisConfidence = 0.9f,
+        sourceWidthPx = 1000,
+        sourceHeightPx = 800,
+    )
+
+    private fun narrowHorizontalGapPlan() = FloorPlan(
+        widthMeters = 10f,
+        depthMeters = 8f,
+        walls = listOf(
+            WallSegment(Vec2(-4f, 0f), Vec2(-0.6f, 0f)),
+            WallSegment(Vec2(0.6f, 0f), Vec2(4f, 0f)),
         ),
         analysisConfidence = 0.9f,
         sourceWidthPx = 1000,
