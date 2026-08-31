@@ -6,6 +6,7 @@ import com.manzl.app.model.GeometryFidelityStatus
 import com.manzl.app.model.Vec2
 import com.manzl.app.model.WallSegment
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.math.ceil
@@ -20,7 +21,7 @@ class GeometryFidelityEvaluatorTest {
         val walls = rectangleWalls()
         val mask = BooleanArray(width * height)
         walls.forEach { drawWall(mask, width, height, it, planSpanMeters = 10f) }
-        val plan = plan(walls)
+        val plan = plan(walls, width, height)
 
         val report = GeometryFidelityEvaluator.evaluate(mask, width, height, plan)
 
@@ -46,8 +47,8 @@ class GeometryFidelityEvaluatorTest {
                 end = wall.end.copy(x = wall.end.x + 1.35f),
             )
         }
-        val good = GeometryFidelityEvaluator.evaluate(mask, width, height, plan(sourceWalls))
-        val bad = GeometryFidelityEvaluator.evaluate(mask, width, height, plan(shifted))
+        val good = GeometryFidelityEvaluator.evaluate(mask, width, height, plan(sourceWalls, width, height))
+        val bad = GeometryFidelityEvaluator.evaluate(mask, width, height, plan(shifted, width, height))
 
         assertTrue(bad.score < good.score - 0.22f)
         assertTrue(bad.status != GeometryFidelityStatus.PASS)
@@ -64,6 +65,34 @@ class GeometryFidelityEvaluatorTest {
         })
     }
 
+    @Test
+    fun `one missing wall cannot hide inside a strong whole-plan average`() {
+        val width = 720
+        val height = 720
+        val sourceWalls = denseHouseWalls()
+        val predictedWalls = sourceWalls.filterIndexed { index, _ -> index != MISSING_DENSE_WALL_INDEX }
+        val mask = BooleanArray(width * height)
+        sourceWalls.forEach { drawWall(mask, width, height, it, planSpanMeters = 10f) }
+        val predictedPlan = plan(predictedWalls, width, height)
+
+        val report = GeometryFidelityEvaluator.evaluate(mask, width, height, predictedPlan)
+        val gatedPlan = predictedPlan.copy(geometryFidelity = report)
+
+        // The global score is intentionally strong: this regression protects against dilution rather
+        // than simply testing the existing aggregate thresholds.
+        assertEquals(GeometryFidelityStatus.PASS, report.status)
+        assertTrue(report.wallCoverage > 0.80f)
+        assertTrue(report.wallPrecision > 0.90f)
+        assertTrue(report.issues.any {
+            it.kind == GeometryFidelityIssueKind.MISSING_SOURCE && it.severity >= 0.55f
+        })
+        assertFalse(GeometryQualityGate.isReadyFor3d(gatedPlan))
+        assertTrue(
+            GeometryQualityGate.rejectionMessageArabic(gatedPlan)!!
+                .contains("خطأ هندسياً موضعياً")
+        )
+    }
+
     private fun rectangleWalls(): List<WallSegment> = listOf(
         WallSegment(Vec2(-4f, -4f), Vec2(4f, -4f), thicknessMeters = 0.20f),
         WallSegment(Vec2(4f, -4f), Vec2(4f, 4f), thicknessMeters = 0.20f),
@@ -72,13 +101,30 @@ class GeometryFidelityEvaluatorTest {
         WallSegment(Vec2(-4f, 0f), Vec2(4f, 0f), thicknessMeters = 0.16f),
     )
 
-    private fun plan(walls: List<WallSegment>) = FloorPlan(
+    private fun denseHouseWalls(): List<WallSegment> = listOf(
+        WallSegment(Vec2(-4f, -4f), Vec2(4f, -4f), thicknessMeters = 0.20f),
+        WallSegment(Vec2(4f, -4f), Vec2(4f, 4f), thicknessMeters = 0.20f),
+        WallSegment(Vec2(4f, 4f), Vec2(-4f, 4f), thicknessMeters = 0.20f),
+        WallSegment(Vec2(-4f, 4f), Vec2(-4f, -4f), thicknessMeters = 0.20f),
+        WallSegment(Vec2(-4f, -2f), Vec2(4f, -2f), thicknessMeters = 0.16f),
+        WallSegment(Vec2(-4f, 0f), Vec2(4f, 0f), thicknessMeters = 0.16f),
+        WallSegment(Vec2(-4f, 2f), Vec2(4f, 2f), thicknessMeters = 0.16f),
+        WallSegment(Vec2(-2f, -4f), Vec2(-2f, 4f), thicknessMeters = 0.16f),
+        WallSegment(Vec2(0f, -4f), Vec2(0f, 4f), thicknessMeters = 0.16f),
+        WallSegment(Vec2(2f, -4f), Vec2(2f, 4f), thicknessMeters = 0.16f),
+    )
+
+    private fun plan(
+        walls: List<WallSegment>,
+        sourceWidth: Int,
+        sourceHeight: Int,
+    ) = FloorPlan(
         widthMeters = 10f,
         depthMeters = 10f,
         walls = walls,
         analysisConfidence = 0.9f,
-        sourceWidthPx = 220,
-        sourceHeightPx = 220,
+        sourceWidthPx = sourceWidth,
+        sourceHeightPx = sourceHeight,
     )
 
     private fun drawWall(
@@ -126,5 +172,9 @@ class GeometryFidelityEvaluatorTest {
         val dx = px - qx
         val dy = py - qy
         return dx * dx + dy * dy
+    }
+
+    companion object {
+        private const val MISSING_DENSE_WALL_INDEX = 9
     }
 }
