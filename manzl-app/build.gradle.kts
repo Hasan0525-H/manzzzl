@@ -61,6 +61,13 @@ dependencies {
     // immediately in airplane mode and never needs a Google Play model download or API call.
     implementation("com.google.mlkit:text-recognition:16.0.1")
 
+    // Ultra reconstruction runtime. Both libraries execute locally and require no paid API.
+    // ONNX Runtime hosts the deployable Manzl/Raster2Seq-derived student models; OpenCV is the
+    // deterministic measurement/refinement expert. Heavy teacher models remain development-time
+    // tools and are distilled into mobile-safe assets rather than silently downgraded at runtime.
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.29.0")
+    implementation("org.opencv:opencv:5.0.0.1")
+
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
