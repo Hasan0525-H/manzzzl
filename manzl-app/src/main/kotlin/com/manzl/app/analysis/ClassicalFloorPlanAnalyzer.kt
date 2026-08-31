@@ -73,7 +73,7 @@ class ClassicalFloorPlanAnalyzer : FloorPlanAnalyzer {
             val planWidth = width * pxToMeter
             val planDepth = height * pxToMeter
 
-            val walls = buildList {
+            val rawWalls = buildList {
                 horizontal.forEach { segment ->
                     add(
                         WallSegment(
@@ -110,11 +110,14 @@ class ClassicalFloorPlanAnalyzer : FloorPlanAnalyzer {
                 dx * dx + dz * dz >= MIN_WALL_METERS * MIN_WALL_METERS
             }
 
+            progress.onUpdate(AnalysisUpdate(72, "تصحيح تقاطعات الجدران والفجوات الصغيرة"))
+            val walls = StructuralTopologyReconciler.reconcile(rawWalls)
+
             require(walls.size >= 4) {
                 "لم أتمكن من استخراج جدران كافية. جرّب صورة أوضح أو قص المخطط فقط."
             }
 
-            progress.onUpdate(AnalysisUpdate(77, "بناء حدود الغرف والممرات"))
+            progress.onUpdate(AnalysisUpdate(80, "بناء حدود الغرف والممرات"))
             val densityConfidence = (walls.size / 28f).coerceIn(0.45f, 1f)
             val modeConfidence = if (preferBlue) 0.94f else 0.72f
             val geometryConfidence = (densityConfidence * modeConfidence).coerceIn(0f, 0.97f)
@@ -123,7 +126,7 @@ class ClassicalFloorPlanAnalyzer : FloorPlanAnalyzer {
                 ).coerceIn(0f, 0.97f)
 
             coroutineContext.ensureActive()
-            progress.onUpdate(AnalysisUpdate(88, "استنتاج فتحات الأبواب وربط الغرف"))
+            progress.onUpdate(AnalysisUpdate(89, "استنتاج فتحات الأبواب وربط الغرف"))
 
             val structural = FloorPlan(
                 widthMeters = planWidth,
