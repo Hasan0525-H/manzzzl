@@ -1,7 +1,9 @@
 package com.manzl.app.ui
 
+import android.app.Activity
 import android.graphics.Bitmap
 import android.graphics.ImageDecoder
+import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -25,9 +27,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.CloudOff
+import androidx.compose.material.icons.rounded.FiberManualRecord
 import androidx.compose.material.icons.rounded.Home
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.UploadFile
+import androidx.compose.material.icons.rounded.VideoFile
 import androidx.compose.material.icons.rounded.ViewInAr
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -43,6 +47,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -62,8 +67,11 @@ import androidx.compose.ui.viewinterop.AndroidView
 import com.manzl.app.analysis.HybridFloorPlanAnalyzer
 import com.manzl.app.analysis.ProgressSink
 import com.manzl.app.model.FloorPlan
+import com.manzl.app.recording.TourRecordingService
+import com.manzl.app.recording.TourRecordingState
 import com.manzl.app.render.HouseWalkView
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -71,10 +79,10 @@ private val ManzlInk = Color(0xFF171717)
 private val ManzlSand = Color(0xFFB68B55)
 private val ManzlCanvas = Color(0xFFF7F5F1)
 private val ManzlGreen = Color(0xFF1F7A4D)
+private val ManzlRecord = Color(0xFFD63C32)
 
 private enum class ManzlScreen { CREATE, WALK }
 
-/** Main v2 experience: one upload action, one execute action, then a full-screen walkthrough. */
 @Composable
 fun ManzlExperience() {
     CompositionLocalProvider(androidx.compose.ui.platform.LocalLayoutDirection provides LayoutDirection.Rtl) {
@@ -98,6 +106,7 @@ private fun ManzlExperienceContent() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val analyzer = remember { HybridFloorPlanAnalyzer() }
+    val recordingState by TourRecordingState.state.collectAsState()
 
     var screen by remember { mutableStateOf(ManzlScreen.CREATE) }
     var bitmap by remember { mutableStateOf<Bitmap?>(null) }
@@ -107,6 +116,36 @@ private fun ManzlExperienceContent() {
     var stage by remember { mutableStateOf("جاهز") }
     var processing by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+
+    val projectionManager = remember {
+        context.getSystemService(MediaProjectionManager::class.java)
+    }
+
+    val recordingPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val permissionData = result.data
+        if (result.resultCode != Activity.RESULT_OK || permissionData == null) {
+            error = "تم إلغاء إذن تسجيل الجولة. لم يبدأ التجول حتى لا تفقد الفيديو المطلوب."
+            return@rememberLauncherForActivityResult
+        }
+
+        TourRecordingState.clearSavedUri()
+        screen = ManzlScreen.WALK
+        scope.launch {
+            // Let the first walkthrough frame reach the screen before the virtual display starts.
+            delay(260)
+            val metrics = context.resources.displayMetrics
+            TourRecordingService.start(
+                context = context,
+                resultCode = result.resultCode,
+                resultData = permissionData,
+                width = metrics.widthPixels,
+                height = metrics.heightPixels,
+                densityDpi = metrics.densityDpi,
+            )
+        }
+    }
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
@@ -138,6 +177,7 @@ private fun ManzlExperienceContent() {
             stage = stage,
             processing = processing,
             error = error,
+            lastSavedVideo = recordingState.lastSavedUri,
             onPick = { picker.launch("image/*") },
             onExecute = {
                 val input = bitmap ?: return@CreateHouseScreen
@@ -167,7 +207,10 @@ private fun ManzlExperienceContent() {
                     processing = false
                 }
             },
-            onWalk = { screen = ManzlScreen.WALK },
+            onWalk = {
+                error = null
+                recordingPermission.launch(projectionManager.createScreenCaptureIntent())
+            },
             onReset = {
                 bitmap = null
                 sourceUri = null
@@ -175,6 +218,7 @@ private fun ManzlExperienceContent() {
                 progress = 0
                 stage = "جاهز"
                 error = null
+                TourRecordingState.clearSavedUri()
             },
         )
 
@@ -185,7 +229,11 @@ private fun ManzlExperienceContent() {
             } else {
                 NaturalWalkthrough(
                     plan = generated,
-                    onExit = { screen = ManzlScreen.CREATE },
+                    isRecording = recordingState.isRecording,
+                    onExit = {
+                        TourRecordingService.stop(context)
+                        screen = ManzlScreen.CREATE
+                    },
                 )
             }
         }
@@ -201,6 +249,7 @@ private fun CreateHouseScreen(
     stage: String,
     processing: Boolean,
     error: String?,
+    lastSavedVideo: String?,
     onPick: () -> Unit,
     onExecute: () -> Unit,
     onWalk: () -> Unit,
@@ -237,7 +286,7 @@ private fun CreateHouseScreen(
             ) {
                 Icon(Icons.Rounded.CloudOff, contentDescription = null, tint = ManzlGreen)
                 Text(
-                    "البناء والجولة يعملان محلياً على الجهاز بدون API أثناء الاستخدام.",
+                    "البناء والذكاء المحلي والجولة والتسجيل تعمل على الجهاز بدون API أثناء الاستخدام.",
                     color = Color(0xFF405C49),
                     style = MaterialTheme.typography.bodySmall,
                 )
@@ -343,6 +392,23 @@ private fun CreateHouseScreen(
             }
         }
 
+        lastSavedVideo?.let {
+            Surface(shape = RoundedCornerShape(14.dp), color = Color(0xFFE8F2FF)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(13.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Icon(Icons.Rounded.VideoFile, contentDescription = null, tint = Color(0xFF245A92))
+                    Text(
+                        "تم حفظ الجولة MP4 في مجلد Movies/Manzl على الجوال.",
+                        color = Color(0xFF245A92),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+        }
+
         plan?.let { generated ->
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -356,12 +422,19 @@ private fun CreateHouseScreen(
                         Text("النموذج جاهز", color = ManzlGreen, style = MaterialTheme.typography.titleMedium)
                     }
                     Text(
-                        "${generated.walls.size} جدار • ${generated.doors.size} فتحة باب • " +
+                        "${generated.walls.size} جدار • ${generated.doors.size} باب • ${generated.windows.size} نافذة • " +
                             "${"%.1f".format(generated.widthMeters)} × ${"%.1f".format(generated.depthMeters)} م • " +
                             "ثقة ${(generated.analysisConfidence * 100).toInt()}%",
                         color = Color(0xFF405847),
                         style = MaterialTheme.typography.bodySmall,
                     )
+                    if (generated.scaleSource == "bundled_ocr") {
+                        Text(
+                            "المقياس قُرئ محلياً من الأبعاد المطبوعة • ثقة ${(generated.scaleConfidence * 100).toInt()}%",
+                            color = Color(0xFF56715E),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
                     Button(
                         onClick = onWalk,
                         modifier = Modifier.fillMaxWidth().height(54.dp),
@@ -369,7 +442,7 @@ private fun CreateHouseScreen(
                     ) {
                         Icon(Icons.Rounded.ViewInAr, contentDescription = null)
                         Spacer(Modifier.size(8.dp))
-                        Text("ابدأ الجولة")
+                        Text("ابدأ الجولة والتسجيل")
                     }
                     IconButton(onClick = onReset, modifier = Modifier.align(Alignment.CenterHorizontally)) {
                         Icon(Icons.Rounded.Refresh, contentDescription = "إعادة البدء")
@@ -381,12 +454,14 @@ private fun CreateHouseScreen(
 }
 
 @Composable
-private fun NaturalWalkthrough(plan: FloorPlan, onExit: () -> Unit) {
+private fun NaturalWalkthrough(
+    plan: FloorPlan,
+    isRecording: Boolean,
+    onExit: () -> Unit,
+) {
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
         AndroidView(
-            factory = { context ->
-                HouseWalkView(context).apply { setFloorPlan(plan) }
-            },
+            factory = { context -> HouseWalkView(context).apply { setFloorPlan(plan) } },
             modifier = Modifier.fillMaxSize(),
         )
 
@@ -395,16 +470,29 @@ private fun NaturalWalkthrough(plan: FloorPlan, onExit: () -> Unit) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             FilledIconButton(onClick = onExit) {
-                Icon(Icons.Rounded.ArrowBack, contentDescription = "رجوع")
+                Icon(Icons.Rounded.ArrowBack, contentDescription = "إنهاء الجولة")
             }
             Spacer(Modifier.weight(1f))
             Surface(color = Color(0xD1111111), shape = RoundedCornerShape(14.dp)) {
-                Text(
-                    "يسار الشاشة للمشي • يمين الشاشة للنظر",
-                    color = Color.White,
+                Row(
                     modifier = Modifier.padding(horizontal = 13.dp, vertical = 9.dp),
-                    style = MaterialTheme.typography.bodySmall,
-                )
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(7.dp),
+                ) {
+                    if (isRecording) {
+                        Icon(
+                            Icons.Rounded.FiberManualRecord,
+                            contentDescription = null,
+                            tint = ManzlRecord,
+                            modifier = Modifier.size(14.dp),
+                        )
+                    }
+                    Text(
+                        if (isRecording) "REC • يسار للمشي • يمين للنظر" else "جاري بدء التسجيل…",
+                        color = Color.White,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
             }
         }
 
@@ -430,9 +518,9 @@ private fun NaturalWalkthrough(plan: FloorPlan, onExit: () -> Unit) {
                 .align(Alignment.BottomEnd)
                 .navigationBarsPadding()
                 .padding(18.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = Color(0xCCAA2E2E)),
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xD09E2D26)),
         ) {
-            Text("إنهاء الجولة")
+            Text("إنهاء وحفظ MP4")
         }
     }
 }
