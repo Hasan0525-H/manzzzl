@@ -140,7 +140,9 @@ internal object StairPatternDetector {
         val across = if (horizontal) width else height
         val along = if (horizontal) height else width
         val minRun = max(8, min(width, height) / 90)
-        val maxRun = max(minRun + 2, (min(width, height) * 0.28f).toInt())
+        // A staircase can occupy a substantial fraction of a cropped plan image. Keep the upper
+        // bound generous; the repeated/regular spacing checks below provide the stronger filter.
+        val maxRun = max(minRun + 2, (min(width, height) * 0.50f).toInt())
         val result = ArrayList<Run>()
 
         for (fixed in 1 until along - 1) {
