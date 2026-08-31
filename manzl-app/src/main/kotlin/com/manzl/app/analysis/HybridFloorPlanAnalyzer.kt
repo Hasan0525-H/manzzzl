@@ -14,11 +14,12 @@ import kotlin.math.sqrt
  * 1) deterministic vision establishes measured topology and metric scale;
  * 2) deterministic door/room topology creates a geometry baseline;
  * 3) bundled on-device semantic providers may label rooms or suggest stairs/openings;
- * 4) independent semantic observations are combined only when they agree spatially/structurally;
- * 5) GeometryEvidenceFusion accepts only evidence that is geometrically plausible;
- * 6) deterministic topology is re-run after fusion and becomes the sole source of truth for 3D;
- * 7) door swing symbols may enrich an accepted opening but never create or move one;
- * 8) door/window conflicts are resolved from symbol-specific evidence before final room topology.
+ * 4) a tiny bundled neural patch model may independently confirm door/window/stair symbols;
+ * 5) independent semantic observations are combined only when they agree spatially/structurally;
+ * 6) GeometryEvidenceFusion accepts only evidence that is geometrically plausible;
+ * 7) deterministic topology is re-run after fusion and becomes the sole source of truth for 3D;
+ * 8) door swing symbols may enrich an accepted opening but never create or move one;
+ * 9) door/window conflicts are resolved from symbol-specific evidence before final room topology.
  *
  * No provider is allowed to require a network connection in the release build.
  */
@@ -28,6 +29,7 @@ internal class HybridFloorPlanAnalyzer(
         RoomLabelEvidenceProvider(),
         StairPatternEvidenceProvider(),
         WindowSymbolEvidenceProvider(),
+        TinySemanticPatchEvidenceProvider(),
     ),
 ) : FloorPlanAnalyzer {
 
@@ -50,7 +52,7 @@ internal class HybridFloorPlanAnalyzer(
             rooms = mergeRooms(withDoors.rooms, baselineRooms),
         )
 
-        progress.onUpdate(AnalysisUpdate(87, "قراءة الغرف والسلالم ورموز النوافذ محلياً"))
+        progress.onUpdate(AnalysisUpdate(87, "قراءة الغرف والسلالم والفتحات والذكاء المحلي"))
         val semanticEvidence = ArrayList<SemanticEvidence>()
         semanticProviders.forEach { provider ->
             val providerPlan = if (provider is WindowSymbolEvidenceProvider) {
@@ -63,7 +65,7 @@ internal class HybridFloorPlanAnalyzer(
             semanticEvidence += provider.analyze(bitmap, providerPlan)
         }
 
-        progress.onUpdate(AnalysisUpdate(91, "دمج الأدلة المستقلة المتفقة"))
+        progress.onUpdate(AnalysisUpdate(91, "دمج أدلة CV والذكاء المحلي المتفقة"))
         val consensusEvidence = SemanticEvidenceConsensus.combine(semanticEvidence)
 
         progress.onUpdate(AnalysisUpdate(93, "مطابقة الدلالات مع هندسة المخطط"))
