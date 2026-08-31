@@ -34,3 +34,9 @@ app/build/**
 .idea/copilot.data.migration.ask2agent.xml
 /.kotlin
 /tmp_log
+
+# Ultra reconstruction teacher/model development caches. Heavy or redistribution-restricted
+# checkpoints stay local and must never be committed to this public repository.
+/.cache/manzl-teachers/
+/research/ultra-reconstruction/cache/
+/research/ultra-reconstruction/checkpoints/
