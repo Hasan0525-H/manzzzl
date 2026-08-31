@@ -9,6 +9,8 @@ import com.manzl.app.model.GeometryFidelityStatus
 import com.manzl.app.model.RoomRegion
 import com.manzl.app.model.Vec2
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlin.math.sqrt
 
 /**
@@ -18,6 +20,10 @@ import kotlin.math.sqrt
  * features, but cannot create topology. Geometry-only opening-sized gaps stay available internally
  * for room closure and symbol search, then are removed from the final user-visible plan unless an
  * independent semantic/user signal confirms that the gap is actually a door.
+ *
+ * The ultra path also asks an independent OpenCV line expert for missing-wall proposals. OpenCV does
+ * not become geometry authority: every proposal is accepted only when independent raster fidelity
+ * improves without a material precision regression.
  *
  * A second reconstruction gate runs after semantics/topology. It blocks 3D when strong wall gaps are
  * still unclassified or when trusted closed-room coverage is too sparse to construct real floors and
@@ -103,6 +109,28 @@ internal class HybridFloorPlanAnalyzer(
                     primaryVerifiedAtDenseRaster != null -> primaryVerifiedAtDenseRaster
                     else -> primaryStructural
                 }
+            }
+
+            progress.onUpdate(AnalysisUpdate(79, "خبير OpenCV مستقل يبحث عن جدران مفقودة ويعيد التحقق من الصورة"))
+            val openCvResult = try {
+                withContext(Dispatchers.Default) {
+                    OpenCvWallExpert.refine(bitmap, structural)
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: OutOfMemoryError) {
+                null
+            } catch (_: RuntimeException) {
+                null
+            }
+            if (openCvResult != null && openCvResult.acceptedCount > 0) {
+                structural = openCvResult.plan
+                progress.onUpdate(
+                    AnalysisUpdate(
+                        79,
+                        "OpenCV اقترح ${openCvResult.proposedCount} خطاً وقبل التحقق ${openCvResult.acceptedCount} جداراً فقط",
+                    )
+                )
             }
         }
 
