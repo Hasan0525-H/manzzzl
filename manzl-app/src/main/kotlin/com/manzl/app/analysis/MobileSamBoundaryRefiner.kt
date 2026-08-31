@@ -20,10 +20,11 @@ import kotlin.math.sqrt
 /**
  * High-resolution wall-face refiner backed by bundled MobileSAM ONNX models.
  *
- * MobileSAM never creates a wall, room or opening here. It receives a narrow box prompt around an
- * already measured wall and may only adjust that wall's two end faces and measured thickness within
- * strict physical limits. The entire refined plan is then re-rasterized against the source. If global
- * coverage/precision/endpoint support do not improve safely, every MobileSAM edit is discarded.
+ * MobileSAM never creates a wall, room or opening here. It receives a box plus positive points along
+ * an already measured wall axis and may only adjust that wall's two end faces and measured thickness
+ * within strict physical limits. The entire refined plan is then re-rasterized against the source.
+ * If global coverage/precision/endpoint support do not improve safely, every MobileSAM edit is
+ * discarded.
  */
 internal class MobileSamBoundaryRefiner(context: Context) {
     private val models = OnnxAssetModelRepository(context)
@@ -203,19 +204,17 @@ internal class MobileSamBoundaryRefiner(context: Context) {
             MIN_PROMPT_HALF_WIDTH_PX,
             wall.thicknessMeters * pixelsPerMeter * PROMPT_THICKNESS_MULTIPLIER + PROMPT_CLEARANCE_PX,
         )
-        val minX = (min(start.first, end.first) - halfBox).coerceIn(0f, imageWidth - 1f)
-        val minY = (min(start.second, end.second) - halfBox).coerceIn(0f, imageHeight - 1f)
-        val maxX = (max(start.first, end.first) + halfBox).coerceIn(0f, imageWidth - 1f)
-        val maxY = (max(start.second, end.second) + halfBox).coerceIn(0f, imageHeight - 1f)
-        if (maxX - minX < MIN_PROMPT_SPAN_PX || maxY - minY < MIN_PROMPT_SPAN_PX) return null
+        val prompt = MobileSamWallPrompt.build(
+            startX = start.first,
+            startY = start.second,
+            endX = end.first,
+            endY = end.second,
+            halfBox = halfBox,
+            imageWidth = imageWidth,
+            imageHeight = imageHeight,
+            imageScale = encoded.imageScale,
+        ) ?: return null
 
-        val coords = floatArrayOf(
-            minX * encoded.imageScale,
-            minY * encoded.imageScale,
-            maxX * encoded.imageScale,
-            maxY * encoded.imageScale,
-        )
-        val labels = floatArrayOf(2f, 3f)
         val maskInput = FloatArray(SAM_MASK_INPUT_SIDE * SAM_MASK_INPUT_SIDE)
         val noMask = floatArrayOf(0f)
         val originalSize = floatArrayOf(imageHeight.toFloat(), imageWidth.toFloat())
@@ -227,8 +226,8 @@ internal class MobileSamBoundaryRefiner(context: Context) {
             }
         }
         add("image_embeddings", encoded.embedding, encoded.embeddingShape)
-        add("point_coords", coords, longArrayOf(1L, 2L, 2L))
-        add("point_labels", labels, longArrayOf(1L, 2L))
+        add("point_coords", prompt.coords, longArrayOf(1L, prompt.pointCount.toLong(), 2L))
+        add("point_labels", prompt.labels, longArrayOf(1L, prompt.pointCount.toLong()))
         add("mask_input", maskInput, longArrayOf(1L, 1L, SAM_MASK_INPUT_SIDE.toLong(), SAM_MASK_INPUT_SIDE.toLong()))
         add("has_mask_input", noMask, longArrayOf(1L))
         add("orig_im_size", originalSize, longArrayOf(2L))
@@ -425,7 +424,6 @@ internal class MobileSamBoundaryRefiner(context: Context) {
         private const val MIN_PROMPT_HALF_WIDTH_PX = 7f
         private const val PROMPT_THICKNESS_MULTIPLIER = 1.45f
         private const val PROMPT_CLEARANCE_PX = 5f
-        private const val MIN_PROMPT_SPAN_PX = 10f
         private const val MIN_WALL_CONTEXT_PX = 12f
         private const val MIN_MASK_CORRIDOR_PX = 7f
         private const val MASK_CORRIDOR_THICKNESS_MULTIPLIER = 1.6f
