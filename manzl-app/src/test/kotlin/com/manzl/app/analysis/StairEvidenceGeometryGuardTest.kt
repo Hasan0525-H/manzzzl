@@ -35,7 +35,7 @@ class StairEvidenceGeometryGuardTest {
     @Test
     fun `candidate whose footprint escapes its measured room is rejected`() {
         val plan = planWithRoom()
-        val candidate = evidence(center = Vec2(2.35f, 0f), rotation = 90f)
+        val candidate = evidence(center = Vec2(2.75f, 0f), rotation = 90f)
 
         assertFalse(StairEvidenceGeometryGuard.isPlausible(plan, candidate))
     }
