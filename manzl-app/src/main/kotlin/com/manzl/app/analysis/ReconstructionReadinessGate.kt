@@ -16,12 +16,14 @@ internal object ReconstructionReadinessGate {
     data class Report(
         val unresolvedOpenings: List<MeasuredOpeningGapDetector.Gap>,
         val unsupportedVerticalVoids: List<RoomRegion>,
+        val unsupportedRoomBoundaries: List<RoomBoundarySupportEvaluator.RoomIssue>,
         val trustedRoomCoverage: Float,
         val trustedRoomCount: Int,
     ) {
         val ready: Boolean
             get() = unresolvedOpenings.isEmpty() &&
                 unsupportedVerticalVoids.isEmpty() &&
+                unsupportedRoomBoundaries.isEmpty() &&
                 trustedRoomCount > 0 &&
                 trustedRoomCoverage >= MIN_TRUSTED_ROOM_COVERAGE
     }
@@ -47,10 +49,15 @@ internal object ReconstructionReadinessGate {
             // closed because polygon subtraction cannot decide which boundary is authoritative.
             surfaceRooms.any { room -> unsupportedVoidRelationship(void.polygon, room.polygon) }
         }
+        val unsupportedRoomBoundaries = RoomBoundarySupportEvaluator.findUnsupportedRooms(
+            plan = plan,
+            rooms = trustedRooms,
+        )
         val coverage = sampledRoomCoverage(plan, surfaceRooms)
         return Report(
             unresolvedOpenings = unresolved,
             unsupportedVerticalVoids = unsupportedVoids,
+            unsupportedRoomBoundaries = unsupportedRoomBoundaries,
             trustedRoomCoverage = coverage,
             trustedRoomCount = surfaceRooms.size,
         )
@@ -70,6 +77,15 @@ internal object ReconstructionReadinessGate {
             val label = report.unsupportedVerticalVoids.first().label?.trim().orEmpty()
             val suffix = if (label.isBlank()) "" else " ($label)"
             return "أوقفت تحويل المخطط إلى 3D لأن فراغاً رأسياً موثوقاً$suffix يتقاطع جزئياً أو يلامس حدود سطح غرفة أخرى. لا يمكن طرحه كفتحة مستقلة بدون تغيير الرسم، لذلك يلزم تصحيح topology أولاً."
+        }
+
+        if (report.unsupportedRoomBoundaries.isNotEmpty()) {
+            val issue = report.unsupportedRoomBoundaries.minByOrNull { it.weakestEdgeSupport }!!
+            val room = plan.rooms.firstOrNull { it.id == issue.roomId }
+            val roomName = room?.label?.trim().takeUnless { it.isNullOrBlank() } ?: issue.roomId
+            val total = (issue.boundarySupport * 100f).toInt().coerceIn(0, 100)
+            val weakest = (issue.weakestEdgeSupport * 100f).toInt().coerceIn(0, 100)
+            return "أوقفت تحويل المخطط إلى 3D لأن حدود الغرفة $roomName ليست مدعومة بالكامل بجدار أو فتحة مقاسة. دعم المحيط $total% وأضعف ضلع $weakest%. لن أحول polygon متخمن إلى أرضية أو سقف حقيقي؛ يجب أن تتطابق حدود الغرفة مع هندسة المخطط أولاً."
         }
 
         val coverage = (report.trustedRoomCoverage * 100f).toInt().coerceIn(0, 100)
