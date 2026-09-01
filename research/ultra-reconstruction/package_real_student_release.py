@@ -84,6 +84,7 @@ def _release_contract(release_path: pathlib.Path, digest: str, size: int) -> dic
         "releaseCorpusScalePassed": True,
         "releaseCorpusScalePolicyVersion": 1,
         "releaseCorpusScaleRecomputedAtFinalize": True,
+        "semanticMetricsExactHeldOutSampleCoverage": True,
         "semanticAcceptancePolicyLocked": True,
         "semanticAcceptancePolicyEvaluated": True,
         "relativeSemanticAcceptancePassed": True,
