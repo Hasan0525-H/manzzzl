@@ -5,12 +5,20 @@ The upstream model produces 44 channels split as 21 junction heatmaps, 12 room c
 classes. Manzl consumes only evidence that maps cleanly into its mobile reconstruction vocabulary:
 
 * room class 2 (Wall) -> ``wall_face``
+* high-confidence room-segmentation transitions -> ``room_boundary``
 * icon class 1 (Window) -> ``window``
 * icon class 2 (Door) -> ``door``
 * everything confidently non-structural -> ``background``
 
-The teacher deliberately does not claim stairs, columns, courtyards, shafts or room-boundary geometry.
-Those classes remain abstentions until an independent teacher actually supports them.
+``room_boundary`` is intentionally derived from FloorTrans's own room segmentation rather than from
+Raster2Seq geometry. It therefore provides a second independent raster-domain vote for room polygon
+edges. Only transitions that touch a confidently predicted room interior are eligible: background to
+wall, wall to wall and other purely structural transitions do not manufacture room boundaries. A
+small max-filter band aligns the segmentation edge with Raster2Seq's thin polygon-outline evidence;
+consensus still requires the two teachers to agree at the same pixels.
+
+The teacher deliberately does not claim stairs, columns, courtyards or shafts. Those classes remain
+abstentions until an independent teacher actually supports them.
 
 CubiCasa5K code/data and the published pretrained weight are CC-BY-NC-4.0 for the current checkpoint
 lineage. This script is therefore for the user's personal/non-commercial development-time distillation
@@ -45,11 +53,14 @@ HEATMAP_CHANNELS = 21
 ROOM_CHANNELS = 12
 ICON_CHANNELS = 11
 TOTAL_CHANNELS = HEATMAP_CHANNELS + ROOM_CHANNELS + ICON_CHANNELS
+ROOM_BACKGROUND = 0
 ROOM_WALL = 2
+ROOM_RAILING = 8
 ICON_WINDOW = 1
 ICON_DOOR = 2
-LOCAL_CLASSES = ["background", "wall_face", "door", "window"]
+LOCAL_CLASSES = ["background", "wall_face", "door", "window", "room_boundary"]
 LOCAL_CLASS = {name: index for index, name in enumerate(LOCAL_CLASSES)}
+STRUCTURAL_ROOM_CLASSES = frozenset({ROOM_BACKGROUND, ROOM_WALL, ROOM_RAILING})
 
 
 def discover_images(root: pathlib.Path, recursive: bool) -> list[pathlib.Path]:
@@ -82,6 +93,49 @@ def normalize_distribution(values: np.ndarray, axis: int = 0) -> np.ndarray:
     )
 
 
+def derive_room_boundary_probability(room_probs: np.ndarray) -> np.ndarray:
+    """Return a narrow, confidence-calibrated boundary band from FloorTrans room segmentation.
+
+    FloorTrans predicts semantic room classes, not room instances. Room-vs-wall/background transitions
+    still expose the room polygon perimeter, while different confident room labels can expose an
+    interior room-to-room boundary. Same-label adjacent rooms remain separable through their wall
+    strip. Requiring at least one side of every transition to be a non-structural room class prevents
+    wall/background texture changes from being promoted to room geometry.
+    """
+    rooms = np.asarray(room_probs, dtype=np.float32)
+    if rooms.ndim != 3 or rooms.shape[0] != ROOM_CHANNELS:
+        raise ValueError(f"room_probs must be [{ROOM_CHANNELS},H,W], got {rooms.shape}")
+    if not np.isfinite(rooms).all():
+        raise ValueError("room_probs contain non-finite values")
+
+    rooms = normalize_distribution(np.clip(rooms, 0.0, 1.0), axis=0)
+    labels = np.argmax(rooms, axis=0).astype(np.int16)
+    confidence = np.max(rooms, axis=0).astype(np.float32)
+    interior = ~np.isin(labels, np.asarray(sorted(STRUCTURAL_ROOM_CLASSES), dtype=np.int16))
+    boundary = np.zeros(labels.shape, dtype=np.float32)
+
+    def accumulate(a_slice, b_slice) -> None:
+        a_label = labels[a_slice]
+        b_label = labels[b_slice]
+        transition = a_label != b_label
+        touches_room = interior[a_slice] | interior[b_slice]
+        pair_confidence = np.minimum(confidence[a_slice], confidence[b_slice])
+        evidence = np.where(transition & touches_room, pair_confidence, 0.0).astype(np.float32)
+        boundary[a_slice] = np.maximum(boundary[a_slice], evidence)
+        boundary[b_slice] = np.maximum(boundary[b_slice], evidence)
+
+    if labels.shape[1] > 1:
+        accumulate((slice(None), slice(None, -1)), (slice(None), slice(1, None)))
+    if labels.shape[0] > 1:
+        accumulate((slice(None, -1), slice(None)), (slice(1, None), slice(None)))
+
+    # Raster2Seq defaults to a three-pixel polygon outline. A 3x3 max filter makes the segmentation
+    # transition comparable without moving the inferred edge or inventing evidence away from it.
+    if boundary.size:
+        boundary = cv2.dilate(boundary, np.ones((3, 3), dtype=np.uint8), iterations=1)
+    return np.clip(boundary, 0.0, 1.0).astype(np.float32)
+
+
 def encode_floortrans_probabilities(
     room_probs: np.ndarray,
     icon_probs: np.ndarray,
@@ -105,19 +159,22 @@ def encode_floortrans_probabilities(
     door = icons[ICON_DOOR]
     window = icons[ICON_WINDOW]
     opening = np.maximum(door, window)
+    boundary = derive_room_boundary_probability(rooms) * (1.0 - opening)
 
     # FloorTrans's room and icon heads are independent. Openings commonly overlap the wall region, so
-    # suppress wall/background by the opening probability before normalizing our mutually-exclusive
-    # local semantic opinion. This retains a strong door/window vote instead of diluting it merely
-    # because the room head also sees the host wall.
-    wall_score = wall * (1.0 - opening)
-    background_score = (1.0 - wall) * (1.0 - opening)
+    # suppress wall/background by the opening probability. Room boundaries similarly own only the
+    # narrow segmentation-transition band and suppress the structural/background opinion there. This
+    # keeps each local pixel opinion mutually exclusive before the independent-teacher quorum stage.
+    boundary_suppression = 1.0 - boundary
+    wall_score = wall * (1.0 - opening) * boundary_suppression
+    background_score = (1.0 - wall) * (1.0 - opening) * boundary_suppression
     scores = np.stack(
         [
             background_score,
             wall_score,
             door,
             window,
+            boundary,
         ],
         axis=0,
     ).astype(np.float32)
@@ -126,7 +183,7 @@ def encode_floortrans_probabilities(
     winner_probability = semantic_probs.max(axis=0)
     # The consensus layer independently enforces probability/margin/vote thresholds. Confidence here
     # simply down-weights ambiguous FloorTrans pixels; it never promotes a low-probability class.
-    confidence = np.clip((winner_probability - 0.25) / 0.75, 0.0, 1.0).astype(np.float32)
+    confidence = np.clip((winner_probability - 0.20) / 0.80, 0.0, 1.0).astype(np.float32)
     valid_mask = np.ones(winner_probability.shape, dtype=np.uint8)
     return semantic_probs, confidence, valid_mask
 
@@ -256,7 +313,7 @@ def save_prediction(
         semantic_classes=np.asarray(LOCAL_CLASSES, dtype="U32"),
         confidence=confidence,
         valid_mask=valid_mask,
-        teacher_format=np.asarray(["cubicasa-floortrans-room-icon-v1"], dtype="U64"),
+        teacher_format=np.asarray(["cubicasa-floortrans-room-icon-v2-boundary"], dtype="U64"),
     )
 
 
