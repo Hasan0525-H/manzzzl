@@ -22,13 +22,15 @@ import kotlin.math.sqrt
  * independent semantic/user signal confirms that the gap is actually a door.
  *
  * The ultra path can run a distilled Raster2Seq/RoomFormer student first, then an independent OpenCV
- * expert, then MobileSAM only as a boundary refiner. The student's door/window/stair observations are
- * reused from that same inference later as semantics; they cannot create an opening because fusion
- * still requires a measured geometry host. None of the neural/CV experts becomes geometry authority.
+ * expert, then MobileSAM only as a boundary refiner. The student's door/window/stair/courtyard/shaft
+ * observations are reused from that same inference later as semantics; columns are accepted only by a
+ * dedicated source-raster structural verifier. None of the neural/CV experts becomes geometry
+ * authority.
  *
  * A second reconstruction gate runs after semantics/topology. It blocks 3D when strong wall gaps are
- * still unclassified or when trusted closed-room coverage is too sparse to construct real floors and
- * ceilings without inventing a rectangular house footprint.
+ * still unclassified, when trusted closed-room coverage is too sparse to construct real floors and
+ * ceilings without inventing a rectangular house footprint, or when a verified vertical shaft cannot
+ * yet be represented faithfully by the mesh path.
  */
 internal class HybridFloorPlanAnalyzer(
     private val structuralAnalyzer: FloorPlanAnalyzer = ClassicalFloorPlanAnalyzer(),
@@ -134,7 +136,7 @@ internal class HybridFloorPlanAnalyzer(
                         progress.onUpdate(
                             AnalysisUpdate(
                                 79,
-                                "Manzl فحص ${studentResult.inferenceRegions} مناطق، اقترح ${studentResult.proposedWalls} جداراً، قبل ${studentResult.acceptedWalls}، ورصد ${studentResult.semanticObservations} دلالة فتحات/سلالم",
+                                "Manzl فحص ${studentResult.inferenceRegions} مناطق، اقترح ${studentResult.proposedWalls} جداراً، قبل ${studentResult.acceptedWalls}، ورصد ${studentResult.semanticObservations} دلالة معمارية",
                             )
                         )
                     }
@@ -185,6 +187,29 @@ internal class HybridFloorPlanAnalyzer(
                         )
                     )
                 }
+            }
+
+            // Columns are compact structural masses, not wall/room semantics. A student observation
+            // is promoted only when its oriented footprint has strong support in the source raster.
+            val columnResult = try {
+                withContext(Dispatchers.Default) {
+                    StudentColumnRefiner.refine(bitmap, structural)
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: OutOfMemoryError) {
+                null
+            } catch (_: RuntimeException) {
+                null
+            }
+            if (columnResult != null && columnResult.acceptedCount > 0) {
+                structural = columnResult.plan
+                progress.onUpdate(
+                    AnalysisUpdate(
+                        79,
+                        "تحقق المصدر من ${columnResult.acceptedCount} عمود إنشائي من ${columnResult.proposedCount} مرشحاً",
+                    )
+                )
             }
         }
 
