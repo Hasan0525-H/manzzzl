@@ -124,5 +124,70 @@ class RealTeacherAlignmentTest(unittest.TestCase):
             self.assertEqual(2, len(set(groups.values())))
 
 
+class RealRoomBoundaryQuorumTest(unittest.TestCase):
+    def prediction(self, teacher_id: str, known_names: set[str]):
+        consensus = real_consensus.consensus
+        class_count = len(consensus.SEMANTIC_CLASSES)
+        known = np.zeros(class_count, dtype=bool)
+        for name in known_names:
+            known[consensus.CLASS_TO_INDEX[name]] = True
+        return consensus.TeacherPrediction(
+            teacher_id=teacher_id,
+            weight=1.0,
+            probs=np.zeros((class_count, 2, 2), dtype=np.float32),
+            class_known=known,
+            confidence=np.ones((2, 2), dtype=np.float32),
+            valid=np.ones((2, 2), dtype=bool),
+            image=None,
+            corners=None,
+            corner_confidence=None,
+            orientation=None,
+        )
+
+    def test_current_raster2seq_and_cubicasa_exports_are_accepted(self) -> None:
+        predictions = [
+            self.prediction("raster2seq", {"door", "window", "room_boundary"}),
+            self.prediction("mitunet", {"background", "wall_face"}),
+            self.prediction(
+                "cubicasa",
+                {"background", "wall_face", "door", "window", "room_boundary"},
+            ),
+        ]
+
+        real_consensus.validate_room_boundary_quorum_capability(
+            predictions,
+            pathlib.Path("sample.npz"),
+        )
+
+    def test_stale_cubicasa_export_without_room_boundary_is_rejected(self) -> None:
+        predictions = [
+            self.prediction("raster2seq", {"door", "window", "room_boundary"}),
+            self.prediction("mitunet", {"background", "wall_face"}),
+            self.prediction("cubicasa", {"background", "wall_face", "door", "window"}),
+        ]
+
+        with self.assertRaisesRegex(RuntimeError, "cubicasa does not export room_boundary"):
+            real_consensus.validate_room_boundary_quorum_capability(
+                predictions,
+                pathlib.Path("sample.npz"),
+            )
+
+    def test_stale_raster2seq_export_without_room_boundary_is_rejected(self) -> None:
+        predictions = [
+            self.prediction("raster2seq", {"door", "window"}),
+            self.prediction("mitunet", {"background", "wall_face"}),
+            self.prediction(
+                "cubicasa",
+                {"background", "wall_face", "door", "window", "room_boundary"},
+            ),
+        ]
+
+        with self.assertRaisesRegex(RuntimeError, "raster2seq does not export room_boundary"):
+            real_consensus.validate_room_boundary_quorum_capability(
+                predictions,
+                pathlib.Path("sample.npz"),
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
