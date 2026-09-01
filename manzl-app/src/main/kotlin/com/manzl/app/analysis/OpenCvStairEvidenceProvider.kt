@@ -32,9 +32,7 @@ internal class OpenCvStairEvidenceProvider : SemanticEvidenceProvider {
     override suspend fun analyze(bitmap: Bitmap, structuralPlan: FloorPlan): List<SemanticEvidence> =
         withContext(Dispatchers.Default) {
             if (bitmap.width < 48 || bitmap.height < 48) return@withContext emptyList()
-            if (!runCatching { OpenCVLoader.initLocal() }.getOrDefault(false)) {
-                return@withContext emptyList()
-            }
+            if (!runCatching { OpenCVLoader.initLocal() }.getOrDefault(false)) return@withContext emptyList()
 
             val working = bitmap.downscale(MAX_ANALYSIS_SIDE)
             val rgba = Mat()
@@ -59,18 +57,15 @@ internal class OpenCvStairEvidenceProvider : SemanticEvidenceProvider {
                     max(2, minDimension / 260).toDouble(),
                 )
 
-                val raw = readLines(lines)
                 val candidates = ArbitraryAngleStairDetector.detect(
-                    lines = raw,
+                    lines = readLines(lines),
                     imageWidth = working.width,
                     imageHeight = working.height,
                 )
                 if (candidates.isEmpty()) return@withContext emptyList()
 
                 val transform = PlanRasterTransform.forImage(structuralPlan, working.width, working.height)
-                candidates.mapNotNull { candidate ->
-                    candidate.toEvidence(transform)
-                }
+                candidates.mapNotNull { candidate -> candidate.toEvidence(transform) }
             } catch (_: RuntimeException) {
                 emptyList()
             } finally {
@@ -99,9 +94,7 @@ internal class OpenCvStairEvidenceProvider : SemanticEvidenceProvider {
         return result
     }
 
-    private fun ArbitraryAngleStairDetector.Candidate.toEvidence(
-        transform: PlanRasterTransform,
-    ): SemanticEvidence? {
+    private fun ArbitraryAngleStairDetector.Candidate.toEvidence(transform: PlanRasterTransform): SemanticEvidence? {
         val treadRadians = treadAngleDegrees * PI.toFloat() / 180f
         val tux = cos(treadRadians)
         val tuy = sin(treadRadians)
@@ -109,22 +102,10 @@ internal class OpenCvStairEvidenceProvider : SemanticEvidenceProvider {
         val ruy = tux
 
         val center = transform.imageToPlan(centerX, centerY)
-        val widthA = transform.imageToPlan(
-            centerX - tux * treadLengthPx * 0.5f,
-            centerY - tuy * treadLengthPx * 0.5f,
-        )
-        val widthB = transform.imageToPlan(
-            centerX + tux * treadLengthPx * 0.5f,
-            centerY + tuy * treadLengthPx * 0.5f,
-        )
-        val runA = transform.imageToPlan(
-            centerX - rux * runLengthPx * 0.5f,
-            centerY - ruy * runLengthPx * 0.5f,
-        )
-        val runB = transform.imageToPlan(
-            centerX + rux * runLengthPx * 0.5f,
-            centerY + ruy * runLengthPx * 0.5f,
-        )
+        val widthA = transform.imageToPlan(centerX - tux * treadLengthPx * 0.5f, centerY - tuy * treadLengthPx * 0.5f)
+        val widthB = transform.imageToPlan(centerX + tux * treadLengthPx * 0.5f, centerY + tuy * treadLengthPx * 0.5f)
+        val runA = transform.imageToPlan(centerX - rux * runLengthPx * 0.5f, centerY - ruy * runLengthPx * 0.5f)
+        val runB = transform.imageToPlan(centerX + rux * runLengthPx * 0.5f, centerY + ruy * runLengthPx * 0.5f)
         val widthMeters = distance(widthA, widthB)
         val runMeters = distance(runA, runB)
         if (widthMeters !in MIN_STAIR_WIDTH_METERS..MAX_STAIR_WIDTH_METERS) return null
@@ -204,7 +185,9 @@ internal object ArbitraryAngleStairDetector {
         val centerX: Float get() = (x0 + x1) * 0.5f
         val centerY: Float get() = (y0 + y1) * 0.5f
         val angleDegrees: Float
-            get() = normalizeHalfTurn(Math.toDegrees(atan2((y1 - y0).toDouble(), (x1 - x0).toDouble())).toFloat())
+            get() = normalizeHalfTurn(
+                Math.toDegrees(atan2((y1 - y0).toDouble(), (x1 - x0).toDouble())).toFloat()
+            )
     }
 
     data class Candidate(
@@ -217,17 +200,11 @@ internal object ArbitraryAngleStairDetector {
         val confidence: Float,
     )
 
-    fun detect(
-        lines: List<RasterLine>,
-        imageWidth: Int,
-        imageHeight: Int,
-    ): List<Candidate> {
+    fun detect(lines: List<RasterLine>, imageWidth: Int, imageHeight: Int): List<Candidate> {
         if (lines.size < MIN_TREADS || imageWidth <= 0 || imageHeight <= 0) return emptyList()
         val minDimension = min(imageWidth, imageHeight).toFloat().coerceAtLeast(1f)
         val maxTreadPixels = minDimension * MAX_TREAD_FRACTION
-        val usable = lines.filter { line ->
-            line.length in MIN_TREAD_PIXELS..maxTreadPixels
-        }
+        val usable = lines.filter { line -> line.length in MIN_TREAD_PIXELS..maxTreadPixels }
         if (usable.size < MIN_TREADS) return emptyList()
 
         val rawCandidates = ArrayList<Candidate>()
@@ -239,20 +216,24 @@ internal object ArbitraryAngleStairDetector {
                     line.length / seedLength in MIN_LENGTH_RATIO..MAX_LENGTH_RATIO
             }
             if (compatible.size < MIN_TREADS) continue
-            fitGroup(compatible, minDimension)?.let(rawCandidates::add)
+            fitGroup(compatible, minDimension, imageWidth, imageHeight)?.let(rawCandidates::add)
         }
 
         return rawCandidates
             .sortedByDescending { it.confidence }
             .fold(ArrayList<Candidate>()) { accepted, candidate ->
-                val duplicate = accepted.any { existing -> duplicate(existing, candidate, minDimension) }
-                if (!duplicate) accepted += candidate
+                if (accepted.none { existing -> duplicate(existing, candidate, minDimension) }) accepted += candidate
                 accepted
             }
             .take(MAX_CANDIDATES)
     }
 
-    private fun fitGroup(lines: List<RasterLine>, minDimension: Float): Candidate? {
+    private fun fitGroup(
+        lines: List<RasterLine>,
+        minDimension: Float,
+        imageWidth: Int,
+        imageHeight: Int,
+    ): Candidate? {
         val angle = meanAxisAngle(lines)
         val radians = angle * PI.toFloat() / 180f
         val ux = cos(radians)
@@ -264,29 +245,21 @@ internal object ArbitraryAngleStairDetector {
             val a = line.x0 * ux + line.y0 * uy
             val b = line.x1 * ux + line.y1 * uy
             val normal = line.centerX * nx + line.centerY * ny
-            ProjectedLine(
-                source = line,
-                from = min(a, b),
-                to = max(a, b),
-                normal = normal,
-            )
+            ProjectedLine(from = min(a, b), to = max(a, b), normal = normal)
         }.sortedBy { it.normal }
 
-        // Canny often gives two almost-identical edges for one tread. Collapse them before spacing
-        // statistics so a thick stroke cannot masquerade as twice the number of steps.
         val normalMerge = max(MIN_DUPLICATE_NORMAL_PIXELS, minDimension * DUPLICATE_NORMAL_FRACTION)
         val clusters = ArrayList<MutableList<ProjectedLine>>()
         for (line in projected) {
             val last = clusters.lastOrNull()
-            if (last == null || abs(last.map { it.normal }.average().toFloat() - line.normal) > normalMerge) {
+            val lastCenter = last?.map { it.normal }?.average()?.toFloat()
+            if (last == null || lastCenter == null || abs(lastCenter - line.normal) > normalMerge) {
                 clusters += mutableListOf(line)
             } else {
                 last += line
             }
         }
-        val representatives = clusters.map { cluster ->
-            cluster.maxByOrNull { it.to - it.from } ?: cluster.first()
-        }
+        val representatives = clusters.map { cluster -> cluster.maxByOrNull { it.to - it.from } ?: cluster.first() }
         if (representatives.size !in MIN_TREADS..MAX_TREADS) return null
 
         val lengths = representatives.map { it.to - it.from }
@@ -332,13 +305,14 @@ internal object ArbitraryAngleStairDetector {
         val centerNormal = (minNormal + maxNormal) * 0.5f
         val centerX = ux * centerAlong + nx * centerNormal
         val centerY = uy * centerAlong + ny * centerNormal
-        if (centerX !in 0f..imageSafeMax(minDimension, centerX) || centerY < 0f) return null
+        if (centerX !in 0f..imageWidth.toFloat() || centerY !in 0f..imageHeight.toFloat()) return null
 
         val countScore = ((overlapping.size - MIN_TREADS) / 9f).coerceIn(0f, 1f)
         val spacingScore = (1f - spacingError / MAX_SPACING_ERROR).coerceIn(0f, 1f)
         val lengthScore = (1f - lengthError / MAX_LENGTH_ERROR).coerceIn(0f, 1f)
-        val alignmentScore = (1f - maxCenterDrift / (medianLength * MAX_CENTER_DRIFT_RATIO).coerceAtLeast(1f))
-            .coerceIn(0f, 1f)
+        val alignmentScore = (
+            1f - maxCenterDrift / (medianLength * MAX_CENTER_DRIFT_RATIO).coerceAtLeast(1f)
+            ).coerceIn(0f, 1f)
         val confidence = (
             0.66f + countScore * 0.10f + spacingScore * 0.08f + lengthScore * 0.06f + alignmentScore * 0.05f
             ).coerceIn(0f, 0.95f)
@@ -397,17 +371,7 @@ internal object ArbitraryAngleStairDetector {
         return if (sorted.size % 2 == 0) (sorted[middle - 1] + sorted[middle]) * 0.5f else sorted[middle]
     }
 
-    // The real image bounds are checked again by PlanRasterTransform in the provider. This helper
-    // only rejects obviously invalid negative/overflow arithmetic without making the pure solver
-    // depend on an Android bitmap.
-    private fun imageSafeMax(minDimension: Float, value: Float): Float = max(minDimension * 8f, value)
-
-    private data class ProjectedLine(
-        val source: RasterLine,
-        val from: Float,
-        val to: Float,
-        val normal: Float,
-    )
+    private data class ProjectedLine(val from: Float, val to: Float, val normal: Float)
 
     private const val MIN_TREADS = 5
     private const val MAX_TREADS = 28
