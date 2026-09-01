@@ -223,10 +223,11 @@ def build_manifests(
         split_counts[record.split] += 1
         group_counts[record.split].add(record.source_group)
 
-    # This artifact is intentionally NOT safe to commit. Exact relative paths are necessary for joining
-    # local teacher NPZ files to family provenance, but paths themselves may encode private information.
+    # Keep schema 1 here because build_real_teacher_consensus.py already consumes that contract. The
+    # extra privacy metadata is additive; the path-bearing artifact remains explicitly local-only.
     source_groups = {
-        "schema": 2,
+        "schema": 1,
+        "format": "manzl-source-groups-local-v2",
         "privacy": {
             "localOnly": True,
             "safeToCommit": False,
