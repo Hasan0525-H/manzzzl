@@ -42,6 +42,9 @@ app/build/**
 /research/ultra-reconstruction/cache/
 /research/ultra-reconstruction/checkpoints/
 
-# Runtime ONNX binaries are generated/downloaded with verified hashes during the build pipeline.
-# Keep the human-readable manifest in git, never accidental large/restricted model blobs.
+# Runtime ONNX binaries are normally generated/downloaded with verified hashes during the build
+# pipeline. MobileSAM and any teacher-derived/restricted model remain ignored. The one explicit
+# exception is Manzl's own rights-safe student, trained only from original procedural supervision in
+# the public bootstrap workflow; keeping that model tracked makes the offline APK actually usable.
 /manzl-app/src/main/assets/models/*.onnx
+!/manzl-app/src/main/assets/models/manzl_reconstruction_student.onnx
