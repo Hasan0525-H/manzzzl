@@ -3,6 +3,10 @@ package com.manzl.app.analysis
 import android.graphics.Bitmap
 import com.manzl.app.model.FloorPlan
 import java.util.WeakHashMap
+import kotlin.math.abs
+import kotlin.math.max
+import kotlin.math.min
+import kotlin.math.sqrt
 
 /**
  * Reuses semantic observations produced during the student's structural inference instead of running
@@ -35,16 +39,17 @@ internal object StudentSemanticEvidenceStore {
  * Resolves cached source-space class observations against the latest deterministic wall graph and
  * contributes an independent arbitrary-angle OpenCV stair opinion in the same semantic phase.
  *
- * The OpenCV stair path is intentionally available even when the distilled student asset is absent.
- * This keeps stair reconstruction from silently falling back to the old axis-only detector, while
- * consensus/fusion still decides whether any observation is strong enough to enter canonical 3D.
+ * Neural stair labels are deliberately stricter than other semantics: they survive only when a
+ * raster-derived stair candidate agrees in center, orientation and approximate footprint. A student
+ * cannot create a staircase merely because a textured room patch resembles treads. The deterministic
+ * OpenCV stair observation remains available on its own even when the student asset is absent.
  */
 internal object StudentSemanticEvidenceProvider : SemanticEvidenceProvider {
     private val arbitraryAngleStairExpert = OpenCvStairEvidenceProvider()
 
     override suspend fun analyze(bitmap: Bitmap, structuralPlan: FloorPlan): List<SemanticEvidence> {
         val components = StudentSemanticEvidenceStore.get(bitmap)
-        val studentEvidence = if (components.isEmpty()) {
+        val rawStudent = if (components.isEmpty()) {
             emptyList()
         } else {
             val transform = PlanRasterTransform.forImage(structuralPlan, bitmap.width, bitmap.height)
@@ -57,9 +62,54 @@ internal object StudentSemanticEvidenceProvider : SemanticEvidenceProvider {
             )
         }
 
-        val stairEvidence = arbitraryAngleStairExpert.analyze(bitmap, structuralPlan)
-        if (studentEvidence.isEmpty()) return stairEvidence
-        if (stairEvidence.isEmpty()) return studentEvidence
-        return studentEvidence + stairEvidence
+        val rasterStairs = arbitraryAngleStairExpert.analyze(bitmap, structuralPlan)
+            .filter { it.kind == SemanticKind.STAIR }
+        val studentEvidence = rawStudent.filter { evidence ->
+            if (evidence.kind != SemanticKind.STAIR) return@filter true
+            rasterStairs.any { raster -> compatibleStair(evidence, raster) }
+        }
+
+        if (studentEvidence.isEmpty()) return rasterStairs
+        if (rasterStairs.isEmpty()) return studentEvidence
+        return studentEvidence + rasterStairs
     }
+
+    private fun compatibleStair(a: SemanticEvidence, b: SemanticEvidence): Boolean {
+        val dx = a.center.x - b.center.x
+        val dz = a.center.z - b.center.z
+        if (sqrt(dx * dx + dz * dz) > MAX_STAIR_CENTER_DELTA_METERS) return false
+
+        val aWidth = a.widthMeters
+        val bWidth = b.widthMeters
+        if (aWidth != null && bWidth != null && sizeRatio(aWidth, bWidth) < MIN_STAIR_SIZE_RATIO) return false
+        val aLength = a.lengthMeters
+        val bLength = b.lengthMeters
+        if (aLength != null && bLength != null && sizeRatio(aLength, bLength) < MIN_STAIR_LENGTH_RATIO) return false
+
+        val aRotation = a.rotationDegrees
+        val bRotation = b.rotationDegrees
+        return aRotation == null || bRotation == null ||
+            axisAngleDifference(aRotation, bRotation) <= MAX_STAIR_AXIS_DELTA_DEGREES
+    }
+
+    private fun sizeRatio(a: Float, b: Float): Float {
+        val high = max(abs(a), abs(b))
+        val low = min(abs(a), abs(b))
+        return if (high <= 0.000001f) 0f else low / high
+    }
+
+    private fun axisAngleDifference(a: Float, b: Float): Float {
+        fun normalize(value: Float): Float {
+            var result = value % 180f
+            if (result < 0f) result += 180f
+            return result
+        }
+        val delta = abs(normalize(a) - normalize(b))
+        return min(delta, 180f - delta)
+    }
+
+    private const val MAX_STAIR_CENTER_DELTA_METERS = 0.72f
+    private const val MIN_STAIR_SIZE_RATIO = 0.58f
+    private const val MIN_STAIR_LENGTH_RATIO = 0.52f
+    private const val MAX_STAIR_AXIS_DELTA_DEGREES = 18f
 }
