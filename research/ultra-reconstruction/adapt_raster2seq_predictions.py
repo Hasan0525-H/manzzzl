@@ -34,6 +34,13 @@ CLASS = {name: index for index, name in enumerate(EVIDENCE_CLASSES)}
 # 6 balcony, 7 closet, 8 corridor, 9 washing_room, 10 PS, 11 outside.
 R2G_ROOM_CATEGORY_IDS = frozenset(range(12))
 
+# Legacy CubiCasa ids are retained only so older contract fixtures/importers do not crash while they
+# are migrated. They are NOT opening mappings for the selected Raster2Graph-512 teacher. In this
+# adapter categories 9 and 10 remain ordinary R2G room/space polygons and therefore produce only
+# room_boundary evidence.
+CC5K_WINDOW = 9
+CC5K_DOOR = 10
+
 
 def polygon_points(raw) -> np.ndarray:
     array = np.asarray(raw, dtype=np.float32)
