@@ -18,6 +18,7 @@ if str(HERE) not in sys.path:
 
 import adapt_raster2seq_predictions as raster2seq  # noqa: E402
 import build_teacher_consensus as consensus  # noqa: E402
+import run_mitunet_teacher as mitunet  # noqa: E402
 
 
 class Raster2SeqAdapterContractTest(unittest.TestCase):
@@ -91,6 +92,48 @@ class Raster2SeqAdapterContractTest(unittest.TestCase):
             self.assertFalse(loaded.class_known[consensus.CLASS_TO_INDEX["wall_face"]])
             self.assertFalse(loaded.class_known[consensus.CLASS_TO_INDEX["background"]])
             self.assertFalse(bool(loaded.valid[24, 24]))
+
+
+class MitUNetTeacherContractTest(unittest.TestCase):
+    def test_wall_teacher_only_claims_binary_wall_classes(self) -> None:
+        wall_probability = np.asarray(
+            [
+                [0.02, 0.10, 0.88, 0.97],
+                [0.05, 0.49, 0.51, 0.92],
+                [0.08, 0.25, 0.75, 0.95],
+                [0.01, 0.15, 0.85, 0.99],
+            ],
+            dtype=np.float32,
+        )
+        probabilities, confidence, valid = mitunet.encode_wall_probability(wall_probability)
+        self.assertEqual(probabilities.shape, (2, 4, 4))
+        np.testing.assert_allclose(probabilities.sum(axis=0), 1.0, atol=1e-6)
+        self.assertEqual(confidence.shape, wall_probability.shape)
+        self.assertTrue(np.all((confidence >= 0.0) & (confidence <= 1.0)))
+        self.assertTrue(np.all(valid == 1))
+        self.assertLess(float(confidence[1, 1]), float(confidence[0, 0]))
+
+        with tempfile.TemporaryDirectory(prefix="manzl-mitunet-contract-") as raw_tmp:
+            root = pathlib.Path(raw_tmp)
+            output = root / "mitunet"
+            destination = output / "sample.npz"
+            image = np.full((4, 4, 3), 127, dtype=np.uint8)
+            mitunet.save_prediction(destination, image, wall_probability)
+
+            loaded = consensus.load_prediction(
+                consensus.TeacherSpec("mitunet", output, 1.0),
+                pathlib.Path("sample.npz"),
+            )
+            self.assertIsNotNone(loaded)
+            assert loaded is not None
+
+            known_names = {
+                consensus.SEMANTIC_CLASSES[index]
+                for index in np.flatnonzero(loaded.class_known)
+            }
+            self.assertEqual(known_names, {"background", "wall_face"})
+            for class_name in ("door", "window", "stair", "column", "room_boundary", "courtyard", "shaft"):
+                self.assertFalse(loaded.class_known[consensus.CLASS_TO_INDEX[class_name]])
 
 
 if __name__ == "__main__":
