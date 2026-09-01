@@ -37,16 +37,21 @@ internal object EndToEndGeometryReleaseGate {
         /**
          * Stable JSON intentionally contains no source path, filename, raw raster hash or user label.
          * [sampleId] is the opaque corpus id already used by materialized held-out split filenames.
+         * [modelSha256] cryptographically binds this evidence to the exact ONNX release candidate.
          */
-        fun toEvidenceJson(sampleId: String): String {
+        fun toEvidenceJson(sampleId: String, modelSha256: String): String {
             require(OPAQUE_SAMPLE_ID.matches(sampleId)) {
                 "release evidence requires opaque sample-<32 hex> id"
             }
+            require(SHA256.matches(modelSha256)) {
+                "release evidence requires lowercase 64-hex model SHA256"
+            }
             return buildString {
                 append("{\n")
-                append("  \"schema\": 1,\n")
+                append("  \"schema\": 2,\n")
                 append("  \"pipeline\": \"manzl-runtime-end-to-end-geometry-gates\",\n")
                 append("  \"sampleId\": \"").append(sampleId).append("\",\n")
+                append("  \"modelSha256\": \"").append(modelSha256).append("\",\n")
                 append("  \"sourcePathsStored\": false,\n")
                 append("  \"sourceFilenamesStored\": false,\n")
                 append("  \"rawRasterHashesStored\": false,\n")
@@ -100,4 +105,5 @@ internal object EndToEndGeometryReleaseGate {
     }
 
     private val OPAQUE_SAMPLE_ID = Regex("^sample-[0-9a-f]{32}$")
+    private val SHA256 = Regex("^[0-9a-f]{64}$")
 }

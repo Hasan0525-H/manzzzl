@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import pathlib
 import sys
@@ -61,11 +62,39 @@ class VerifyRealGeometryReleaseTest(unittest.TestCase):
         (root / "materialization_report.json").write_text(json.dumps(report), encoding="utf-8")
         return test_id
 
-    def passing_evidence(self, sample_id: str) -> dict:
-        return {
+    def make_candidate(self, root: pathlib.Path) -> tuple[pathlib.Path, str]:
+        candidate = root / "candidate"
+        candidate.mkdir()
+        model = candidate / "manzl_reconstruction_student.onnx"
+        model.write_bytes(b"verified-real-plan-onnx-candidate")
+        digest = hashlib.sha256(model.read_bytes()).hexdigest()
+        attestation = {
             "schema": 1,
+            "pipeline": "manzl-private-real-student-release-candidate",
+            "model": model.name,
+            "sha256": digest,
+            "bytes": model.stat().st_size,
+            "trainingSplit": "train",
+            "modelSelectionSplit": "validation",
+            "testSplitPresentAndVerified": True,
+            "testUsedForTraining": False,
+            "testUsedForModelSelection": False,
+            "testUsedForValidationMetrics": False,
+            "testReservedForFinalEvaluation": True,
+            "realTrainingPreflightPassed": True,
+            "releaseReady": False,
+        }
+        (candidate / "real-training-attestation.json").write_text(
+            json.dumps(attestation), encoding="utf-8"
+        )
+        return candidate, digest
+
+    def passing_evidence(self, sample_id: str, model_sha256: str) -> dict:
+        return {
+            "schema": 2,
             "pipeline": "manzl-runtime-end-to-end-geometry-gates",
             "sampleId": sample_id,
+            "modelSha256": model_sha256,
             "sourcePathsStored": False,
             "sourceFilenamesStored": False,
             "rawRasterHashesStored": False,
@@ -88,25 +117,38 @@ class VerifyRealGeometryReleaseTest(unittest.TestCase):
             "releaseReady": False,
         }
 
-    def write_evidence(self, root: pathlib.Path, sample_id: str, payload: dict | None = None) -> pathlib.Path:
+    def write_evidence(
+        self,
+        root: pathlib.Path,
+        sample_id: str,
+        model_sha256: str,
+        payload: dict | None = None,
+    ) -> pathlib.Path:
         root.mkdir(parents=True, exist_ok=True)
         path = root / f"{sample_id}.geometry.json"
-        path.write_text(json.dumps(payload or self.passing_evidence(sample_id)), encoding="utf-8")
+        path.write_text(
+            json.dumps(payload or self.passing_evidence(sample_id, model_sha256)),
+            encoding="utf-8",
+        )
         return path
 
-    def test_exact_held_out_geometry_evidence_is_accepted(self):
+    def test_exact_held_out_geometry_evidence_is_bound_to_verified_candidate(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = pathlib.Path(tmp)
             splits = base / "splits"
             splits.mkdir()
             sample_id = self.make_splits(splits)
+            candidate, digest = self.make_candidate(base)
             evidence = base / "evidence"
-            self.write_evidence(evidence, sample_id)
+            self.write_evidence(evidence, sample_id, digest)
 
-            report = verifier.verify(splits, evidence)
+            report = verifier.verify(splits, evidence, candidate)
 
             self.assertTrue(report["releaseGeometryEvidencePassed"])
             self.assertTrue(report["exactHeldOutSampleCoverage"])
+            self.assertTrue(report["geometryEvidenceBoundToExactModelDigest"])
+            self.assertTrue(report["candidateTrainingAttestationVerified"])
+            self.assertEqual(report["modelSha256"], digest)
             self.assertTrue(report["allEndToEnd2dTo3dGeometryGatesPassed"])
             self.assertFalse(report["runtimeThresholdsDuplicated"])
             self.assertFalse(report["releaseReady"])
@@ -117,11 +159,12 @@ class VerifyRealGeometryReleaseTest(unittest.TestCase):
             splits = base / "splits"
             splits.mkdir()
             self.make_splits(splits)
+            candidate, _ = self.make_candidate(base)
             evidence = base / "evidence"
             evidence.mkdir()
 
             with self.assertRaisesRegex(RuntimeError, "contains no samples"):
-                verifier.verify(splits, evidence)
+                verifier.verify(splits, evidence, candidate)
 
     def test_runtime_gate_failure_is_rejected_without_python_threshold_override(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -129,14 +172,30 @@ class VerifyRealGeometryReleaseTest(unittest.TestCase):
             splits = base / "splits"
             splits.mkdir()
             sample_id = self.make_splits(splits)
+            candidate, digest = self.make_candidate(base)
             evidence = base / "evidence"
-            payload = self.passing_evidence(sample_id)
+            payload = self.passing_evidence(sample_id, digest)
             payload["geometryQualityGatePassed"] = False
             payload["endToEnd2dTo3dGeometryGatesPassed"] = False
-            self.write_evidence(evidence, sample_id, payload)
+            self.write_evidence(evidence, sample_id, digest, payload)
 
             with self.assertRaisesRegex(ValueError, "geometryQualityGatePassed"):
-                verifier.verify(splits, evidence)
+                verifier.verify(splits, evidence, candidate)
+
+    def test_geometry_evidence_from_different_model_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = pathlib.Path(tmp)
+            splits = base / "splits"
+            splits.mkdir()
+            sample_id = self.make_splits(splits)
+            candidate, digest = self.make_candidate(base)
+            evidence = base / "evidence"
+            wrong_digest = "f" * 64
+            self.assertNotEqual(wrong_digest, digest)
+            self.write_evidence(evidence, sample_id, wrong_digest)
+
+            with self.assertRaisesRegex(ValueError, "modelSha256"):
+                verifier.verify(splits, evidence, candidate)
 
     def test_private_source_field_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -144,13 +203,14 @@ class VerifyRealGeometryReleaseTest(unittest.TestCase):
             splits = base / "splits"
             splits.mkdir()
             sample_id = self.make_splits(splits)
+            candidate, digest = self.make_candidate(base)
             evidence = base / "evidence"
-            payload = self.passing_evidence(sample_id)
+            payload = self.passing_evidence(sample_id, digest)
             payload["sourcePath"] = "/storage/emulated/0/client-villa.png"
-            self.write_evidence(evidence, sample_id, payload)
+            self.write_evidence(evidence, sample_id, digest, payload)
 
             with self.assertRaisesRegex(ValueError, "forbidden private source fields"):
-                verifier.verify(splits, evidence)
+                verifier.verify(splits, evidence, candidate)
 
     def test_unexpected_extra_evidence_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -158,13 +218,14 @@ class VerifyRealGeometryReleaseTest(unittest.TestCase):
             splits = base / "splits"
             splits.mkdir()
             sample_id = self.make_splits(splits)
+            candidate, digest = self.make_candidate(base)
             evidence = base / "evidence"
-            self.write_evidence(evidence, sample_id)
+            self.write_evidence(evidence, sample_id, digest)
             extra = "sample-" + "4" * 32
-            self.write_evidence(evidence, extra)
+            self.write_evidence(evidence, extra, digest)
 
             with self.assertRaisesRegex(RuntimeError, "does not exactly match"):
-                verifier.verify(splits, evidence)
+                verifier.verify(splits, evidence, candidate)
 
 
 if __name__ == "__main__":

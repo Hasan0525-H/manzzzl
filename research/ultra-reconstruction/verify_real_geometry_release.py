@@ -3,8 +3,10 @@
 
 The Android runtime remains the only authority for wall fidelity, local mismatch/topology integrity and
 reconstruction readiness thresholds. For every opaque sample in ``splits/test`` it exports one stable
-``*.geometry.json`` evidence file through ``EndToEndGeometryReleaseGate``. This verifier checks that the
-evidence set exactly matches the untouched test split and that every production gate passed.
+``*.geometry.json`` evidence file through ``EndToEndGeometryReleaseGate``. Every evidence file is bound
+to the exact ONNX candidate SHA256. This verifier checks the candidate's real-training attestation,
+recomputes the ONNX digest, requires exact held-out sample coverage, and requires every production gate
+to have passed.
 
 No source paths, original filenames, raw raster hashes or user labels are accepted as release evidence.
 """
@@ -16,6 +18,7 @@ import json
 import pathlib
 import re
 
+import evaluate_real_student_test
 import verify_real_training_inputs
 
 OPAQUE_SAMPLE_ID = re.compile(r"^sample-[0-9a-f]{32}$")
@@ -99,16 +102,17 @@ def _count(payload: dict, key: str) -> int:
     return value
 
 
-def load_sample(path: pathlib.Path, expected_id: str) -> dict:
+def load_sample(path: pathlib.Path, expected_id: str, expected_model_sha256: str) -> dict:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise ValueError(f"geometry evidence must be a JSON object: {path.name}")
     _reject_forbidden_source_fields(payload)
 
     required = {
-        "schema": 1,
+        "schema": 2,
         "pipeline": "manzl-runtime-end-to-end-geometry-gates",
         "sampleId": expected_id,
+        "modelSha256": expected_model_sha256,
         "sourcePathsStored": False,
         "sourceFilenamesStored": False,
         "rawRasterHashesStored": False,
@@ -135,9 +139,12 @@ def load_sample(path: pathlib.Path, expected_id: str) -> dict:
     return payload
 
 
-def verify(split_root: pathlib.Path, evidence_root: pathlib.Path) -> dict:
+def verify(split_root: pathlib.Path, evidence_root: pathlib.Path, candidate: pathlib.Path) -> dict:
     split_root = split_root.resolve()
+    candidate = candidate.resolve()
     expected = expected_test_ids(split_root)
+    model_path, training_attestation = evaluate_real_student_test.load_candidate(candidate)
+    model_sha256 = training_attestation["sha256"]
     evidence = discover_evidence(evidence_root)
     actual = set(evidence)
     missing = sorted(expected - actual)
@@ -148,7 +155,10 @@ def verify(split_root: pathlib.Path, evidence_root: pathlib.Path) -> dict:
             f"missing={missing[:8]} unexpected={unexpected[:8]}"
         )
 
-    samples = [load_sample(evidence[sample_id], sample_id) for sample_id in sorted(expected)]
+    samples = [
+        load_sample(evidence[sample_id], sample_id, model_sha256)
+        for sample_id in sorted(expected)
+    ]
     mins = {key: min(float(sample[key]) for sample in samples) for key in RATIO_FIELDS}
     means = {
         key: sum(float(sample[key]) for sample in samples) / len(samples)
@@ -156,8 +166,13 @@ def verify(split_root: pathlib.Path, evidence_root: pathlib.Path) -> dict:
     }
 
     return {
-        "schema": 1,
+        "schema": 2,
         "pipeline": "manzl-held-out-real-plan-end-to-end-geometry-release-gate",
+        "model": model_path.name,
+        "modelSha256": model_sha256,
+        "modelBytes": model_path.stat().st_size,
+        "candidateTrainingAttestationVerified": True,
+        "geometryEvidenceBoundToExactModelDigest": True,
         "testSamples": len(samples),
         "evidenceSamples": len(samples),
         "exactHeldOutSampleCoverage": True,
@@ -171,9 +186,9 @@ def verify(split_root: pathlib.Path, evidence_root: pathlib.Path) -> dict:
         "releaseGeometryEvidencePassed": True,
         "releaseReady": False,
         "reason": (
-            "Held-out geometry evidence passed using production runtime decisions only. Final model "
-            "release still requires combining this attestation with the matching semantic final-test "
-            "attestation and model digest."
+            "Held-out geometry evidence passed using production runtime decisions and is bound to the "
+            "verified ONNX candidate digest. Final release still requires combining this attestation "
+            "with the matching semantic final-test attestation and an explicit semantic acceptance policy."
         ),
     }
 
@@ -182,13 +197,14 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--splits", type=pathlib.Path, required=True)
     parser.add_argument("--evidence", type=pathlib.Path, required=True)
+    parser.add_argument("--candidate", type=pathlib.Path, required=True)
     parser.add_argument("--output", type=pathlib.Path)
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
-    report = verify(args.splits, args.evidence)
+    report = verify(args.splits, args.evidence, args.candidate)
     text = json.dumps(report, indent=2, sort_keys=True)
     if args.output is not None:
         args.output.parent.mkdir(parents=True, exist_ok=True)

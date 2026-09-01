@@ -15,11 +15,13 @@ import org.junit.Test
 class EndToEndGeometryReleaseGateTest {
 
     @Test
-    fun `clean production-ready plan emits passing evidence without private source data`() {
+    fun `clean production-ready plan emits model-bound passing evidence without private source data`() {
         val report = EndToEndGeometryReleaseGate.evaluate(cleanPlan())
 
         assertTrue(report.passed)
-        val json = report.toEvidenceJson("sample-33333333333333333333333333333333")
+        val json = report.toEvidenceJson(SAMPLE_ID, MODEL_SHA)
+        assertTrue(json.contains("\"schema\": 2"))
+        assertTrue(json.contains("\"modelSha256\": \"$MODEL_SHA\""))
         assertTrue(json.contains("\"geometryFidelityPass\": true"))
         assertTrue(json.contains("\"geometryQualityGatePassed\": true"))
         assertTrue(json.contains("\"reconstructionReadinessGatePassed\": true"))
@@ -50,7 +52,7 @@ class EndToEndGeometryReleaseGateTest {
 
         assertFalse(report.geometryQualityGatePassed)
         assertFalse(report.passed)
-        assertTrue(report.toEvidenceJson("sample-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        assertTrue(report.toEvidenceJson("sample-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", MODEL_SHA)
             .contains("\"endToEnd2dTo3dGeometryGatesPassed\": false"))
     }
 
@@ -72,7 +74,13 @@ class EndToEndGeometryReleaseGateTest {
     @Test(expected = IllegalArgumentException::class)
     fun `raw source-like sample id is rejected`() {
         EndToEndGeometryReleaseGate.evaluate(cleanPlan())
-            .toEvidenceJson("riyadh-villa-client-17")
+            .toEvidenceJson("riyadh-villa-client-17", MODEL_SHA)
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun `non sha256 model identity is rejected`() {
+        EndToEndGeometryReleaseGate.evaluate(cleanPlan())
+            .toEvidenceJson(SAMPLE_ID, "not-a-model-digest")
     }
 
     private fun cleanPlan() = FloorPlan(
@@ -117,4 +125,9 @@ class EndToEndGeometryReleaseGateTest {
         ),
         confidence = 0.95f,
     )
+
+    companion object {
+        private const val SAMPLE_ID = "sample-33333333333333333333333333333333"
+        private const val MODEL_SHA = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
 }
