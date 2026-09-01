@@ -11,6 +11,12 @@ not hallucinate wall thickness from room boundaries. Room polygon edges become `
 supervision, while predicted door/window polygons become semantic evidence. Exact wall faces still
 come from MITUNet/CubiCasa/OpenCV/MobileSAM and are adjudicated against the original raster.
 
+Important consensus contract: Raster2Seq must *abstain* from classes it does not predict. Therefore the
+adapter exports only door/window/room-boundary class names and marks only emitted evidence pixels as
+valid. It never emits implicit background, wall-face, stair, column, courtyard or shaft supervision.
+This prevents a missing Raster2Seq channel from being misread as negative evidence against another
+teacher that actually measures that class.
+
 The output format is consumed by ``build_teacher_consensus.py``.
 """
 
@@ -24,18 +30,15 @@ import pathlib
 import cv2
 import numpy as np
 
-SEMANTIC_CLASSES = [
-    "background",
-    "wall_face",
+# These are the only semantic classes the official saved Raster2Seq vectors can support directly.
+# Keep this list local/compact: build_teacher_consensus.py maps the names into Manzl's global class
+# order and treats every omitted class as an abstention.
+EVIDENCE_CLASSES = [
     "door",
     "window",
-    "stair",
-    "column",
     "room_boundary",
-    "courtyard",
-    "shaft",
 ]
-CLASS = {name: index for index, name in enumerate(SEMANTIC_CLASSES)}
+CLASS = {name: index for index, name in enumerate(EVIDENCE_CLASSES)}
 
 CC5K_WINDOW = 9
 CC5K_DOOR = 10
@@ -59,6 +62,7 @@ def clipped_int_points(points: np.ndarray, width: int, height: int) -> np.ndarra
 
 def draw_room_boundary(
     semantic: np.ndarray,
+    valid_mask: np.ndarray,
     corners: np.ndarray,
     orientation: np.ndarray,
     points: np.ndarray,
@@ -74,6 +78,14 @@ def draw_room_boundary(
         [integer],
         isClosed=True,
         color=int(CLASS["room_boundary"]),
+        thickness=line_width,
+        lineType=cv2.LINE_8,
+    )
+    cv2.polylines(
+        valid_mask,
+        [integer],
+        isClosed=True,
+        color=1,
         thickness=line_width,
         lineType=cv2.LINE_8,
     )
@@ -100,12 +112,18 @@ def draw_room_boundary(
         orientation[1, active] = uy
 
 
-def fill_instance(semantic: np.ndarray, points: np.ndarray, class_name: str) -> None:
+def fill_instance(
+    semantic: np.ndarray,
+    valid_mask: np.ndarray,
+    points: np.ndarray,
+    class_name: str,
+) -> None:
     height, width = semantic.shape
     integer = clipped_int_points(points, width, height)
     if len(integer) < 3:
         return
     cv2.fillPoly(semantic, [integer], color=int(CLASS[class_name]), lineType=cv2.LINE_8)
+    cv2.fillPoly(valid_mask, [integer], color=1, lineType=cv2.LINE_8)
 
 
 def load_image(save_root: pathlib.Path, stem: str) -> np.ndarray:
@@ -134,6 +152,7 @@ def adapt_one(
     image = load_image(save_root, stem)
     height, width = image.shape[:2]
     semantic = np.zeros((height, width), dtype=np.uint8)
+    valid_mask = np.zeros((height, width), dtype=np.uint8)
     corners = np.zeros((height, width), dtype=np.float32)
     orientation = np.zeros((2, height, width), dtype=np.float32)
 
@@ -159,14 +178,26 @@ def adapt_one(
             room_polygons.append(points)
 
     for points in room_polygons:
-        draw_room_boundary(semantic, corners, orientation, points, line_width=line_width)
+        draw_room_boundary(
+            semantic,
+            valid_mask,
+            corners,
+            orientation,
+            points,
+            line_width=line_width,
+        )
     for points, class_name in openings:
-        fill_instance(semantic, points, class_name)
+        fill_instance(semantic, valid_mask, points, class_name)
 
-    # Only emitted room-boundary pixels own orientation supervision.
-    orientation_mask = (semantic == CLASS["room_boundary"]).astype(np.float32)
+    # Only emitted room-boundary pixels own orientation supervision. Opening polygons can overwrite a
+    # room-boundary label, so require both a boundary local class and a valid evidence pixel.
+    orientation_mask = (
+        (semantic == CLASS["room_boundary"]) & (valid_mask > 0)
+    ).astype(np.float32)
     orientation *= orientation_mask[None, ...]
-    valid_mask = np.ones((height, width), dtype=np.uint8)
+
+    # Confidence is meaningful only where valid_mask=1. Keeping a dense array preserves the generic
+    # teacher contract while valid_mask makes all other pixels explicit abstentions.
     teacher_confidence = np.full((height, width), confidence, dtype=np.float32)
 
     destination = output_root / f"{stem}.npz"
@@ -175,14 +206,14 @@ def adapt_one(
         destination,
         image=image,
         semantic=semantic.astype(np.int64),
-        semantic_classes=np.asarray(SEMANTIC_CLASSES, dtype="U32"),
+        semantic_classes=np.asarray(EVIDENCE_CLASSES, dtype="U32"),
         confidence=teacher_confidence,
         valid_mask=valid_mask,
         corners=corners,
         corner_confidence=teacher_confidence,
         orientation=orientation,
         orientation_mask=orientation_mask,
-        teacher_format=np.asarray(["raster2seq-official-json"], dtype="U48"),
+        teacher_format=np.asarray(["raster2seq-official-json-v2-abstaining"], dtype="U64"),
     )
     return destination
 
