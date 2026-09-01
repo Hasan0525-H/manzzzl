@@ -10,9 +10,9 @@ import com.manzl.app.model.VerticalVoidRoomPolicy
  * Stacks independently measured floor-plan meshes at their declared base elevations.
  *
  * No X/Z registration correction is applied here. Verified structural columns are appended as solid
- * prisms. Trusted vertical-void room faces (service/elevator shafts) are omitted from floor/ceiling
- * generation only after ReconstructionReadinessGate has proved they are independent planar faces, so
- * the omission creates a real hole rather than silently filling the shaft with a rectangular slab.
+ * prisms. Floor/ceiling surfaces are replaced with [RoomSurfaceMeshBuilder], which has no rectangular
+ * fallback, subtracts nested shafts, preserves open-air voids on upper levels and cuts bounded
+ * stairwells instead of deleting a whole room ceiling.
  */
 internal object BuildingMeshBuilder {
 
@@ -29,13 +29,28 @@ internal object BuildingMeshBuilder {
                     )
                 }
             )
-            val surfacePlan = staticPlan.copy(
+
+            // HouseMeshBuilder remains responsible for measured walls/openings/joinery. Its legacy
+            // floor/ceiling arrays are deliberately discarded below so fallback rectangles can never
+            // re-enter a building that passed ReconstructionReadinessGate.
+            val wallAndJoineryPlan = staticPlan.copy(
                 rooms = staticPlan.rooms.filterNot(VerticalVoidRoomPolicy::isVerticalVoid),
             )
-            val houseMesh = HouseMeshBuilder.build(
-                plan = surfacePlan,
+            val legacyMesh = HouseMeshBuilder.build(
+                plan = wallAndJoineryPlan,
                 wallHeightOverride = design.wallHeightMeters,
                 doorHeightOverride = design.doorHeightMeters,
+            )
+            val surfaces = RoomSurfaceMeshBuilder.build(
+                plan = staticPlan,
+                ceilingHeightMeters = design.wallHeightMeters,
+                levelIndex = level.levelIndex,
+            )
+            val houseMesh = legacyMesh.copy(
+                floorVertices = surfaces.floorVertices,
+                floorIndices = surfaces.floorIndices,
+                ceilingVertices = surfaces.ceilingVertices,
+                ceilingIndices = surfaces.ceilingIndices,
             )
             val columnMesh = StructuralColumnMeshBuilder.build(
                 plan = staticPlan,
