@@ -18,6 +18,7 @@ if str(HERE) not in sys.path:
 
 import adapt_raster2seq_predictions as raster2seq  # noqa: E402
 import build_teacher_consensus as consensus  # noqa: E402
+import run_raster2seq_teacher as raster2seq_runner  # noqa: E402
 
 
 class Raster2Graph512ContractTest(unittest.TestCase):
@@ -105,6 +106,26 @@ class Raster2Graph512ContractTest(unittest.TestCase):
                     confidence=0.90,
                     line_width=2,
                 )
+
+    def test_only_upstream_runtime_cache_buffers_are_ignorable(self) -> None:
+        accepted = [
+            "transformer.decoder.layers.0.kv_cache.k_cache",
+            "transformer.decoder.layers.0.kv_cache.v_cache",
+            "transformer.decoder.layers.5.cross_attn.cache.v_cache",
+        ]
+        rejected = [
+            "transformer.decoder.layers.0.self_attn.k_cache",
+            "transformer.decoder.layers.0.cross_attn.cache.k_cache",
+            "transformer.decoder.layers.0.cross_attn.value_proj.weight",
+            "backbone.0.body.layer1.0.conv1.weight",
+            "kv_cache.learned_weight",
+        ]
+        for key in accepted:
+            with self.subTest(key=key):
+                self.assertTrue(raster2seq_runner.is_runtime_cache_state_key(key))
+        for key in rejected:
+            with self.subTest(key=key):
+                self.assertFalse(raster2seq_runner.is_runtime_cache_state_key(key))
 
 
 if __name__ == "__main__":
