@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """Evaluate a trained Manzl real-plan candidate on the untouched final test split.
 
-A pre-registered semantic policy is mandatory and must have been locked from private real validation
-before any held-out test artifact exists. Passing that relative policy is necessary but not sufficient:
-a weak validation model must never be able to manufacture a weak release threshold for itself. The
-held-out test must therefore also clear fixed absolute engineering floors for every critical semantic
-class, corners and wall orientation. The final semantic attestation still cannot make the model
-release-ready until the independent end-to-end geometry evidence passes.
+The candidate must come from a release-scale real corpus and be cryptographically bound to the exact
+train/validation/test NPZ artifacts measured during training. Before touching held-out test metrics this
+step re-measures all split membership/artifact fingerprints and rejects any substitution. Passing the
+validation-derived semantic policy is necessary but not sufficient: the held-out test must also clear
+immutable absolute engineering floors for every critical class, corners and wall orientation.
 """
 
 from __future__ import annotations
@@ -16,17 +15,17 @@ import hashlib
 import json
 import math
 import pathlib
+import re
 import subprocess
 import sys
 
 import real_semantic_policy
+import release_corpus_scale
 import verify_real_training_inputs
 
 HERE = pathlib.Path(__file__).resolve().parent
+HEX64 = re.compile(r"^[0-9a-f]{64}$")
 
-# Product-quality floors. Validation-derived Wilson/Hoeffding bounds may only raise the effective bar;
-# they can never lower these minimums. These are intentionally strict because a semantic miss can
-# create or remove physical geometry downstream.
 ABSOLUTE_CLASS_FLOORS = {
     "wall_face": {"iou": 0.85, "precision": 0.92, "recall": 0.92},
     "door": {"iou": 0.55, "precision": 0.80, "recall": 0.75},
@@ -41,6 +40,13 @@ ABSOLUTE_CORNER_PRECISION_MIN = 0.80
 ABSOLUTE_CORNER_RECALL_MIN = 0.80
 ABSOLUTE_ORIENTATION_COSINE_MIN = 0.95
 ABSOLUTE_ORIENTATION_ANGLE_MAX_DEGREES = 10.0
+
+
+def _required_digest(attestation: dict, key: str) -> str:
+    value = attestation.get(key)
+    if not isinstance(value, str) or HEX64.fullmatch(value) is None:
+        raise ValueError(f"candidate attestation contains invalid {key}")
+    return value
 
 
 def load_candidate(candidate: pathlib.Path) -> tuple[pathlib.Path, dict]:
@@ -58,6 +64,12 @@ def load_candidate(candidate: pathlib.Path) -> tuple[pathlib.Path, dict]:
         "pipeline": "manzl-private-real-student-release-candidate",
         "trainingSplit": "train",
         "modelSelectionSplit": "validation",
+        "validationMetricsExactSplitCoverage": True,
+        "releaseCorpusScalePreflightPassed": True,
+        "releaseCorpusScalePolicyVersion": 1,
+        "splitArtifactsStableAcrossTraining": True,
+        "artifactFingerprintIsAggregateOnly": True,
+        "perSampleContentHashesStored": False,
         "testSplitPresentAndVerified": True,
         "testUsedForTraining": False,
         "testUsedForModelSelection": False,
@@ -72,12 +84,43 @@ def load_candidate(candidate: pathlib.Path) -> tuple[pathlib.Path, dict]:
                 f"candidate attestation contract failed for {key}: "
                 f"{attestation.get(key)!r} != {expected!r}"
             )
+    for key in (
+        "trainSetFingerprint",
+        "validationSetFingerprint",
+        "testSetFingerprint",
+        "trainArtifactFingerprint",
+        "validationArtifactFingerprint",
+        "testArtifactFingerprint",
+    ):
+        _required_digest(attestation, key)
+    validation = attestation.get("validationEvaluation")
+    if not isinstance(validation, dict) or validation.get("schema") != 2 or validation.get("domain") != "private-real-validation":
+        raise ValueError("candidate attestation contains invalid private-real validation evidence")
+    if validation.get("releaseReady") is not False:
+        raise ValueError("candidate validation evidence must remain non-release")
+
     digest = hashlib.sha256(model_path.read_bytes()).hexdigest()
     if attestation.get("sha256") != digest:
         raise RuntimeError("candidate ONNX SHA256 does not match its real-training attestation")
     if int(attestation.get("bytes", -1)) != model_path.stat().st_size:
         raise RuntimeError("candidate ONNX byte size does not match its real-training attestation")
     return model_path, attestation
+
+
+def assert_candidate_split_binding(attestation: dict, preflight: dict) -> None:
+    membership = preflight.get("opaqueSplitSetFingerprints")
+    artifacts = preflight.get("opaqueSplitArtifactFingerprints")
+    if not isinstance(membership, dict) or not isinstance(artifacts, dict):
+        raise ValueError("real split preflight is missing split fingerprint evidence")
+    for split in ("train", "validation", "test"):
+        title = split.capitalize()
+        if attestation.get(f"{split}SetFingerprint") != membership.get(split):
+            raise RuntimeError(f"candidate {split} split membership fingerprint no longer matches training")
+        if attestation.get(f"{split}ArtifactFingerprint") != artifacts.get(split):
+            raise RuntimeError(f"candidate {split} NPZ artifact fingerprint no longer matches training")
+    validation = attestation.get("validationEvaluation")
+    if validation.get("samples") != preflight.get("validationSamples"):
+        raise RuntimeError("candidate validation metrics no longer match the bound validation split size")
 
 
 def build_test_command(model_path: pathlib.Path, splits: pathlib.Path, output: pathlib.Path, size: int) -> list[str]:
@@ -118,12 +161,10 @@ def _finite_ratio(value: object, label: str) -> float:
 
 
 def absolute_semantic_quality(metrics: dict) -> dict:
-    """Apply immutable release floors that validation can never weaken."""
     if metrics.get("schema") != 2 or metrics.get("domain") != "private-real-held-out-test":
         raise ValueError("absolute semantic quality requires private-real-held-out-test schema 2 metrics")
     if metrics.get("releaseReady") is not False:
         raise ValueError("raw semantic metrics must remain non-release")
-
     semantic = metrics.get("semantic")
     if not isinstance(semantic, dict) or not isinstance(semantic.get("perClass"), dict):
         raise ValueError("absolute semantic quality requires per-class evidence")
@@ -141,27 +182,16 @@ def absolute_semantic_quality(metrics: dict) -> dict:
         for metric_name, minimum in floors.items():
             actual = _finite_ratio(item.get(metric_name), f"{class_name}.{metric_name}")
             passed = actual + 1e-12 >= minimum
-            checks[f"class:{class_name}:{metric_name}"] = {
-                "actual": actual,
-                "minimum": minimum,
-                "passed": passed,
-            }
+            checks[f"class:{class_name}:{metric_name}"] = {"actual": actual, "minimum": minimum, "passed": passed}
             all_pass = all_pass and passed
 
     corners = metrics.get("corners")
     if not isinstance(corners, dict) or corners.get("thresholdMatchesAndroidCornerSnap") is not True:
         raise ValueError("absolute semantic quality requires corners at the Android runtime threshold")
-    for metric_name, minimum in (
-        ("precision", ABSOLUTE_CORNER_PRECISION_MIN),
-        ("recall", ABSOLUTE_CORNER_RECALL_MIN),
-    ):
+    for metric_name, minimum in (("precision", ABSOLUTE_CORNER_PRECISION_MIN), ("recall", ABSOLUTE_CORNER_RECALL_MIN)):
         actual = _finite_ratio(corners.get(metric_name), f"corners.{metric_name}")
         passed = actual + 1e-12 >= minimum
-        checks[f"corners:{metric_name}"] = {
-            "actual": actual,
-            "minimum": minimum,
-            "passed": passed,
-        }
+        checks[f"corners:{metric_name}"] = {"actual": actual, "minimum": minimum, "passed": passed}
         all_pass = all_pass and passed
 
     orientation = metrics.get("orientation")
@@ -169,20 +199,12 @@ def absolute_semantic_quality(metrics: dict) -> dict:
         raise ValueError("absolute semantic quality requires sign-invariant orientation evidence")
     support = orientation.get("supportPixels")
     support_pass = isinstance(support, int) and not isinstance(support, bool) and support > 0
-    checks["orientation:support"] = {
-        "actual": support,
-        "minimumExclusive": 0,
-        "passed": support_pass,
-    }
+    checks["orientation:support"] = {"actual": support, "minimumExclusive": 0, "passed": support_pass}
     all_pass = all_pass and support_pass
 
     cosine = _finite_ratio(orientation.get("meanAbsCosine"), "orientation.meanAbsCosine")
     cosine_pass = cosine + 1e-12 >= ABSOLUTE_ORIENTATION_COSINE_MIN
-    checks["orientation:meanAbsCosine"] = {
-        "actual": cosine,
-        "minimum": ABSOLUTE_ORIENTATION_COSINE_MIN,
-        "passed": cosine_pass,
-    }
+    checks["orientation:meanAbsCosine"] = {"actual": cosine, "minimum": ABSOLUTE_ORIENTATION_COSINE_MIN, "passed": cosine_pass}
     all_pass = all_pass and cosine_pass
 
     angle = orientation.get("meanAngularErrorDegrees")
@@ -214,21 +236,18 @@ def evaluate(args: argparse.Namespace) -> dict:
     splits = args.splits.resolve()
     candidate = args.candidate.resolve()
     preflight = verify_real_training_inputs.verify(splits)
+    release_corpus_scale.require(preflight)
     if preflight.get("testReservedForFinalEvaluation") is not True:
         raise RuntimeError("real split preflight does not reserve test for final evaluation")
 
     model_path, training_attestation = load_candidate(candidate)
+    assert_candidate_split_binding(training_attestation, preflight)
     result_path = candidate / "final-test-eval.json"
     attestation_path = candidate / "final-test-attestation.json"
     if result_path.exists() or attestation_path.exists():
         raise FileExistsError("final test evaluation already exists; refusing to overwrite held-out evidence")
 
-    locked_policy, policy_sha = real_semantic_policy.load_locked_policy(
-        args.policy,
-        candidate,
-        require_pre_test=True,
-    )
-
+    locked_policy, policy_sha = real_semantic_policy.load_locked_policy(args.policy, candidate, require_pre_test=True)
     command = build_test_command(model_path, splits, result_path, args.size)
     assert_final_command_uses_only_test(command, splits)
     subprocess.run(command, check=True)
@@ -239,6 +258,14 @@ def evaluate(args: argparse.Namespace) -> dict:
         raise RuntimeError("held-out semantic evidence has incorrect evaluator provenance")
     if metrics.get("releaseReady") is not False:
         raise RuntimeError("semantic evaluator must never declare a release model")
+    if metrics.get("samples") != preflight.get("testSamples"):
+        raise RuntimeError("held-out semantic evaluator did not cover the exact full bound test split")
+
+    # Re-measure after held-out inference too, preventing mutation while the evaluator is running.
+    postflight = verify_real_training_inputs.verify(splits)
+    assert_candidate_split_binding(training_attestation, postflight)
+    if postflight["opaqueSplitArtifactFingerprints"] != preflight["opaqueSplitArtifactFingerprints"]:
+        raise RuntimeError("real-plan split artifacts changed while final semantic evaluation was running")
 
     acceptance = real_semantic_policy.evaluate_metrics(locked_policy, metrics)
     absolute_quality = absolute_semantic_quality(metrics)
@@ -246,6 +273,7 @@ def evaluate(args: argparse.Namespace) -> dict:
     absolute_pass = absolute_quality.get("absoluteSemanticQualityPassed") is True
     semantic_pass = relative_pass and absolute_pass
     test_fingerprint = preflight["opaqueSplitSetFingerprints"]["test"]
+    test_artifact_fingerprint = preflight["opaqueSplitArtifactFingerprints"]["test"]
     final = {
         "schema": 3,
         "pipeline": "manzl-private-real-student-final-test",
@@ -255,7 +283,13 @@ def evaluate(args: argparse.Namespace) -> dict:
         "testSamples": preflight["testSamples"],
         "testSourceGroups": preflight["testSourceGroups"],
         "testSetFingerprint": test_fingerprint,
+        "testArtifactFingerprint": test_artifact_fingerprint,
+        "candidateSplitBindingsVerified": True,
+        "splitArtifactsStableAcrossFinalSemanticEvaluation": True,
+        "releaseCorpusScaleVerifiedAtFinalTest": True,
+        "semanticMetricsExactHeldOutSampleCoverage": True,
         "fingerprintContainsOnlyOpaqueSampleIds": True,
+        "artifactFingerprintIsAggregateOnly": True,
         "testMetrics": metrics,
         "semanticPolicySha256": policy_sha,
         "semanticAcceptanceEvaluation": acceptance,
@@ -274,13 +308,9 @@ def evaluate(args: argparse.Namespace) -> dict:
         "geometryGatesEvaluatedByThisStep": False,
         "releaseReady": False,
         "reason": (
-            "Semantic held-out acceptance and immutable absolute quality floors passed; release still requires independent end-to-end geometry evidence."
+            "The exact bound held-out test split passed relative semantic acceptance and immutable absolute quality floors; release still requires independent end-to-end geometry evidence."
             if semantic_pass
-            else (
-                "Semantic held-out test failed immutable absolute product-quality floors."
-                if relative_pass and not absolute_pass
-                else "Semantic held-out test failed the pre-registered validation-derived policy and/or immutable absolute product-quality floors."
-            )
+            else "The exact bound held-out test split failed the relative and/or immutable absolute semantic quality gate."
         ),
     }
     attestation_path.write_text(json.dumps(final, indent=2, sort_keys=True), encoding="utf-8")
