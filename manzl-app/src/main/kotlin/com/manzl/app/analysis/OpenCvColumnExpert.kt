@@ -8,22 +8,24 @@ import org.opencv.android.OpenCVLoader
 import org.opencv.core.CvType
 import org.opencv.core.Mat
 import org.opencv.core.MatOfPoint
-import org.opencv.core.MatOfPoint2f
 import org.opencv.core.Point
 import org.opencv.imgproc.Imgproc
+import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.atan2
+import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.sin
 import kotlin.math.sqrt
 
 /**
  * Independent deterministic compact-structure expert for architectural columns.
  *
- * It searches the same source structural raster for compact near-rectangular contours, converts the
- * oriented rectangle to metric coordinates, and verifies ink support along all four measured faces.
- * This path does not need the distilled student, so a clean CAD/scan can still recover columns when
- * neural weights are unavailable. It intentionally misses ambiguous connected shapes rather than
- * interpreting text or wall intersections as columns.
+ * The OpenCV Android Maven binding has changed some generated RotatedRect helpers across releases.
+ * To keep this expert portable, OpenCV is used only for contour extraction; oriented fitting,
+ * rectangularity and face support are computed here deterministically from the contour points.
+ * This also makes the geometry easy to unit-test without depending on JNI-specific helper methods.
  */
 internal object OpenCvColumnExpert {
 
@@ -67,53 +69,35 @@ internal object OpenCvColumnExpert {
             for (contour in contours) {
                 if (contour.rows() < MIN_CONTOUR_POINTS) continue
                 val points = contour.toArray()
-                val contour2f = MatOfPoint2f(*points)
-                val rect = try {
-                    Imgproc.minAreaRect(contour2f)
-                } finally {
-                    contour2f.release()
-                }
-
-                val rawWidth = abs(rect.size.width).toFloat()
-                val rawHeight = abs(rect.size.height).toFloat()
+                val fitted = orientedBounds(points) ?: continue
+                val rawWidth = fitted.majorSpan
+                val rawHeight = fitted.minorSpan
                 if (rawWidth < MIN_RECT_PIXELS || rawHeight < MIN_RECT_PIXELS) continue
+
                 val rectAreaPx = rawWidth * rawHeight
                 if (rectAreaPx <= 1f) continue
-                val contourAreaPx = abs(Imgproc.contourArea(contour)).toFloat()
+                val contourAreaPx = polygonArea(points)
                 val rectangularity = (contourAreaPx / rectAreaPx).coerceIn(0f, 1f)
                 if (rectangularity < MIN_RECTANGULARITY) continue
 
-                val majorPx: Float
-                val minorPx: Float
-                var rotation = rect.angle.toFloat()
-                if (rawWidth >= rawHeight) {
-                    majorPx = rawWidth
-                    minorPx = rawHeight
-                } else {
-                    majorPx = rawHeight
-                    minorPx = rawWidth
-                    rotation += 90f
-                }
-                val majorMeters = majorPx / pixelsPerMeter
-                val minorMeters = minorPx / pixelsPerMeter
+                val majorMeters = rawWidth / pixelsPerMeter
+                val minorMeters = rawHeight / pixelsPerMeter
                 if (majorMeters !in MIN_COLUMN_METERS..MAX_COLUMN_METERS) continue
                 if (minorMeters !in MIN_COLUMN_METERS..MAX_COLUMN_METERS) continue
                 if (majorMeters / minorMeters.coerceAtLeast(0.001f) > MAX_ASPECT_RATIO) continue
                 val areaMeters = majorMeters * minorMeters
                 if (areaMeters !in MIN_AREA_SQ_METERS..MAX_AREA_SQ_METERS) continue
 
-                val rectPoints = Array(4) { Point() }
-                rect.points(rectPoints)
                 val borderSupport = rectangleBorderSupport(
                     mask = structural.mask,
                     width = working.width,
                     height = working.height,
-                    corners = rectPoints,
+                    corners = fitted.corners,
                 )
                 if (borderSupport < MIN_BORDER_SUPPORT) continue
                 proposed++
 
-                val center = transform.imageToPlan(rect.center.x.toFloat(), rect.center.y.toFloat())
+                val center = transform.imageToPlan(fitted.center.x.toFloat(), fitted.center.y.toFloat())
                 val confidence = (
                     BASE_CONFIDENCE +
                         rectangularity * RECTANGULARITY_WEIGHT +
@@ -123,7 +107,7 @@ internal object OpenCvColumnExpert {
                     center = center,
                     widthMeters = majorMeters,
                     depthMeters = minorMeters,
-                    rotationDegrees = normalizeHalfTurn(rotation),
+                    rotationDegrees = normalizeHalfTurn(fitted.rotationDegrees),
                     confidence = confidence,
                 )
                 if (seed.columns.any { existing -> duplicate(existing, candidate) }) continue
@@ -147,6 +131,104 @@ internal object OpenCvColumnExpert {
             binary.release()
             if (working !== source && !working.isRecycled) working.recycle()
         }
+    }
+
+    /** PCA fit followed by exact min/max projection gives a stable oriented box for compact contours. */
+    internal fun orientedBounds(points: Array<Point>): OrientedBounds? {
+        if (points.size < MIN_CONTOUR_POINTS) return null
+        val meanX = points.sumOf { it.x } / points.size
+        val meanY = points.sumOf { it.y } / points.size
+        var xx = 0.0
+        var yy = 0.0
+        var xy = 0.0
+        for (point in points) {
+            val dx = point.x - meanX
+            val dy = point.y - meanY
+            xx += dx * dx
+            yy += dy * dy
+            xy += dx * dy
+        }
+        xx /= points.size
+        yy /= points.size
+        xy /= points.size
+        if (xx + yy <= 1e-8) return null
+
+        val angle = 0.5 * atan2(2.0 * xy, xx - yy)
+        var ux = cos(angle)
+        var uy = sin(angle)
+        var nx = -uy
+        var ny = ux
+
+        fun projection(point: Point, ax: Double, ay: Double): Double = point.x * ax + point.y * ay
+        var minU = Double.POSITIVE_INFINITY
+        var maxU = Double.NEGATIVE_INFINITY
+        var minN = Double.POSITIVE_INFINITY
+        var maxN = Double.NEGATIVE_INFINITY
+        for (point in points) {
+            val u = projection(point, ux, uy)
+            val n = projection(point, nx, ny)
+            minU = min(minU, u)
+            maxU = max(maxU, u)
+            minN = min(minN, n)
+            maxN = max(maxN, n)
+        }
+        var spanU = maxU - minU
+        var spanN = maxN - minN
+        if (spanU <= 0.0 || spanN <= 0.0) return null
+
+        // StructuralColumn.width follows the reported major axis. Rotate the basis by 90° when PCA
+        // happens to return the smaller span as its first vector (possible for nearly square shapes).
+        if (spanN > spanU) {
+            val oldUx = ux
+            val oldUy = uy
+            ux = nx
+            uy = ny
+            nx = -oldUx
+            ny = -oldUy
+            val oldMinU = minU
+            val oldMaxU = maxU
+            minU = minN
+            maxU = maxN
+            minN = oldMinU
+            maxN = oldMaxU
+            spanU = maxU - minU
+            spanN = maxN - minN
+        }
+
+        val centerU = (minU + maxU) * 0.5
+        val centerN = (minN + maxN) * 0.5
+        val center = Point(
+            ux * centerU + nx * centerN,
+            uy * centerU + ny * centerN,
+        )
+        fun corner(u: Double, n: Double) = Point(
+            ux * u + nx * n,
+            uy * u + ny * n,
+        )
+        val corners = arrayOf(
+            corner(minU, minN),
+            corner(maxU, minN),
+            corner(maxU, maxN),
+            corner(minU, maxN),
+        )
+        return OrientedBounds(
+            center = center,
+            majorSpan = spanU.toFloat(),
+            minorSpan = spanN.toFloat(),
+            rotationDegrees = Math.toDegrees(atan2(uy, ux)).toFloat(),
+            corners = corners,
+        )
+    }
+
+    internal fun polygonArea(points: Array<Point>): Float {
+        if (points.size < 3) return 0f
+        var twiceArea = 0.0
+        for (index in points.indices) {
+            val a = points[index]
+            val b = points[(index + 1) % points.size]
+            twiceArea += a.x * b.y - b.x * a.y
+        }
+        return (abs(twiceArea) * 0.5).toFloat()
     }
 
     private fun rectangleBorderSupport(
@@ -226,6 +308,14 @@ internal object OpenCvColumnExpert {
             true,
         )
     }
+
+    internal data class OrientedBounds(
+        val center: Point,
+        val majorSpan: Float,
+        val minorSpan: Float,
+        val rotationDegrees: Float,
+        val corners: Array<Point>,
+    )
 
     private const val MAX_ANALYSIS_SIDE = 2800
     private const val MIN_CONTOUR_POINTS = 4
