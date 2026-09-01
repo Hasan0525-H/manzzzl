@@ -32,6 +32,10 @@ import kotlin.math.sqrt
  * horizontal/vertical axes. Only measured near-miss intersections may snap, collinear positive gaps
  * are never bridged, and the result is re-verified on the dense source raster before acceptance.
  *
+ * Semantic observations retain a concrete observer id through consensus. Two genuinely independent
+ * detectors may therefore corroborate an opening/stair, while repeated output from one detector can
+ * never masquerade as multiple votes just because it passed through different helper stages.
+ *
  * A second reconstruction gate runs after semantics/topology. It blocks architectural 3D when strong
  * wall gaps are still unclassified, when a room polygon is not physically backed by measured walls/
  * openings, when trusted closed-room coverage is too sparse to construct real floors and ceilings
@@ -390,10 +394,13 @@ internal class HybridFloorPlanAnalyzer(
                 } else {
                     baseline
                 }
-                semanticEvidence += provider.analyze(bitmap, providerPlan)
+                val observerId = observerIdFor(provider)
+                semanticEvidence += provider.analyze(bitmap, providerPlan).map { evidence ->
+                    if (evidence.observerId.isNullOrBlank()) evidence.copy(observerId = observerId) else evidence
+                }
             }
 
-            progress.onUpdate(AnalysisUpdate(91, "دمج أدلة CV والذكاء المحلي المتفقة"))
+            progress.onUpdate(AnalysisUpdate(91, "دمج أدلة الخبراء المستقلين المتفقة بدون احتساب الخبير نفسه مرتين"))
             val consensusEvidence = SemanticEvidenceConsensus.combine(semanticEvidence)
 
             progress.onUpdate(AnalysisUpdate(93, "مطابقة الدلالات مع هندسة المخطط المقاسة"))
@@ -436,6 +443,15 @@ internal class HybridFloorPlanAnalyzer(
             GeometryReviewStore.abortPending()
             throw error
         }
+    }
+
+    private fun observerIdFor(provider: SemanticEvidenceProvider): String = when {
+        provider === StudentSemanticEvidenceProvider -> "manzl_student"
+        provider is OpenCvStairEvidenceProvider -> "opencv_stair"
+        provider is StairPatternEvidenceProvider -> "classical_stair_pattern"
+        provider is WindowSymbolEvidenceProvider -> "window_symbol_cv"
+        provider is RoomLabelEvidenceProvider -> "mlkit_room_label"
+        else -> "provider:${provider.javaClass.name}"
     }
 
     private fun mergeDoors(base: List<DoorOpening>, inferred: List<DoorOpening>): List<DoorOpening> =
