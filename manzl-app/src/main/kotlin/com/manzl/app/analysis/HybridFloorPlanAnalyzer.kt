@@ -21,11 +21,15 @@ import kotlin.math.sqrt
  * for room closure and symbol search, then are removed from the final user-visible plan unless an
  * independent semantic/user signal confirms that the gap is actually a door.
  *
- * The ultra path can run a distilled Raster2Seq/RoomFormer student first, then an independent OpenCV
- * expert, then MobileSAM only as a boundary refiner. The student's door/window/stair/courtyard/shaft
+ * The ultra path can run a distilled multi-teacher student first, then an independent OpenCV expert,
+ * then MobileSAM only as a boundary refiner. The student's door/window/stair/courtyard/shaft
  * observations are reused from that same inference later as semantics; columns are accepted only by a
  * dedicated source-raster structural verifier. None of the neural/CV experts becomes geometry
  * authority.
+ *
+ * Production/default analysis is fail-closed when the Ultra runtime bundle is incomplete. This is
+ * intentional: the legacy deterministic extractor remains an adjudicator and diagnostic fallback,
+ * but it is no longer allowed to silently become the user-visible quality tier.
  *
  * A second reconstruction gate runs after semantics/topology. It blocks 3D when strong wall gaps are
  * still unclassified, when trusted closed-room coverage is too sparse to construct real floors and
@@ -46,6 +50,16 @@ internal class HybridFloorPlanAnalyzer(
 ) : FloorPlanAnalyzer {
 
     override suspend fun analyze(bitmap: Bitmap, progress: ProgressSink): FloorPlan {
+        if (structuralAnalyzer is ClassicalFloorPlanAnalyzer) {
+            val ultraDecision = UltraRuntimeQualityGate.currentDecision()
+            if (!ultraDecision.ready) {
+                val message = ultraDecision.messageArabic
+                    ?: "حزمة Ultra غير مكتملة؛ تم إيقاف التحويل بدلاً من تخفيض الجودة بصمت."
+                progress.onUpdate(AnalysisUpdate(0, "بوابة الجودة الفائقة • لم يبدأ التحويل لأن حزمة Ultra غير مكتملة"))
+                throw UltraRuntimeUnavailableException(message)
+            }
+        }
+
         val primaryStructural = structuralAnalyzer.analyze(
             bitmap = bitmap,
             progress = ProgressSink { update ->
