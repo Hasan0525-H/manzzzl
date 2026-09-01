@@ -109,16 +109,33 @@ def validate_exact_alignment(teachers: list[TeacherRoot]) -> list[pathlib.Path]:
 
 
 def load_source_groups(path: pathlib.Path, samples: list[pathlib.Path]) -> dict[pathlib.Path, str]:
-    """Load an exact relative-sample -> underlying-floor-plan-family mapping."""
+    """Load an exact relative-sample -> underlying-floor-plan-family mapping.
+
+    Schema 1 is the legacy portable mapping. Schema 2 is the privacy-hardened operational manifest
+    emitted by ``prepare_private_real_corpus.py`` and is accepted only when it explicitly declares
+    itself local-only and unsafe to commit. This keeps private relative paths out of the safe benchmark
+    manifest while still giving strict consensus the exact provenance join it requires.
+    """
     if not path.is_file():
         raise FileNotFoundError(f"source-group manifest does not exist: {path}")
     payload = json.loads(path.read_text(encoding="utf-8"))
     if isinstance(payload, dict) and "groups" in payload:
-        if payload.get("schema") not in (None, 1):
-            raise ValueError(f"unsupported source-group manifest schema: {payload.get('schema')}")
+        schema = payload.get("schema")
+        if schema not in (None, 1, 2):
+            raise ValueError(f"unsupported source-group manifest schema: {schema}")
+        if schema == 2:
+            privacy = payload.get("privacy")
+            if not isinstance(privacy, dict):
+                raise ValueError("schema-2 source-group manifest is missing privacy metadata")
+            if privacy.get("localOnly") is not True or privacy.get("safeToCommit") is not False:
+                raise ValueError(
+                    "schema-2 source-group manifest must declare localOnly=true and safeToCommit=false"
+                )
+            if privacy.get("rawFamilyLabelsStored") is not False:
+                raise ValueError("schema-2 source-group manifest must not store raw family labels")
         payload = payload["groups"]
     if not isinstance(payload, dict):
-        raise ValueError("source-group manifest must be an object or {schema:1, groups:{...}}")
+        raise ValueError("source-group manifest must be an object or {schema, groups:{...}}")
 
     groups: dict[pathlib.Path, str] = {}
     for raw_relative, raw_group in payload.items():
