@@ -44,6 +44,8 @@ class PreparePrivateRealCorpusTest(unittest.TestCase):
             groups = set(source_groups["groups"].values())
             self.assertEqual(len(groups), 1)
             self.assertTrue(next(iter(groups)).startswith("private:"))
+            self.assertFalse(manifest["privacy"]["sourceImagesCopied"])
+            self.assertFalse(manifest["privacy"]["rawFamilyLabelsStored"])
 
     def test_all_variants_of_one_family_stay_in_one_split(self):
         with tempfile.TemporaryDirectory() as tmp:
