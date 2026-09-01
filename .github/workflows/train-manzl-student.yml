@@ -33,7 +33,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          cache: pip
 
       - name: Install local-training dependencies
         run: |
@@ -99,19 +98,15 @@ jobs:
           }, indent=2))
           PY
 
-      - name: Package bootstrap student with explicit non-release attestation
+      - name: Create explicit non-release quality attestation
         run: |
-          cp /tmp/manzl-student/manzl_reconstruction_student.onnx \
-            manzl-app/src/main/assets/models/manzl_reconstruction_student.onnx
-          cp /tmp/manzl-student/manzl_reconstruction_student.json \
-            manzl-app/src/main/assets/models/manzl_reconstruction_student.training.json
           python - <<'PY'
           import hashlib
           import json
           import pathlib
 
-          model_path = pathlib.Path('manzl-app/src/main/assets/models/manzl_reconstruction_student.onnx')
-          training_path = pathlib.Path('manzl-app/src/main/assets/models/manzl_reconstruction_student.training.json')
+          model_path = pathlib.Path('/tmp/manzl-student/manzl_reconstruction_student.onnx')
+          training_path = pathlib.Path('/tmp/manzl-student/manzl_reconstruction_student.json')
           training = json.loads(training_path.read_text(encoding='utf-8'))
           digest = hashlib.sha256(model_path.read_bytes()).hexdigest()
           attestation = {
@@ -126,18 +121,9 @@ jobs:
               'releaseReady': False,
               'reason': 'Synthetic bootstrap enables local proposal inference but is not evidence of real-plan Ultra quality. Teacher-consensus + real Saudi/Arabic regression gates are still required.'
           }
-          pathlib.Path('manzl-app/src/main/assets/models/manzl_reconstruction_student.quality.json').write_text(
+          pathlib.Path('/tmp/manzl-student/manzl_reconstruction_student.quality.json').write_text(
               json.dumps(attestation, indent=2), encoding='utf-8'
           )
-
-          manifest_path = pathlib.Path('manzl-app/src/main/assets/models/manifest.json')
-          manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
-          for item in manifest.get('required', []):
-              if item.get('id') == 'manzl_reconstruction_student':
-                  item['status'] = 'synthetic-bootstrap-proposal-only'
-                  item['sha256'] = digest
-                  item['releaseReady'] = False
-          manifest_path.write_text(json.dumps(manifest, indent=2), encoding='utf-8')
           PY
 
       - name: Upload student training artifact
@@ -147,12 +133,41 @@ jobs:
           path: |
             /tmp/manzl-student/manzl_reconstruction_student.onnx
             /tmp/manzl-student/manzl_reconstruction_student.json
+            /tmp/manzl-student/manzl_reconstruction_student.quality.json
           if-no-files-found: error
           retention-days: 14
 
-      - name: Commit bootstrap student to feature branch
+      - name: Commit bootstrap student onto latest feature head
         if: github.event_name == 'push'
         run: |
+          # Development can continue while the CPU trainer runs. Re-anchor the generated model on the
+          # latest remote feature head instead of trying to push an obsolete checkout.
+          git fetch origin "${GITHUB_REF_NAME}"
+          git reset --hard "origin/${GITHUB_REF_NAME}"
+
+          cp /tmp/manzl-student/manzl_reconstruction_student.onnx \
+            manzl-app/src/main/assets/models/manzl_reconstruction_student.onnx
+          cp /tmp/manzl-student/manzl_reconstruction_student.json \
+            manzl-app/src/main/assets/models/manzl_reconstruction_student.training.json
+          cp /tmp/manzl-student/manzl_reconstruction_student.quality.json \
+            manzl-app/src/main/assets/models/manzl_reconstruction_student.quality.json
+
+          python - <<'PY'
+          import json
+          import pathlib
+
+          quality_path = pathlib.Path('manzl-app/src/main/assets/models/manzl_reconstruction_student.quality.json')
+          quality = json.loads(quality_path.read_text(encoding='utf-8'))
+          manifest_path = pathlib.Path('manzl-app/src/main/assets/models/manifest.json')
+          manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+          for item in manifest.get('required', []):
+              if item.get('id') == 'manzl_reconstruction_student':
+                  item['status'] = 'synthetic-bootstrap-proposal-only'
+                  item['sha256'] = quality['sha256']
+                  item['releaseReady'] = False
+          manifest_path.write_text(json.dumps(manifest, indent=2), encoding='utf-8')
+          PY
+
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add \
