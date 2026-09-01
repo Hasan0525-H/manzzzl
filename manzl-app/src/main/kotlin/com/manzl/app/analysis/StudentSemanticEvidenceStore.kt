@@ -36,16 +36,16 @@ internal object StudentSemanticEvidenceStore {
 }
 
 /**
- * Resolves cached source-space class observations against the latest deterministic wall graph and
- * contributes an independent arbitrary-angle OpenCV stair opinion in the same semantic phase.
+ * Resolves cached source-space class observations against the latest deterministic wall graph.
  *
- * Neural stair labels are deliberately stricter than other semantics: they survive only when a
- * raster-derived stair candidate agrees in center, orientation and approximate footprint. Raster
- * stair candidates themselves must also occupy plausible measured free space: room polygons and wall
- * centre-lines can veto drafting hatches/cabinetry that only look like repeated treads.
+ * Neural stair labels are deliberately stricter than other semantics: they survive only when an
+ * independent raster-derived OpenCV stair candidate agrees in center, orientation and approximate
+ * footprint. The OpenCV observation is a *guard* here, not a second returned vote: Hybrid also runs
+ * OpenCvStairEvidenceProvider as its own expert, so returning it again from this provider would double
+ * count one detector and manufacture false ensemble confidence.
  */
 internal object StudentSemanticEvidenceProvider : SemanticEvidenceProvider {
-    private val arbitraryAngleStairExpert = OpenCvStairEvidenceProvider()
+    private val arbitraryAngleStairGuard = OpenCvStairEvidenceProvider()
 
     override suspend fun analyze(bitmap: Bitmap, structuralPlan: FloorPlan): List<SemanticEvidence> {
         val components = StudentSemanticEvidenceStore.get(bitmap)
@@ -62,17 +62,18 @@ internal object StudentSemanticEvidenceProvider : SemanticEvidenceProvider {
             )
         }
 
-        val rasterStairs = arbitraryAngleStairExpert.analyze(bitmap, structuralPlan)
+        if (rawStudent.none { it.kind == SemanticKind.STAIR }) return rawStudent
+
+        val rasterStairs = arbitraryAngleStairGuard.analyze(bitmap, structuralPlan)
             .filter { it.kind == SemanticKind.STAIR }
             .filter { StairEvidenceGeometryGuard.isPlausible(structuralPlan, it) }
-        val studentEvidence = rawStudent.filter { evidence ->
-            if (evidence.kind != SemanticKind.STAIR) return@filter true
-            rasterStairs.any { raster -> compatibleStair(evidence, raster) }
-        }
 
-        if (studentEvidence.isEmpty()) return rasterStairs
-        if (rasterStairs.isEmpty()) return studentEvidence
-        return studentEvidence + rasterStairs
+        // Non-stair student semantics retain their normal geometry guards. A student stair must have
+        // an independent raster stair witness; if the witness is absent, the neural label abstains.
+        return rawStudent.filter { evidence ->
+            evidence.kind != SemanticKind.STAIR ||
+                rasterStairs.any { raster -> compatibleStair(evidence, raster) }
+        }
     }
 
     private fun compatibleStair(a: SemanticEvidence, b: SemanticEvidence): Boolean {
