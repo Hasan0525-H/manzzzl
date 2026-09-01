@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """Train a Manzl release-candidate student from verified private real-plan splits.
 
-This wrapper is the only supported bridge from the private real-corpus materialization into
-``train_student.py``. It deliberately exposes only ``train`` and ``validation`` to the trainer. The
-``test`` directory is verified by the preflight gate but never passed to training, early stopping, or
-validation evaluation. Final test evaluation is a separate release step.
+This wrapper is the only supported bridge from private real-corpus materialization into
+``train_student.py``. It exposes only ``train`` and ``validation`` to the trainer. ``test`` is verified
+but never passed to training, model selection, or validation evaluation. A release candidate is started
+only when the corpus already meets the immutable release-scale policy, avoiding expensive training on a
+benchmark that can never be promoted. Validation evidence must cover the exact validation split.
 
-The wrapper does not make a model release-ready. It writes an explicit attestation with ``testUsed``
-false and ``releaseReady`` false so an intermediate candidate cannot be mistaken for a validated APK
-model.
+The wrapper never makes a model release-ready. Final held-out semantic and end-to-end geometry gates are
+separate release steps.
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ import subprocess
 import sys
 import tempfile
 
+import release_corpus_scale
 import verify_real_training_inputs
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -73,6 +74,17 @@ def assert_test_isolation(commands: list[list[str]], test_root: pathlib.Path) ->
             raise RuntimeError("release-candidate trainer command unexpectedly references held-out test split")
 
 
+def require_validation_full_coverage(validation: dict, expected_samples: int) -> None:
+    samples = validation.get("samples")
+    if isinstance(samples, bool) or not isinstance(samples, int):
+        raise RuntimeError("real validation evidence must report an integer samples count")
+    if samples != expected_samples:
+        raise RuntimeError(
+            "real validation evidence does not cover the exact validation split: "
+            f"metrics.samples={samples} expected={expected_samples}"
+        )
+
+
 def train(args: argparse.Namespace) -> dict:
     args.splits = args.splits.resolve()
     args.output = args.output.resolve()
@@ -81,6 +93,7 @@ def train(args: argparse.Namespace) -> dict:
         raise RuntimeError("real-training preflight does not authorize exactly train+validation")
     if preflight.get("trainerMustNotRead") != ["test"]:
         raise RuntimeError("real-training preflight does not reserve test exclusively")
+    corpus_scale = release_corpus_scale.require(preflight)
 
     if args.output.exists():
         raise FileExistsError(f"real student output already exists; refusing overwrite: {args.output}")
@@ -110,6 +123,7 @@ def train(args: argparse.Namespace) -> dict:
             raise RuntimeError("real validation evidence has incorrect evaluator provenance")
         if validation.get("releaseReady") is not False:
             raise RuntimeError("validation evaluator must never declare a release model")
+        require_validation_full_coverage(validation, int(preflight["validationSamples"]))
 
         digest = hashlib.sha256(model_path.read_bytes()).hexdigest()
         attestation = {
@@ -122,6 +136,9 @@ def train(args: argparse.Namespace) -> dict:
             "trainingSplit": "train",
             "modelSelectionSplit": "validation",
             "validationEvaluation": validation,
+            "validationMetricsExactSplitCoverage": True,
+            "releaseCorpusScalePreflightPassed": True,
+            "releaseCorpusScalePolicyVersion": corpus_scale["policyVersion"],
             "testSplitPresentAndVerified": True,
             "testUsedForTraining": False,
             "testUsedForModelSelection": False,
@@ -130,8 +147,9 @@ def train(args: argparse.Namespace) -> dict:
             "realTrainingPreflightPassed": True,
             "releaseReady": False,
             "reason": (
-                "This is a real-plan release candidate, not a release model. The untouched test split and "
-                "end-to-end 2D-to-3D reconstruction gates must pass in a separate final evaluation."
+                "This release candidate was trained only after the real corpus met release-scale requirements, "
+                "and its validation metrics cover the exact validation split. The untouched test split and "
+                "end-to-end 2D-to-3D gates must still pass separately."
             ),
         }
         (staging / "real-training-attestation.json").write_text(
