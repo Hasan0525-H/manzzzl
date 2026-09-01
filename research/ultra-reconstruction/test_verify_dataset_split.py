@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import pathlib
+import sys
 import tempfile
 import unittest
 
@@ -12,6 +13,7 @@ MODULE_PATH = pathlib.Path(__file__).with_name("verify_dataset_split.py")
 spec = importlib.util.spec_from_file_location("verify_dataset_split", MODULE_PATH)
 verify = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
+sys.modules[spec.name] = verify
 spec.loader.exec_module(verify)
 
 
