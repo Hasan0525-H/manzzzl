@@ -31,6 +31,48 @@ class SemanticEvidenceConsensusTest {
     }
 
     @Test
+    fun `two distinct concrete experts may corroborate even inside same source family`() {
+        val hough = window(
+            center = Vec2(0.02f, 0f),
+            confidence = 0.72f,
+            source = EvidenceSource.CLASSICAL_CV,
+        ).copy(observerId = "opencv_hough_window")
+        val symbol = window(
+            center = Vec2(-0.03f, 0.02f),
+            confidence = 0.76f,
+            source = EvidenceSource.CLASSICAL_CV,
+        ).copy(observerId = "double_line_symbol_window")
+
+        val result = SemanticEvidenceConsensus.combine(listOf(hough, symbol))
+
+        assertEquals(1, result.size)
+        assertTrue(result.single().confidence > maxOf(hough.confidence, symbol.confidence))
+        assertTrue(result.single().observerId.orEmpty().contains("opencv_hough_window"))
+        assertTrue(result.single().observerId.orEmpty().contains("double_line_symbol_window"))
+    }
+
+    @Test
+    fun `repeated hypotheses from one concrete expert count only once`() {
+        val weaker = window(
+            center = Vec2(0f, 0f),
+            confidence = 0.68f,
+            source = EvidenceSource.CLASSICAL_CV,
+        ).copy(observerId = "opencv_stair_or_window_detector")
+        val stronger = window(
+            center = Vec2(0.03f, -0.02f),
+            confidence = 0.83f,
+            source = EvidenceSource.CLASSICAL_CV,
+        ).copy(observerId = "opencv_stair_or_window_detector")
+
+        val result = SemanticEvidenceConsensus.combine(listOf(weaker, stronger))
+
+        assertEquals(1, result.size)
+        assertEquals(stronger.confidence, result.single().confidence, 0.00001f)
+        assertEquals(stronger.center, result.single().center)
+        assertEquals(stronger.observerId, result.single().observerId)
+    }
+
+    @Test
     fun `spatially conflicting window observations remain separate`() {
         val left = window(Vec2(-1.2f, 0f), 0.82f, EvidenceSource.CLASSICAL_CV)
         val right = window(Vec2(1.2f, 0f), 0.84f, EvidenceSource.LOCAL_AI)
