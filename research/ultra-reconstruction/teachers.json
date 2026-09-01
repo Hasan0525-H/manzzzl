@@ -1,5 +1,5 @@
 {
-  "schema": 5,
+  "schema": 6,
   "checkedAt": "2026-09-01",
   "costPolicy": "zero-paid-services",
   "projectUse": "personal-non-commercial",
@@ -21,8 +21,9 @@
         "publishedRoomF1": 98.1,
         "inputSize": 512
       },
+      "roomBoundaryEvidence": "predicted room-polygon outlines",
       "shipInPublicApk": false,
-      "notes": "Official checkpoint repository is marked MIT. The 1.13 GB teacher stays development-time because it is far too large for Android; it generates global vectors/pseudo-labels for the Manzl student."
+      "notes": "Official checkpoint repository is marked MIT. The 1.13 GB teacher stays development-time because it is far too large for Android; it generates global vectors/pseudo-labels for the Manzl student. Its room-boundary vote is accepted only where a second independent in-domain teacher also reaches quorum."
     },
     {
       "id": "cubicasa-floortrans",
@@ -30,9 +31,11 @@
       "checkpointUrl": "https://drive.google.com/file/d/1gRB7ez1e4H7a9Y09lLqRuna0luZO5VRK/view?usp=sharing",
       "codeAndDataLicense": "CC-BY-NC-4.0",
       "inputDomain": "raster-floorplan",
-      "role": "direct-raster multitask teacher for wall/room/icon segmentation and junction heatmaps",
+      "role": "independent direct-raster wall/opening/room-segmentation teacher and second room-boundary vote",
+      "roomBoundaryEvidence": "high-confidence room segmentation transitions supported by wall/railing or a different room class; direct room-to-background transitions abstain",
+      "roomBoundaryQuorumWith": "raster2seq",
       "shipInPublicApk": false,
-      "notes": "Directly matches the application's raster input domain and provides windows/doors plus junction supervision. Because CubiCasa5K is CC-BY-NC-4.0, this teacher is development-time only for the current personal/non-commercial project and is never bundled in the public APK."
+      "notes": "Directly matches the application's raster input domain and provides wall, windows, doors and an independent room-boundary opinion derived from its own room segmentation. The boundary adapter is fail-closed: a crop/background edge alone is not architectural evidence. Because CubiCasa5K is CC-BY-NC-4.0, this teacher is development-time only for the current personal/non-commercial project and is never bundled in the public APK."
     },
     {
       "id": "mitunet-wall",
@@ -58,9 +61,9 @@
       "repository": "https://github.com/ywyue/RoomFormer.git",
       "codeLicense": "MIT",
       "inputDomain": "topdown-density-map",
-      "role": "polygon/topology architecture reference and optional raster-adapted teacher",
+      "role": "polygon/topology architecture reference; not a direct raster evidence source",
       "shipInPublicApk": false,
-      "notes": "Upstream pretrained models target top-down density maps from 3D scans, not arbitrary raster drawings. Do not treat an off-the-shelf checkpoint as direct raster evidence. Use only after an explicit raster adaptation/retraining step with compatible data."
+      "notes": "Upstream pretrained models target top-down density maps from 3D scans, not arbitrary raster drawings. Off-the-shelf RoomFormer output is never counted as an independent raster vote. Use only after an explicit raster adaptation/retraining step with compatible data and a separate validation contract."
     },
     {
       "id": "cage",
