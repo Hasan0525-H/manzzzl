@@ -38,12 +38,9 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install numpy==1.26.4 opencv-python-headless==4.10.0.84
 
-      - name: Compile reconstruction research scripts
+      - name: Compile all reconstruction research scripts
         run: |
-          python -m py_compile \
-            research/ultra-reconstruction/adapt_raster2seq_predictions.py \
-            research/ultra-reconstruction/build_teacher_consensus.py \
-            research/ultra-reconstruction/test_teacher_contracts.py
+          python -m compileall -q research/ultra-reconstruction
 
       - name: Verify fail-closed teacher contracts
         run: |
