@@ -58,6 +58,12 @@ internal object StudentDenseHeadDecoder {
             wallMask[pixel] = bestClass == WALL_CLASS_ID && margin >= wallLogitMargin
         }
 
+        // Decode every semantic class that can improve reconstruction without inventing geometry.
+        // Door/window components later classify measured gaps, stairs are dimension-gated, and
+        // courtyard/shaft components can only label an already reconstructed closed room polygon.
+        // Columns are intentionally decoded too so the source-space observation is retained for the
+        // next structural-primitive pass; until that pass verifies raster support they are not added
+        // to canonical geometry.
         val semanticComponents = StudentSemanticComponentDecoder.decode(
             classIds = classIds,
             classConfidence = classConfidence,
@@ -66,6 +72,9 @@ internal object StudentDenseHeadDecoder {
                 StudentSemanticComponentDecoder.DOOR_CLASS_ID,
                 StudentSemanticComponentDecoder.WINDOW_CLASS_ID,
                 StudentSemanticComponentDecoder.STAIR_CLASS_ID,
+                StudentSemanticComponentDecoder.COLUMN_CLASS_ID,
+                StudentSemanticComponentDecoder.COURTYARD_CLASS_ID,
+                StudentSemanticComponentDecoder.SHAFT_CLASS_ID,
             ),
             maxComponents = MAX_SEMANTIC_COMPONENTS,
         )
@@ -84,5 +93,5 @@ internal object StudentDenseHeadDecoder {
 
     private const val SEMANTIC_CLASS_COUNT = 9
     private const val WALL_CLASS_ID = 1
-    private const val MAX_SEMANTIC_COMPONENTS = 96
+    private const val MAX_SEMANTIC_COMPONENTS = 128
 }
