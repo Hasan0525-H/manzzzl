@@ -8,6 +8,12 @@ import com.manzl.app.model.Vec2
  * Evidence contract shared by deterministic CV, bundled on-device AI and explicit user corrections.
  * Providers report observations; GeometryEvidenceFusion decides whether those observations are
  * geometrically plausible enough to enter the canonical FloorPlan.
+ *
+ * [observerId] identifies the concrete independent expert that made an observation. This is distinct
+ * from the broad [source] family: two separate CV algorithms are not one observation, and a distilled
+ * reconstruction student must not be collapsed with a legacy local classifier merely because both
+ * execute on-device. Consensus can therefore reward genuine cross-expert agreement without double
+ * counting repeated hypotheses emitted by the same detector.
  */
 internal enum class SemanticKind {
     DOOR,
@@ -34,6 +40,8 @@ internal data class SemanticEvidence(
     val countHint: Int? = null,
     val confidence: Float,
     val source: EvidenceSource,
+    /** Stable detector identity for independence-aware consensus; null preserves legacy source-family semantics. */
+    val observerId: String? = null,
 )
 
 internal fun interface SemanticEvidenceProvider {
