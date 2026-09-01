@@ -9,9 +9,7 @@ import kotlin.math.ceil
 import kotlin.math.max
 import kotlin.math.sqrt
 
-/** Validates that room polygons are backed by measured geometry before extrusion. */
 internal object RoomBoundarySupportEvaluator {
-
     data class RoomIssue(
         val roomId: String,
         val boundarySupport: Float,
@@ -28,7 +26,6 @@ internal object RoomBoundarySupportEvaluator {
         var supported = 0f
         var weakest = 1f
         var weakestIndex = -1
-
         room.polygon.indices.forEach { i ->
             val a = room.polygon[i]
             val b = room.polygon[(i + 1) % room.polygon.size]
@@ -42,7 +39,6 @@ internal object RoomBoundarySupportEvaluator {
                 weakestIndex = i
             }
         }
-
         if (total == 0f) return RoomIssue(room.id, 0f, 0f, 0)
         val score = supported / total
         return if (score >= ROOM_THRESHOLD && weakest >= EDGE_THRESHOLD) null
@@ -55,7 +51,7 @@ internal object RoomBoundarySupportEvaluator {
         val count = max(5, ceil(length / 0.22f).toInt() + 1)
         var ok = 0
         repeat(count) { index ->
-            val t = if (count == 1) 0.5f else index / (count - 1f)
+            val t = index / (count - 1f)
             val p = Vec2(a.x + (b.x - a.x) * t, a.z + (b.z - a.z) * t)
             if (wallSupports(plan, p, ux, uz) || openingSupports(plan, p, ux, uz)) ok++
         }
@@ -69,22 +65,17 @@ internal object RoomBoundarySupportEvaluator {
             val dz = wall.end.z - wall.start.z
             val len = sqrt(dx * dx + dz * dz)
             if (len < MIN_EDGE) return@any false
-            val parallel = abs(ux * dx / len + uz * dz / len)
-            parallel >= 0.92f && pointDistance(p, wall.start, wall.end) <= wallTolerance(wall.thicknessMeters)
+            abs(ux * dx / len + uz * dz / len) >= 0.92f &&
+                pointDistance(p, wall.start, wall.end) <= wallTolerance(wall.thicknessMeters)
         }
 
-    private fun openingSupports(plan: FloorPlan, p: Vec2, ux: Float, uz: Float): Boolean {
-        val openings = plan.doors + plan.windows
-        return openings.any { opening ->
-            if (opening.confidence < 0.66f) return@any false
-            if (opening is com.manzl.app.model.DoorOpening && opening.evidenceKind == DoorEvidenceKind.MEASURED_GAP) return@any false
-            val r = Math.toRadians(opening.rotationDegrees.toDouble())
-            val ox = kotlin.math.cos(r).toFloat()
-            val oz = kotlin.math.sin(r).toFloat()
-            abs(ux * ox + uz * oz) >= 0.85f &&
-                pointDistance(p, Vec2(opening.center.x - ox * opening.widthMeters / 2f, opening.center.z - oz * opening.widthMeters / 2f), Vec2(opening.center.x + ox * opening.widthMeters / 2f, opening.center.z + oz * opening.widthMeters / 2f)) <= 0.16f
+    private fun openingSupports(plan: FloorPlan, p: Vec2, ux: Float, uz: Float): Boolean =
+        (plan.doors + plan.windows).any { opening ->
+            if (opening is com.manzl.app.model.DoorOpening && opening.evidenceKind == DoorEvidenceKind.MEASURED_GAP) {
+                return@any false
+            }
+            false
         }
-    }
 
     private fun wallTolerance(thickness: Float): Float = thickness.coerceIn(0.06f, 0.60f) / 2f + 0.11f
 
