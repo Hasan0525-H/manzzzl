@@ -21,6 +21,9 @@ import kotlin.math.sqrt
  * thickness. Only after that does the older single-stroke Hough path look for still-missing walls.
  * Both passes remain proposal-only: every accepted change must improve independent source-raster
  * fidelity, so OpenCV never becomes geometry authority.
+ *
+ * Both sub-experts are mandatory in Ultra mode. Zero safe proposals is a legitimate result; a runtime
+ * failure is not. The returned [runtimeAvailable] therefore requires both passes to execute normally.
  */
 internal object OpenCvWallExpert {
 
@@ -33,12 +36,21 @@ internal object OpenCvWallExpert {
 
     fun refine(source: Bitmap, seed: FloorPlan): Result {
         val faceResult = OpenCvWallFaceExpert.refine(source, seed)
+        if (!faceResult.runtimeAvailable) {
+            return Result(
+                plan = seed,
+                proposedCount = faceResult.proposedCount,
+                acceptedCount = 0,
+                runtimeAvailable = false,
+            )
+        }
+
         val strokeResult = refineStrokeLines(source, faceResult.plan)
         return Result(
-            plan = strokeResult.plan,
+            plan = if (strokeResult.runtimeAvailable) strokeResult.plan else faceResult.plan,
             proposedCount = faceResult.proposedCount + strokeResult.proposedCount,
             acceptedCount = faceResult.acceptedCount + strokeResult.acceptedCount,
-            runtimeAvailable = faceResult.runtimeAvailable || strokeResult.runtimeAvailable,
+            runtimeAvailable = faceResult.runtimeAvailable && strokeResult.runtimeAvailable,
         )
     }
 
@@ -131,7 +143,7 @@ internal object OpenCvWallExpert {
                 )
             }
         } catch (_: RuntimeException) {
-            Result(seed, 0, 0, true)
+            Result(seed, 0, 0, false)
         } finally {
             rgba.release()
             gray.release()
