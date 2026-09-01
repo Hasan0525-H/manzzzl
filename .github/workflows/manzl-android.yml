@@ -48,11 +48,25 @@ jobs:
           java-version: '17'
           cache: gradle
 
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install ONNX contract dependency
+        run: python -m pip install --disable-pip-version-check onnx==1.17.0
+
       - name: Make Gradle executable
         run: chmod +x gradlew
 
       - name: Fetch verified MobileSAM runtime models
         run: python3 research/ultra-reconstruction/fetch_runtime_models.py
+
+      - name: Verify MobileSAM ONNX graph contract
+        run: |
+          python3 research/ultra-reconstruction/verify_runtime_model_contracts.py \
+            --assets manzl-app/src/main/assets/models
 
       - name: Require measured real local Ultra student before APK
         run: |
