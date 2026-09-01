@@ -28,6 +28,10 @@ import kotlin.math.sqrt
  * weaker pipeline continue silently. Runtime health is therefore fail-closed before architectural 3D
  * can be exposed. None of the neural/CV experts becomes geometry authority.
  *
+ * After all wall experts, the final arbitrary-angle graph is reconciled without projecting it back to
+ * horizontal/vertical axes. Only measured near-miss intersections may snap, collinear positive gaps
+ * are never bridged, and the result is re-verified on the dense source raster before acceptance.
+ *
  * A second reconstruction gate runs after semantics/topology. It blocks architectural 3D when strong
  * wall gaps are still unclassified, when a room polygon is not physically backed by measured walls/
  * openings, when trusted closed-room coverage is too sparse to construct real floors and ceilings
@@ -45,7 +49,6 @@ internal class HybridFloorPlanAnalyzer(
         OpenCvStairEvidenceProvider(),
         WindowSymbolEvidenceProvider(),
         StudentSemanticEvidenceProvider,
-        TinySemanticPatchEvidenceProvider(),
     ),
     private val onDeviceStudent: ManzlStudentFloorPlanExpert? = UltraReconstructionRuntime.createStudentExpertOrNull(),
     private val boundaryRefiner: MobileSamBoundaryRefiner? = UltraReconstructionRuntime.createBoundaryRefinerOrNull(),
@@ -233,6 +236,43 @@ internal class HybridFloorPlanAnalyzer(
                         "MobileSAM دقق ${refined.attemptedWalls} جداراً ولم يجد تعديلاً يحسن المطابقة بأمان؛ أبقى الهندسة المقاسة كما هي",
                     )
                 )
+            }
+
+            progress.onUpdate(AnalysisUpdate(79, "تسوية تقاطعات الجدران الحرة ثم إعادة قياسها على المخطط الأصلي"))
+            val reconciledWalls = GeneralWallTopologyReconciler.reconcile(structural.walls)
+            if (reconciledWalls != structural.walls) {
+                val candidate = structural.copy(walls = reconciledWalls)
+                val verified = try {
+                    HighResolutionFidelityVerifier.verify(
+                        source = bitmap,
+                        plan = candidate,
+                        analysisSide = precisionSide ?: FINAL_TOPOLOGY_VERIFY_SIDE,
+                    )
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (_: OutOfMemoryError) {
+                    null
+                } catch (_: RuntimeException) {
+                    null
+                }
+                if (verified != null) {
+                    val beforeCracks = WallTopologyIntegrity.findNearMissJunctions(structural).size
+                    val afterCracks = WallTopologyIntegrity.findNearMissJunctions(verified).size
+                    val fidelitySafe =
+                        verified.geometryFidelity.score >= structural.geometryFidelity.score - MAX_TOPOLOGY_SCORE_LOSS &&
+                            verified.geometryFidelity.wallCoverage >= structural.geometryFidelity.wallCoverage - MAX_TOPOLOGY_COVERAGE_LOSS &&
+                            verified.geometryFidelity.wallPrecision >= structural.geometryFidelity.wallPrecision - MAX_TOPOLOGY_PRECISION_LOSS &&
+                            verified.geometryFidelity.endpointSupport >= structural.geometryFidelity.endpointSupport - MAX_TOPOLOGY_ENDPOINT_LOSS
+                    if (afterCracks < beforeCracks && fidelitySafe) {
+                        structural = verified
+                        progress.onUpdate(
+                            AnalysisUpdate(
+                                79,
+                                "تم إغلاق ${beforeCracks - afterCracks} وصلة جدار مدعومة بالمحاور بدون تدهور مطابقة المصدر",
+                            )
+                        )
+                    }
+                }
             }
 
             // Student columns are accepted only after direct raster support verification.
@@ -473,5 +513,10 @@ internal class HybridFloorPlanAnalyzer(
         private const val DOOR_DUPLICATE_DISTANCE_SQ = 0.10f
         private const val ROOM_CENTER_DUPLICATE_METERS = 0.32f
         private const val ROOM_DUPLICATE_MIN_AREA_RATIO = 0.72f
+        private const val FINAL_TOPOLOGY_VERIFY_SIDE = 2200
+        private const val MAX_TOPOLOGY_SCORE_LOSS = 0.0012f
+        private const val MAX_TOPOLOGY_COVERAGE_LOSS = 0.0015f
+        private const val MAX_TOPOLOGY_PRECISION_LOSS = 0.0010f
+        private const val MAX_TOPOLOGY_ENDPOINT_LOSS = 0.010f
     }
 }
