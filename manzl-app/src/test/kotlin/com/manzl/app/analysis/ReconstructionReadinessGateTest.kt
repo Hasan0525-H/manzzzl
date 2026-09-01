@@ -133,8 +133,18 @@ class ReconstructionReadinessGateTest {
     }
 
     @Test
-    fun `nested shaft inside another surface room is blocked until polygon subtraction exists`() {
+    fun `strictly nested shaft is supported by polygon hole subtraction`() {
         val shaft = room("shaft", -1f, -1f, 1f, 1f, label = "shaft")
+        val report = ReconstructionReadinessGate.evaluate(
+            plan(walls = rectangleWalls(), rooms = listOf(largeRoom(), shaft))
+        )
+        assertTrue(report.unsupportedVerticalVoids.isEmpty())
+        assertTrue(report.ready)
+    }
+
+    @Test
+    fun `partially overlapping shaft remains blocked`() {
+        val shaft = room("shaft", 3.4f, -1f, 4.6f, 1f, label = "shaft")
         val report = ReconstructionReadinessGate.evaluate(
             plan(walls = rectangleWalls(), rooms = listOf(largeRoom(), shaft))
         )
