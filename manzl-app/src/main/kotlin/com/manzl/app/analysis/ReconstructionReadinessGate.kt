@@ -42,12 +42,10 @@ internal object ReconstructionReadinessGate {
         val verticalVoids = trustedRooms.filter(VerticalVoidRoomPolicy::isVerticalVoid)
         val surfaceRooms = trustedRooms.filterNot(VerticalVoidRoomPolicy::isVerticalVoid)
         val unsupportedVoids = verticalVoids.filter { void ->
-            // The current mesher can preserve a shaft when it is an independent closed planar face:
-            // simply omit that face from floor/ceiling generation. If its centroid still lies inside
-            // another trusted surface polygon, omission would not create a hole because that surface
-            // would fill underneath it. Fail closed until polygon subtraction handles that topology.
-            val centre = polygonCentroid(void.polygon) ?: return@filter true
-            surfaceRooms.any { room -> pointInsidePolygon(centre, room.polygon) }
+            // The mesher now supports a void that is either an independent closed face or strictly
+            // nested inside a surface polygon. Partial overlap/touching remains ambiguous and fails
+            // closed because polygon subtraction cannot decide which boundary is authoritative.
+            surfaceRooms.any { room -> unsupportedVoidRelationship(void.polygon, room.polygon) }
         }
         val coverage = sampledRoomCoverage(plan, surfaceRooms)
         return Report(
@@ -71,7 +69,7 @@ internal object ReconstructionReadinessGate {
         if (report.unsupportedVerticalVoids.isNotEmpty()) {
             val label = report.unsupportedVerticalVoids.first().label?.trim().orEmpty()
             val suffix = if (label.isBlank()) "" else " ($label)"
-            return "أوقفت تحويل المخطط إلى 3D لأن فراغاً رأسياً موثوقاً$suffix متداخل مع سطح غرفة أخرى؛ حذف وجه الشافت وحده لن يصنع فتحة حقيقية في البلاطة. لن أملأه بأرضية وهمية قبل حل التقاطع هندسياً."
+            return "أوقفت تحويل المخطط إلى 3D لأن فراغاً رأسياً موثوقاً$suffix يتقاطع جزئياً أو يلامس حدود سطح غرفة أخرى. لا يمكن طرحه كفتحة مستقلة بدون تغيير الرسم، لذلك يلزم تصحيح topology أولاً."
         }
 
         val coverage = (report.trustedRoomCoverage * 100f).toInt().coerceIn(0, 100)
@@ -167,7 +165,6 @@ internal object ReconstructionReadinessGate {
         }
         if (!minX.isFinite() || !maxX.isFinite() || !minZ.isFinite() || !maxZ.isFinite()) return null
 
-        // Never let a rogue wall enlarge the denominator outside the already calibrated plan bounds.
         val planMinX = -plan.widthMeters * 0.5f
         val planMaxX = plan.widthMeters * 0.5f
         val planMinZ = -plan.depthMeters * 0.5f
@@ -180,13 +177,61 @@ internal object ReconstructionReadinessGate {
         return Envelope(clampedMinX, clampedMaxX, clampedMinZ, clampedMaxZ)
     }
 
-    private fun polygonCentroid(points: List<Vec2>): Vec2? {
-        if (points.isEmpty()) return null
-        return Vec2(
-            x = points.sumOf { it.x.toDouble() }.toFloat() / points.size,
-            z = points.sumOf { it.z.toDouble() }.toFloat() / points.size,
-        )
+    /**
+     * Supported relationships:
+     *  - no overlap: the void is an independent planar face and is omitted;
+     *  - every void vertex strictly inside the surface and no boundary contact: subtract as a hole.
+     * Anything else is ambiguous and therefore unsupported.
+     */
+    private fun unsupportedVoidRelationship(void: List<Vec2>, surface: List<Vec2>): Boolean {
+        if (void.size < 3 || surface.size < 3) return true
+        if (polygonEdgesIntersect(void, surface)) return true
+
+        val voidInsideCount = void.count { pointInsidePolygon(it, surface) }
+        if (voidInsideCount == void.size) return false
+        if (voidInsideCount > 0) return true
+
+        // A surface nested inside a void would still be filled by the surface mesh, so block it.
+        if (surface.any { pointInsidePolygon(it, void) }) return true
+        return false
     }
+
+    private fun polygonEdgesIntersect(a: List<Vec2>, b: List<Vec2>): Boolean {
+        for (ai in a.indices) {
+            val a0 = a[ai]
+            val a1 = a[(ai + 1) % a.size]
+            for (bi in b.indices) {
+                val b0 = b[bi]
+                val b1 = b[(bi + 1) % b.size]
+                if (segmentsIntersect(a0, a1, b0, b1)) return true
+            }
+        }
+        return false
+    }
+
+    private fun segmentsIntersect(a: Vec2, b: Vec2, c: Vec2, d: Vec2): Boolean {
+        val o1 = orientation(a, b, c)
+        val o2 = orientation(a, b, d)
+        val o3 = orientation(c, d, a)
+        val o4 = orientation(c, d, b)
+        if (((o1 > EPSILON && o2 < -EPSILON) || (o1 < -EPSILON && o2 > EPSILON)) &&
+            ((o3 > EPSILON && o4 < -EPSILON) || (o3 < -EPSILON && o4 > EPSILON))
+        ) return true
+        if (abs(o1) <= EPSILON && pointOnSegment(c, a, b)) return true
+        if (abs(o2) <= EPSILON && pointOnSegment(d, a, b)) return true
+        if (abs(o3) <= EPSILON && pointOnSegment(a, c, d)) return true
+        if (abs(o4) <= EPSILON && pointOnSegment(b, c, d)) return true
+        return false
+    }
+
+    private fun orientation(a: Vec2, b: Vec2, c: Vec2): Float =
+        (b.x - a.x) * (c.z - a.z) - (b.z - a.z) * (c.x - a.x)
+
+    private fun pointOnSegment(point: Vec2, a: Vec2, b: Vec2): Boolean =
+        point.x >= min(a.x, b.x) - EPSILON &&
+            point.x <= max(a.x, b.x) + EPSILON &&
+            point.z >= min(a.z, b.z) - EPSILON &&
+            point.z <= max(a.z, b.z) + EPSILON
 
     private fun pointInsidePolygon(point: Vec2, polygon: List<Vec2>): Boolean {
         if (polygon.size < 3) return false
