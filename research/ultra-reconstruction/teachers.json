@@ -1,5 +1,5 @@
 {
-  "schema": 3,
+  "schema": 4,
   "checkedAt": "2026-09-01",
   "costPolicy": "zero-paid-services",
   "projectUse": "personal-non-commercial",
@@ -30,6 +30,14 @@
       "role": "independent polygon/topology cross-check teacher",
       "shipInPublicApk": false,
       "notes": "Teacher-only; exact pretrained checkpoint dataset terms must be respected before selecting a weight file."
+    },
+    {
+      "id": "cage",
+      "repository": "https://github.com/ee-Liu/CAGE.git",
+      "codeLicense": "MIT-with-Commons-Clause",
+      "role": "continuity-aware edge/topology teacher used to challenge polygon teachers on broken junctions and room boundaries",
+      "shipInPublicApk": false,
+      "notes": "The upstream license adds a Commons Clause and requires a separate commercial license for paid/commercial use. This project is currently personal/non-commercial, so CAGE is development-time teacher evidence only and is never bundled into the APK. If project use changes, disable this teacher unless separate permission is obtained."
     },
     {
       "id": "mitunet-wall",
