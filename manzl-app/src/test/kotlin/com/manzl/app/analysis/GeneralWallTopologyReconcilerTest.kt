@@ -13,13 +13,13 @@ class GeneralWallTopologyReconcilerTest {
     @Test
     fun `arbitrary angle T junction snaps only short endpoint to measured intersection`() {
         val diagonal = wall(-2f, -2f, 2f, 2f)
-        val branch = wall(-1.08f, 1f, -0.06f, 1f)
+        val branch = wall(-1.08f, 1f, 0.94f, 1f)
 
         val result = GeneralWallTopologyReconciler.reconcile(listOf(diagonal, branch))
 
         assertEquals(2, result.size)
         val horizontal = result.first { abs(it.start.z - it.end.z) < 0.001f }
-        // z=1 intersects x=1 on the 45-degree wall. The branch was 6 cm short and may extend only
+        // z=1 intersects x=1 on the 45-degree wall. The branch is 6 cm short and may extend only
         // to that mathematical intersection; the diagonal remains unchanged.
         assertTrue(distance(horizontal.start, Vec2(1f, 1f)) < 0.001f || distance(horizontal.end, Vec2(1f, 1f)) < 0.001f)
         val recoveredDiagonal = result.first { abs(it.start.z - it.end.z) > 1f }
