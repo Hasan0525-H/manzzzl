@@ -1,0 +1,201 @@
+#!/usr/bin/env python3
+"""Verify held-out real-plan end-to-end geometry evidence without duplicating runtime thresholds.
+
+The Android runtime remains the only authority for wall fidelity, local mismatch/topology integrity and
+reconstruction readiness thresholds. For every opaque sample in ``splits/test`` it exports one stable
+``*.geometry.json`` evidence file through ``EndToEndGeometryReleaseGate``. This verifier checks that the
+evidence set exactly matches the untouched test split and that every production gate passed.
+
+No source paths, original filenames, raw raster hashes or user labels are accepted as release evidence.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import pathlib
+import re
+
+import verify_real_training_inputs
+
+OPAQUE_SAMPLE_ID = re.compile(r"^sample-[0-9a-f]{32}$")
+EVIDENCE_FILE = re.compile(r"^(sample-[0-9a-f]{32})\.geometry\.json$")
+RATIO_FIELDS = (
+    "fidelityScore",
+    "wallCoverage",
+    "wallPrecision",
+    "endpointSupport",
+    "trustedRoomCoverage",
+)
+COUNT_FIELDS = (
+    "topologyNearMissCount",
+    "unresolvedOpeningCount",
+    "unsupportedVerticalVoidCount",
+    "unsupportedRoomBoundaryCount",
+    "trustedRoomCount",
+)
+FORBIDDEN_SOURCE_KEYS = {
+    "sourcePath",
+    "sourcePaths",
+    "sourceFilename",
+    "sourceFilenames",
+    "rawRasterHash",
+    "rawRasterSha256",
+    "userLabel",
+    "clientName",
+}
+
+
+def expected_test_ids(split_root: pathlib.Path) -> set[str]:
+    verify_real_training_inputs.verify(split_root)
+    ids = {path.stem for path in (split_root / "test").glob("*.npz")}
+    if not ids or any(OPAQUE_SAMPLE_ID.fullmatch(sample_id) is None for sample_id in ids):
+        raise RuntimeError("held-out test split does not contain only opaque sample ids")
+    return ids
+
+
+def discover_evidence(evidence_root: pathlib.Path) -> dict[str, pathlib.Path]:
+    evidence_root = evidence_root.resolve()
+    if not evidence_root.is_dir():
+        raise FileNotFoundError(f"geometry evidence directory is missing: {evidence_root}")
+    nested = [path for path in evidence_root.rglob("*.json") if path.parent != evidence_root]
+    if nested:
+        raise RuntimeError("geometry release evidence must be a flat directory")
+
+    result: dict[str, pathlib.Path] = {}
+    for path in sorted(evidence_root.glob("*.json")):
+        match = EVIDENCE_FILE.fullmatch(path.name)
+        if match is None:
+            raise RuntimeError(f"non-opaque or unexpected geometry evidence filename: {path.name}")
+        sample_id = match.group(1)
+        if sample_id in result:
+            raise RuntimeError(f"duplicate geometry evidence for {sample_id}")
+        result[sample_id] = path
+    if not result:
+        raise RuntimeError("geometry release evidence directory contains no samples")
+    return result
+
+
+def _reject_forbidden_source_fields(payload: dict) -> None:
+    present = sorted(FORBIDDEN_SOURCE_KEYS.intersection(payload))
+    if present:
+        raise ValueError(f"geometry evidence contains forbidden private source fields: {present}")
+
+
+def _ratio(payload: dict, key: str) -> float:
+    value = payload.get(key)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"geometry evidence field {key} must be numeric")
+    value = float(value)
+    if not (0.0 <= value <= 1.0):
+        raise ValueError(f"geometry evidence field {key} must be within [0, 1]")
+    return value
+
+
+def _count(payload: dict, key: str) -> int:
+    value = payload.get(key)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"geometry evidence field {key} must be a non-negative integer")
+    return value
+
+
+def load_sample(path: pathlib.Path, expected_id: str) -> dict:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"geometry evidence must be a JSON object: {path.name}")
+    _reject_forbidden_source_fields(payload)
+
+    required = {
+        "schema": 1,
+        "pipeline": "manzl-runtime-end-to-end-geometry-gates",
+        "sampleId": expected_id,
+        "sourcePathsStored": False,
+        "sourceFilenamesStored": False,
+        "rawRasterHashesStored": False,
+        "runtimeThresholdsDuplicated": False,
+        "geometryFidelityPass": True,
+        "geometryQualityGatePassed": True,
+        "reconstructionReadinessGatePassed": True,
+        "endToEnd2dTo3dGeometryGatesPassed": True,
+        "releaseReady": False,
+    }
+    for key, expected in required.items():
+        if payload.get(key) != expected:
+            raise ValueError(
+                f"geometry release contract failed for {expected_id} field {key}: "
+                f"{payload.get(key)!r} != {expected!r}"
+            )
+    if payload.get("fidelityStatus") != "PASS":
+        raise ValueError(f"geometry fidelity status is not PASS for {expected_id}")
+
+    for key in RATIO_FIELDS:
+        _ratio(payload, key)
+    for key in COUNT_FIELDS:
+        _count(payload, key)
+    return payload
+
+
+def verify(split_root: pathlib.Path, evidence_root: pathlib.Path) -> dict:
+    split_root = split_root.resolve()
+    expected = expected_test_ids(split_root)
+    evidence = discover_evidence(evidence_root)
+    actual = set(evidence)
+    missing = sorted(expected - actual)
+    unexpected = sorted(actual - expected)
+    if missing or unexpected:
+        raise RuntimeError(
+            f"geometry evidence set does not exactly match held-out test split; "
+            f"missing={missing[:8]} unexpected={unexpected[:8]}"
+        )
+
+    samples = [load_sample(evidence[sample_id], sample_id) for sample_id in sorted(expected)]
+    mins = {key: min(float(sample[key]) for sample in samples) for key in RATIO_FIELDS}
+    means = {
+        key: sum(float(sample[key]) for sample in samples) / len(samples)
+        for key in RATIO_FIELDS
+    }
+
+    return {
+        "schema": 1,
+        "pipeline": "manzl-held-out-real-plan-end-to-end-geometry-release-gate",
+        "testSamples": len(samples),
+        "evidenceSamples": len(samples),
+        "exactHeldOutSampleCoverage": True,
+        "runtimeThresholdsDuplicated": False,
+        "allGeometryFidelityPassed": True,
+        "allGeometryQualityGatesPassed": True,
+        "allReconstructionReadinessGatesPassed": True,
+        "allEndToEnd2dTo3dGeometryGatesPassed": True,
+        "minimumObservedMetrics": mins,
+        "meanObservedMetrics": means,
+        "releaseGeometryEvidencePassed": True,
+        "releaseReady": False,
+        "reason": (
+            "Held-out geometry evidence passed using production runtime decisions only. Final model "
+            "release still requires combining this attestation with the matching semantic final-test "
+            "attestation and model digest."
+        ),
+    }
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--splits", type=pathlib.Path, required=True)
+    parser.add_argument("--evidence", type=pathlib.Path, required=True)
+    parser.add_argument("--output", type=pathlib.Path)
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    report = verify(args.splits, args.evidence)
+    text = json.dumps(report, indent=2, sort_keys=True)
+    if args.output is not None:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(text, encoding="utf-8")
+    print(text)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
