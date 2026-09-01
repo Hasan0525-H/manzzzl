@@ -281,6 +281,21 @@ def normalize_state_dict(state: Any) -> dict[str, Any]:
     return normalized
 
 
+def is_runtime_cache_state_key(key: str) -> bool:
+    """Accept only upstream inference caches that are regenerated from the current sample.
+
+    Raster2Seq checkpoints can persist autoregressive KV/V cache buffers. They are not learned model
+    parameters: the pinned upstream KVCache/VCache implementation initializes these buffers to zeros and
+    updates them from the current inference sequence. No other unexpected checkpoint key is allowed.
+    """
+    parts = key.split(".")
+    if len(parts) >= 2 and parts[-2] == "kv_cache" and parts[-1] in {"k_cache", "v_cache"}:
+        return True
+    if len(parts) >= 3 and parts[-3:] == ["cross_attn", "cache", "v_cache"]:
+        return True
+    return False
+
+
 def load_model(
     repository: pathlib.Path,
     checkpoint: pathlib.Path,
@@ -313,7 +328,13 @@ def load_model(
     state = normalize_state_dict(copy.deepcopy(payload[state_key]))
     missing, unexpected = model.load_state_dict(state, strict=False)
     meaningful_unexpected = [
-        key for key in unexpected if not (key.endswith("total_params") or key.endswith("total_ops"))
+        key
+        for key in unexpected
+        if not (
+            key.endswith("total_params")
+            or key.endswith("total_ops")
+            or is_runtime_cache_state_key(key)
+        )
     ]
     if missing or meaningful_unexpected:
         raise RuntimeError(
