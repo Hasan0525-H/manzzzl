@@ -17,6 +17,7 @@ opaque output filenames, and fails closed if the report or directory layout is i
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import pathlib
 import re
@@ -79,6 +80,19 @@ def discover_split(root: pathlib.Path, name: str) -> list[pathlib.Path]:
     return files
 
 
+def opaque_set_fingerprint(files: list[pathlib.Path]) -> str:
+    """Privacy-safe identity for an exact split membership set.
+
+    The fingerprint hashes only already-opaque sample ids, never raw image bytes, raw raster hashes,
+    source paths, original filenames, user labels, or source_group provenance.
+    """
+    sample_ids = sorted(path.stem for path in files)
+    if not sample_ids:
+        raise RuntimeError("cannot fingerprint an empty release split")
+    payload = ("\n".join(sample_ids) + "\n").encode("ascii")
+    return hashlib.sha256(payload).hexdigest()
+
+
 def measured_group_count(root: pathlib.Path) -> int:
     _, _, groups = verify_dataset_split.index_split(root)
     if not groups:
@@ -124,8 +138,9 @@ def verify(split_root: pathlib.Path) -> dict:
     if len(all_names) != len(set(all_names)):
         raise RuntimeError("one opaque sampleId/filename appears in more than one held-out split")
 
+    fingerprints = {name: opaque_set_fingerprint(files[name]) for name in SPLITS}
     return {
-        "schema": 1,
+        "schema": 2,
         "pipeline": "private-real-release-training-input-gate",
         "splitRoot": split_root.name,
         "trainSamples": measured_samples["train"],
@@ -134,6 +149,8 @@ def verify(split_root: pathlib.Path) -> dict:
         "trainSourceGroups": measured_groups["train"],
         "validationSourceGroups": measured_groups["validation"],
         "testSourceGroups": measured_groups["test"],
+        "opaqueSplitSetFingerprints": fingerprints,
+        "fingerprintContainsOnlyOpaqueSampleIds": True,
         "pairwiseLeakageChecks": pairwise,
         "trainerMayRead": ["train", "validation"],
         "trainerMustNotRead": ["test"],

@@ -50,8 +50,8 @@ FORBIDDEN_SOURCE_KEYS = {
 
 
 def expected_test_ids(split_root: pathlib.Path) -> set[str]:
-    verify_real_training_inputs.verify(split_root)
-    ids = {path.stem for path in (split_root / "test").glob("*.npz")}
+    files = verify_real_training_inputs.discover_split(split_root, "test")
+    ids = {path.stem for path in files}
     if not ids or any(OPAQUE_SAMPLE_ID.fullmatch(sample_id) is None for sample_id in ids):
         raise RuntimeError("held-out test split does not contain only opaque sample ids")
     return ids
@@ -142,7 +142,9 @@ def load_sample(path: pathlib.Path, expected_id: str, expected_model_sha256: str
 def verify(split_root: pathlib.Path, evidence_root: pathlib.Path, candidate: pathlib.Path) -> dict:
     split_root = split_root.resolve()
     candidate = candidate.resolve()
+    preflight = verify_real_training_inputs.verify(split_root)
     expected = expected_test_ids(split_root)
+    test_set_fingerprint = preflight["opaqueSplitSetFingerprints"]["test"]
     model_path, training_attestation = evaluate_real_student_test.load_candidate(candidate)
     model_sha256 = training_attestation["sha256"]
     evidence = discover_evidence(evidence_root)
@@ -166,13 +168,15 @@ def verify(split_root: pathlib.Path, evidence_root: pathlib.Path, candidate: pat
     }
 
     return {
-        "schema": 2,
+        "schema": 3,
         "pipeline": "manzl-held-out-real-plan-end-to-end-geometry-release-gate",
         "model": model_path.name,
         "modelSha256": model_sha256,
         "modelBytes": model_path.stat().st_size,
         "candidateTrainingAttestationVerified": True,
         "geometryEvidenceBoundToExactModelDigest": True,
+        "testSetFingerprint": test_set_fingerprint,
+        "fingerprintContainsOnlyOpaqueSampleIds": True,
         "testSamples": len(samples),
         "evidenceSamples": len(samples),
         "exactHeldOutSampleCoverage": True,
@@ -186,9 +190,10 @@ def verify(split_root: pathlib.Path, evidence_root: pathlib.Path, candidate: pat
         "releaseGeometryEvidencePassed": True,
         "releaseReady": False,
         "reason": (
-            "Held-out geometry evidence passed using production runtime decisions and is bound to the "
-            "verified ONNX candidate digest. Final release still requires combining this attestation "
-            "with the matching semantic final-test attestation and an explicit semantic acceptance policy."
+            "Held-out geometry evidence passed using production runtime decisions, exact opaque test-set "
+            "membership, and the verified ONNX candidate digest. Final release still requires combining "
+            "this attestation with the matching semantic final-test attestation and a locked semantic "
+            "acceptance policy."
         ),
     }
 

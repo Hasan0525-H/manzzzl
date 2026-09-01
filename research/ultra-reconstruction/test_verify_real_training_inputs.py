@@ -66,16 +66,34 @@ class VerifyRealTrainingInputsTest(unittest.TestCase):
         report_path.write_text(json.dumps(report), encoding="utf-8")
         return groups, report_path, report
 
-    def test_valid_three_way_materialization_is_accepted(self):
+    def test_valid_three_way_materialization_is_accepted_with_privacy_safe_fingerprints(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp) / "splits"
             root.mkdir()
             self.make_fixture(root)
             report = verifier.verify(root)
             self.assertTrue(report["passed"])
+            self.assertEqual(report["schema"], 2)
             self.assertEqual(report["trainerMayRead"], ["train", "validation"])
             self.assertEqual(report["trainerMustNotRead"], ["test"])
             self.assertTrue(report["testReservedForFinalEvaluation"])
+            self.assertTrue(report["fingerprintContainsOnlyOpaqueSampleIds"])
+            fingerprints = report["opaqueSplitSetFingerprints"]
+            self.assertEqual(set(fingerprints), {"train", "validation", "test"})
+            self.assertTrue(all(len(value) == 64 for value in fingerprints.values()))
+            expected_test = verifier.opaque_set_fingerprint(sorted((root / "test").glob("*.npz")))
+            self.assertEqual(fingerprints["test"], expected_test)
+
+    def test_split_fingerprint_changes_when_opaque_membership_changes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp) / "splits"
+            root.mkdir()
+            self.make_fixture(root)
+            first = verifier.verify(root)["opaqueSplitSetFingerprints"]["test"]
+            original = next((root / "test").glob("*.npz"))
+            original.rename(root / "test" / ("sample-" + "4" * 32 + ".npz"))
+            second = verifier.opaque_set_fingerprint(sorted((root / "test").glob("*.npz")))
+            self.assertNotEqual(first, second)
 
     def test_missing_test_partition_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:

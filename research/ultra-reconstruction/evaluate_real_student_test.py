@@ -5,8 +5,8 @@ This is intentionally separate from ``train_real_student.py``. The candidate att
 test data was not used for training, model selection, or validation metrics. Only then is the ONNX model
 evaluated against ``splits/test``.
 
-Passing this semantic test evaluation still does not make the model release-ready: Manzl's end-to-end
-2D->3D geometry and overlay gates remain mandatory and are evaluated separately.
+Passing this semantic measurement still does not make the model release-ready: Manzl's end-to-end
+2D->3D geometry gates and a separately locked semantic acceptance policy remain mandatory.
 """
 
 from __future__ import annotations
@@ -107,13 +107,17 @@ def evaluate(args: argparse.Namespace) -> dict:
         raise RuntimeError("final held-out evaluator did not produce test metrics")
     metrics = json.loads(result_path.read_text(encoding="utf-8"))
 
+    test_fingerprint = preflight["opaqueSplitSetFingerprints"]["test"]
     final = {
-        "schema": 1,
+        "schema": 2,
         "pipeline": "manzl-private-real-student-final-test",
         "model": model_path.name,
         "sha256": training_attestation["sha256"],
+        "bytes": model_path.stat().st_size,
         "testSamples": preflight["testSamples"],
         "testSourceGroups": preflight["testSourceGroups"],
+        "testSetFingerprint": test_fingerprint,
+        "fingerprintContainsOnlyOpaqueSampleIds": True,
         "testMetrics": metrics,
         "testUsedForTraining": False,
         "testUsedForModelSelection": False,
@@ -121,11 +125,14 @@ def evaluate(args: argparse.Namespace) -> dict:
         "testUsedForFinalEvaluation": True,
         "heldOutTestIntegrityVerified": True,
         "semanticTestCompleted": True,
-        "endToEnd2dTo3dGeometryGatesPassed": False,
+        "semanticAcceptancePolicyEvaluated": False,
+        "semanticAcceptancePassed": False,
+        "geometryGatesEvaluatedByThisStep": False,
         "releaseReady": False,
         "reason": (
-            "The untouched real-plan semantic test has been measured. Release still requires measured "
-            "end-to-end wall/opening/room/scale/topology and 2D-overlay-to-3D geometry gates."
+            "The untouched real-plan semantic test has been measured and bound to the exact opaque test "
+            "set and ONNX digest. Release still requires a locked semantic acceptance policy plus the "
+            "separate measured end-to-end 2D-to-3D geometry gates."
         ),
     }
     attestation_path.write_text(json.dumps(final, indent=2, sort_keys=True), encoding="utf-8")
