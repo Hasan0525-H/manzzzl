@@ -268,27 +268,38 @@ def semantic_consensus(
         out=np.zeros_like(weighted_sum),
         where=weight_sum > 1e-6,
     )
-    order = np.argsort(mean_probs, axis=0)
+
+    # A class must first earn the required number of independent hard votes before it can compete to
+    # become the final winner. Without this filter, one unsupported high-confidence teacher could
+    # outrank two agreeing teachers, fail min_votes afterwards, and erase otherwise valid supervision.
+    # Missing channels remain abstentions and a one-vote class cannot act as a veto against quorum.
+    required_votes_by_class = np.full(class_count, min_votes, dtype=np.int16)
+    for class_name in CRITICAL_CLASSES:
+        required_votes_by_class[CLASS_TO_INDEX[class_name]] = critical_min_votes
+
+    eligible = (
+        (hard_votes >= required_votes_by_class[:, None, None]) &
+        (mean_probs >= min_probability) &
+        (weight_sum > 1e-6)
+    )
+    eligible_probs = np.where(eligible, mean_probs, -1.0)
+    order = np.argsort(eligible_probs, axis=0)
     winner = order[-1]
     runner = order[-2]
-    winner_prob = np.take_along_axis(mean_probs, winner[None, ...], axis=0)[0]
-    runner_prob = np.take_along_axis(mean_probs, runner[None, ...], axis=0)[0]
+    winner_prob = np.take_along_axis(eligible_probs, winner[None, ...], axis=0)[0]
+    runner_prob = np.take_along_axis(eligible_probs, runner[None, ...], axis=0)[0]
+    has_winner = winner_prob >= 0.0
+    # If only one class reaches quorum, there is no eligible competing class; compare against zero.
+    runner_prob = np.where(runner_prob >= 0.0, runner_prob, 0.0)
     margin = winner_prob - runner_prob
     winning_votes = np.take_along_axis(hard_votes, winner[None, ...], axis=0)[0]
 
-    required_votes = np.full((height, width), min_votes, dtype=np.int16)
-    for class_name in CRITICAL_CLASSES:
-        class_index = CLASS_TO_INDEX[class_name]
-        required_votes[winner == class_index] = critical_min_votes
-
-    supervision = (
-        (winner_prob >= min_probability) &
-        (margin >= min_margin) &
-        (winning_votes >= required_votes)
-    )
+    supervision = has_winner & (margin >= min_margin)
     semantic = winner.astype(np.int64)
     # Label value is irrelevant where supervision=0, but background keeps debug visualizations sane.
     semantic[~supervision] = CLASS_TO_INDEX["background"]
+    winner_prob = np.where(supervision, winner_prob, 0.0)
+    winning_votes = np.where(supervision, winning_votes, 0)
     return semantic, winner_prob.astype(np.float32), supervision.astype(np.float32), winning_votes
 
 
