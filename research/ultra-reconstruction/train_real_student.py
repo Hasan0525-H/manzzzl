@@ -4,11 +4,12 @@
 This wrapper is the only supported bridge from private real-corpus materialization into
 ``train_student.py``. It exposes only ``train`` and ``validation`` to the trainer. ``test`` is verified
 but never passed to training, model selection, or validation evaluation. A release candidate is started
-only when the corpus already meets the immutable release-scale policy, avoiding expensive training on a
-benchmark that can never be promoted. Validation evidence must cover the exact validation split.
+only when the corpus already meets the immutable release-scale policy. Validation evidence must cover
+the exact validation split.
 
-The wrapper never makes a model release-ready. Final held-out semantic and end-to-end geometry gates are
-separate release steps.
+The candidate attestation binds both opaque split membership and the exact aggregate NPZ artifact
+fingerprint measured before training. Later stages must re-measure the same fingerprints, so replacing
+samples after training cannot redefine the held-out benchmark.
 """
 
 from __future__ import annotations
@@ -94,6 +95,8 @@ def train(args: argparse.Namespace) -> dict:
     if preflight.get("trainerMustNotRead") != ["test"]:
         raise RuntimeError("real-training preflight does not reserve test exclusively")
     corpus_scale = release_corpus_scale.require(preflight)
+    membership = preflight["opaqueSplitSetFingerprints"]
+    artifacts = preflight["opaqueSplitArtifactFingerprints"]
 
     if args.output.exists():
         raise FileExistsError(f"real student output already exists; refusing overwrite: {args.output}")
@@ -111,6 +114,13 @@ def train(args: argparse.Namespace) -> dict:
         subprocess.run(train_command, check=True)
         subprocess.run(validation_command, check=True)
 
+        # Re-measure after training as well: a long training run must not race with corpus mutation.
+        postflight = verify_real_training_inputs.verify(args.splits)
+        if postflight["opaqueSplitSetFingerprints"] != membership:
+            raise RuntimeError("real-plan split membership changed while release-candidate training was running")
+        if postflight["opaqueSplitArtifactFingerprints"] != artifacts:
+            raise RuntimeError("real-plan NPZ artifacts changed while release-candidate training was running")
+
         model_path = staging / "manzl_reconstruction_student.onnx"
         metadata_path = staging / "manzl_reconstruction_student.json"
         validation_path = staging / "validation-eval.json"
@@ -123,7 +133,7 @@ def train(args: argparse.Namespace) -> dict:
             raise RuntimeError("real validation evidence has incorrect evaluator provenance")
         if validation.get("releaseReady") is not False:
             raise RuntimeError("validation evaluator must never declare a release model")
-        require_validation_full_coverage(validation, int(preflight["validationSamples"]))
+        require_validation_full_coverage(validation, int(postflight["validationSamples"]))
 
         digest = hashlib.sha256(model_path.read_bytes()).hexdigest()
         attestation = {
@@ -135,10 +145,19 @@ def train(args: argparse.Namespace) -> dict:
             "trainingSource": "privacy-preserving strict three-teacher consensus on private real floor plans",
             "trainingSplit": "train",
             "modelSelectionSplit": "validation",
+            "trainSetFingerprint": membership["train"],
+            "validationSetFingerprint": membership["validation"],
+            "testSetFingerprint": membership["test"],
+            "trainArtifactFingerprint": artifacts["train"],
+            "validationArtifactFingerprint": artifacts["validation"],
+            "testArtifactFingerprint": artifacts["test"],
+            "artifactFingerprintIsAggregateOnly": True,
+            "perSampleContentHashesStored": False,
             "validationEvaluation": validation,
             "validationMetricsExactSplitCoverage": True,
             "releaseCorpusScalePreflightPassed": True,
             "releaseCorpusScalePolicyVersion": corpus_scale["policyVersion"],
+            "splitArtifactsStableAcrossTraining": True,
             "testSplitPresentAndVerified": True,
             "testUsedForTraining": False,
             "testUsedForModelSelection": False,
@@ -147,9 +166,9 @@ def train(args: argparse.Namespace) -> dict:
             "realTrainingPreflightPassed": True,
             "releaseReady": False,
             "reason": (
-                "This release candidate was trained only after the real corpus met release-scale requirements, "
-                "and its validation metrics cover the exact validation split. The untouched test split and "
-                "end-to-end 2D-to-3D gates must still pass separately."
+                "This release candidate was trained only after the real corpus met release-scale requirements; "
+                "validation covers the exact split; and all split membership/artifact fingerprints remained "
+                "stable across training. The untouched test and end-to-end 2D-to-3D gates remain separate."
             ),
         }
         (staging / "real-training-attestation.json").write_text(
