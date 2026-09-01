@@ -108,14 +108,16 @@ class MaterializePrivateRealSplitsTest(unittest.TestCase):
     def test_wrong_salt_cannot_silently_reassign_samples(self):
         with tempfile.TemporaryDirectory() as tmp:
             base, consensus, _, source_groups, manifest, _ = self.make_fixture(tmp)
-            with self.assertRaisesRegex(RuntimeError, "salt/policy"):
+            output = base / "splits"
+            with self.assertRaisesRegex(RuntimeError, "absent from safe split manifest"):
                 materializer.materialize(
                     consensus,
                     source_groups,
                     manifest,
                     "different-private-salt",
-                    base / "splits",
+                    output,
                 )
+            self.assertFalse(output.exists())
 
     def test_existing_output_is_never_deleted_or_overwritten(self):
         with tempfile.TemporaryDirectory() as tmp:
