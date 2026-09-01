@@ -85,10 +85,32 @@ jobs:
           git -C /tmp/Raster2Seq checkout --detach a6c4e27a68d11d7a459f6e4a2601fd887227dd1a
           test "$(git -C /tmp/Raster2Seq rev-parse HEAD)" = "a6c4e27a68d11d7a459f6e4a2601fd887227dd1a"
 
-      - name: Fetch and verify pinned Raster2Graph-512 checkpoint
+      - name: Restore pinned Raster2Graph-512 checkpoint cache
+        id: raster2seq-checkpoint-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: /tmp/Raster2Graph-512
+          key: manzl-raster2graph-512-5736bf4fe1ebd8ef6cca63ea51c2c3f8971d6d1848dd9049fc5ca251bf565229
+
+      - name: Fetch pinned Raster2Graph-512 checkpoint on cache miss
+        if: steps.raster2seq-checkpoint-cache.outputs.cache-hit != 'true'
         run: |
           python research/ultra-reconstruction/fetch_raster2seq_teacher.py \
             --destination /tmp/Raster2Graph-512
+
+      - name: Verify cached Raster2Graph-512 checkpoint
+        if: steps.raster2seq-checkpoint-cache.outputs.cache-hit == 'true'
+        run: |
+          python research/ultra-reconstruction/fetch_raster2seq_teacher.py \
+            --destination /tmp/Raster2Graph-512 \
+            --verify-only
+
+      - name: Save verified Raster2Graph-512 checkpoint cache
+        if: steps.raster2seq-checkpoint-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: /tmp/Raster2Graph-512
+          key: manzl-raster2graph-512-5736bf4fe1ebd8ef6cca63ea51c2c3f8971d6d1848dd9049fc5ca251bf565229
 
       - name: Create rights-safe floorplan smoke image
         run: |
@@ -98,18 +120,14 @@ jobs:
           import numpy as np
 
           image = np.full((512, 512, 3), 255, dtype=np.uint8)
-          # Deliberately floorplan-like: double-line exterior/interior walls, several closed rooms,
-          # door gaps and window strokes. This image is generated here and carries no third-party data.
           cv2.rectangle(image, (34, 34), (478, 478), (15, 15, 15), 12)
           cv2.rectangle(image, (48, 48), (464, 464), (255, 255, 255), 4)
           cv2.line(image, (256, 46), (256, 466), (20, 20, 20), 10)
           cv2.line(image, (46, 250), (466, 250), (20, 20, 20), 10)
           cv2.line(image, (150, 252), (150, 466), (20, 20, 20), 9)
-          # Door gaps.
           cv2.rectangle(image, (249, 115), (263, 160), (255, 255, 255), -1)
           cv2.rectangle(image, (105, 243), (150, 257), (255, 255, 255), -1)
           cv2.rectangle(image, (249, 335), (263, 380), (255, 255, 255), -1)
-          # Window-like thin parallel strokes.
           cv2.line(image, (92, 35), (165, 35), (120, 120, 120), 3)
           cv2.line(image, (92, 47), (165, 47), (120, 120, 120), 3)
           cv2.line(image, (477, 300), (477, 370), (120, 120, 120), 3)
