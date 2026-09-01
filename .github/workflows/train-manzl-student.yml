@@ -8,6 +8,7 @@ on:
     paths:
       - 'research/ultra-reconstruction/generate_rights_safe_synthetic.py'
       - 'research/ultra-reconstruction/generate_synthetic_corpus.py'
+      - 'research/ultra-reconstruction/render_resplan_training.py'
       - 'research/ultra-reconstruction/train_student.py'
       - 'research/ultra-reconstruction/build_teacher_consensus.py'
       - '.github/workflows/train-manzl-student.yml'
@@ -38,10 +39,43 @@ jobs:
       - name: Install local-training dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install numpy==2.1.3 onnx==1.17.0 opencv-python-headless==4.10.0.84
+          python -m pip install numpy==1.26.4 onnx==1.17.0 opencv-python-headless==4.10.0.84 shapely==2.0.6
           python -m pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu
 
-      - name: Generate dual rights-safe train corpus
+      - name: Fetch pinned CC-BY ResPlan geometry
+        run: |
+          python - <<'PY'
+          import hashlib
+          import pathlib
+          import urllib.request
+
+          commit = 'e2b78fe069aee1ab1e1828a612743f308e3c32a7'
+          archive_url = f'https://raw.githubusercontent.com/m-agour/ResPlan/{commit}/ResPlan.zip'
+          split_url = f'https://raw.githubusercontent.com/m-agour/ResPlan/{commit}/split.json'
+          archive = pathlib.Path('/tmp/ResPlan.zip')
+          split = pathlib.Path('/tmp/ResPlan-split.json')
+          request = urllib.request.Request(archive_url, headers={'User-Agent': 'Manzl-ResPlan-Training/1'})
+          with urllib.request.urlopen(request, timeout=180) as response, archive.open('wb') as output:
+              while True:
+                  chunk = response.read(1024 * 1024)
+                  if not chunk:
+                      break
+                  output.write(chunk)
+          with urllib.request.urlopen(split_url, timeout=60) as response:
+              split.write_bytes(response.read())
+
+          expected_size = 100106537
+          expected_git_blob = '24d12b8739bdb55e0accc60ddd4cb460bcc9886c'
+          data = archive.read_bytes()
+          if len(data) != expected_size:
+              raise SystemExit(f'ResPlan archive size mismatch: {len(data)} != {expected_size}')
+          digest = hashlib.sha1(f'blob {len(data)}\0'.encode() + data).hexdigest()
+          if digest != expected_git_blob:
+              raise SystemExit(f'ResPlan Git blob mismatch: {digest} != {expected_git_blob}')
+          print(f'verified ResPlan CC-BY geometry blob: {digest} ({len(data)} bytes)')
+          PY
+
+      - name: Generate mixed rights-safe train corpus
         run: |
           rm -rf /tmp/manzl-train /tmp/manzl-val /tmp/manzl-student
           mkdir -p /tmp/manzl-train /tmp/manzl-val
@@ -49,12 +83,12 @@ jobs:
           # Curriculum A: exact procedural residential layouts from the original Manzl generator.
           python research/ultra-reconstruction/generate_rights_safe_synthetic.py \
             --output /tmp/manzl-train \
-            --count 160 \
+            --count 80 \
             --size 512 \
             --seed 43926
           python research/ultra-reconstruction/generate_rights_safe_synthetic.py \
             --output /tmp/manzl-val \
-            --count 48 \
+            --count 24 \
             --size 512 \
             --seed 90439
 
@@ -67,9 +101,21 @@ jobs:
             --seed 260901
           python research/ultra-reconstruction/generate_synthetic_corpus.py \
             --output /tmp/manzl-val \
-            --count 16 \
+            --count 24 \
             --size 512 \
             --seed 260902
+
+          # Curriculum C: realistic topology/proportions from the geometry-only CC BY 4.0 ResPlan
+          # release. No third-party listing images are downloaded or reproduced.
+          python research/ultra-reconstruction/render_resplan_training.py \
+            --archive /tmp/ResPlan.zip \
+            --split-json /tmp/ResPlan-split.json \
+            --train-output /tmp/manzl-train \
+            --val-output /tmp/manzl-val \
+            --train-count 80 \
+            --val-count 16 \
+            --size 512 \
+            --seed 20260901
 
           python - <<'PY'
           import pathlib
@@ -136,18 +182,19 @@ jobs:
           training = json.loads(training_path.read_text(encoding='utf-8'))
           digest = hashlib.sha256(model_path.read_bytes()).hexdigest()
           attestation = {
-              'schema': 2,
+              'schema': 3,
               'model': model_path.name,
               'sha256': digest,
               'bytes': model_path.stat().st_size,
-              'trainingSource': 'two independent rights-safe procedural Manzl corpora only',
+              'trainingSource': 'two original Manzl procedural corpora + CC BY 4.0 ResPlan geometry renderings',
               'trainingSamples': 240,
               'validationSamples': 64,
+              'resPlanAttribution': 'research/ultra-reconstruction/RESPLAN_ATTRIBUTION.md',
               'validation': training.get('validation'),
               'proposalOnly': True,
               'realPlanBenchmarkPassed': False,
               'releaseReady': False,
-              'reason': 'The bootstrap student makes the complete offline Ultra runtime executable, but synthetic validation is not evidence of real-plan quality. Teacher-consensus + real Saudi/Arabic regression gates remain mandatory.'
+              'reason': 'The bootstrap student makes the complete offline Ultra runtime executable and includes realistic licensed topology, but generated raster validation is not evidence of Saudi/Arabic real-plan accuracy. Teacher-consensus + real-plan regression gates remain mandatory.'
           }
           pathlib.Path('/tmp/manzl-student/manzl_reconstruction_student.quality.json').write_text(
               json.dumps(attestation, indent=2), encoding='utf-8'
@@ -191,10 +238,11 @@ jobs:
           manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
           for item in manifest.get('required', []):
               if item.get('id') == 'manzl_reconstruction_student':
-                  item['status'] = 'synthetic-bootstrap-proposal-only'
+                  item['status'] = 'mixed-rights-safe-bootstrap-proposal-only'
                   item['sha256'] = quality['sha256']
                   item['releaseReady'] = False
                   item['trainingSource'] = quality['trainingSource']
+                  item['attribution'] = quality['resPlanAttribution']
           manifest_path.write_text(json.dumps(manifest, indent=2), encoding='utf-8')
           PY
 
