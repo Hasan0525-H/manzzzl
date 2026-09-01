@@ -13,7 +13,9 @@ root plus a private ``families.json`` mapping, then emits two deliberately diffe
 
 A family is one underlying floor plan/house. All scans, screenshots, crops and CAD exports derived from
 that plan MUST share one family label in the private input mapping. Exact canonical raster duplicates
-are rejected locally so renamed copies cannot re-weight the benchmark.
+are rejected locally so renamed copies cannot re-weight the benchmark. A deliberately conservative
+perceptual guard also rejects near-identical large rasters assigned to different families (for example,
+recompressed/rescaled/whitespace-cropped copies), preventing one house from leaking across splits.
 
 This tool is intentionally local-only and has no network code.
 """
@@ -35,6 +37,14 @@ RASTER_HASH_DOMAIN = b"manzl-source-raster-v1\0"
 SAMPLE_HASH_DOMAIN = b"manzl-private-real-sample-v1\0"
 SPLIT_HASH_DOMAIN = b"manzl-private-real-split-v1\0"
 
+# Perceptual duplicate detection is intentionally conservative. Small synthetic/thumbnail images are
+# excluded because 64-bit hashes are not discriminative enough there. A pair is rejected only when
+# content aspect ratio and two independent hashes are simultaneously extremely close.
+NEAR_DUPLICATE_MIN_SIDE = 96
+NEAR_DUPLICATE_ASPECT_DELTA_MAX = 0.02
+NEAR_DUPLICATE_PHASH_DISTANCE_MAX = 2
+NEAR_DUPLICATE_DHASH_DISTANCE_MAX = 4
+
 
 @dataclass(frozen=True)
 class ImageRecord:
@@ -46,6 +56,13 @@ class ImageRecord:
     sample_id: str
     source_group: str
     split: str
+
+
+@dataclass(frozen=True)
+class PerceptualSignature:
+    phash: int
+    dhash: int
+    content_aspect: float
 
 
 def discover_images(root: pathlib.Path) -> list[pathlib.Path]:
@@ -129,6 +146,77 @@ def raster_digest(image: np.ndarray) -> str:
     return digest.hexdigest()
 
 
+def _structural_content(gray: np.ndarray) -> np.ndarray:
+    """Crop mostly-white margins before perceptual comparison.
+
+    Floor plans may be exported with different page margins or screenshot padding. We crop to the union
+    of dark/ink pixels, with a small safety margin, so those presentation changes do not defeat the
+    duplicate guard. The operation is used only locally and no fingerprint is emitted to safe metadata.
+    """
+    if gray.ndim != 2:
+        raise ValueError("perceptual signature expects grayscale input")
+    blurred = cv2.GaussianBlur(gray, (3, 3), 0)
+    threshold = min(248, max(180, int(np.percentile(blurred, 92))))
+    ink = (blurred < threshold).astype(np.uint8)
+    ys, xs = np.nonzero(ink)
+    if len(xs) < 32:
+        return gray
+    x0, x1 = int(xs.min()), int(xs.max())
+    y0, y1 = int(ys.min()), int(ys.max())
+    pad_x = max(2, int(round((x1 - x0 + 1) * 0.02)))
+    pad_y = max(2, int(round((y1 - y0 + 1) * 0.02)))
+    x0 = max(0, x0 - pad_x)
+    y0 = max(0, y0 - pad_y)
+    x1 = min(gray.shape[1] - 1, x1 + pad_x)
+    y1 = min(gray.shape[0] - 1, y1 + pad_y)
+    return gray[y0:y1 + 1, x0:x1 + 1]
+
+
+def _hash_bits(bits: np.ndarray) -> int:
+    result = 0
+    for index, bit in enumerate(bits.reshape(-1).tolist()):
+        if bool(bit):
+            result |= 1 << index
+    return result
+
+
+def perceptual_signature(image: np.ndarray) -> PerceptualSignature | None:
+    if min(int(image.shape[0]), int(image.shape[1])) < NEAR_DUPLICATE_MIN_SIDE:
+        return None
+    gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+    content = _structural_content(gray)
+    if min(content.shape[:2]) < 24:
+        return None
+
+    phash_input = cv2.resize(content, (32, 32), interpolation=cv2.INTER_AREA).astype(np.float32)
+    coefficients = cv2.dct(phash_input)[:8, :8].reshape(-1)
+    median = float(np.median(coefficients[1:]))
+    phash = _hash_bits(coefficients > median)
+
+    dhash_input = cv2.resize(content, (9, 8), interpolation=cv2.INTER_AREA)
+    dhash = _hash_bits(dhash_input[:, 1:] > dhash_input[:, :-1])
+    aspect = float(content.shape[1]) / float(max(1, content.shape[0]))
+    return PerceptualSignature(phash=phash, dhash=dhash, content_aspect=aspect)
+
+
+def _hamming(left: int, right: int) -> int:
+    return int((left ^ right).bit_count())
+
+
+def perceptually_same_plan(left: PerceptualSignature, right: PerceptualSignature) -> bool:
+    aspect_delta = abs(left.content_aspect - right.content_aspect) / max(
+        left.content_aspect,
+        right.content_aspect,
+        1e-6,
+    )
+    if aspect_delta > NEAR_DUPLICATE_ASPECT_DELTA_MAX:
+        return False
+    return (
+        _hamming(left.phash, right.phash) <= NEAR_DUPLICATE_PHASH_DISTANCE_MAX
+        and _hamming(left.dhash, right.dhash) <= NEAR_DUPLICATE_DHASH_DISTANCE_MAX
+    )
+
+
 def opaque_family_id(label: str, salt: str) -> str:
     digest = hashlib.sha256()
     digest.update(FAMILY_HASH_DOMAIN)
@@ -181,6 +269,7 @@ def build_manifests(
     seen_sample_ids: set[str] = set()
     family_splits: dict[str, str] = {}
     records: list[ImageRecord] = []
+    signatures: list[tuple[pathlib.Path, str, PerceptualSignature]] = []
 
     for source in images:
         relative = source.relative_to(image_root)
@@ -194,12 +283,25 @@ def build_manifests(
             )
         seen_rasters[pixel_sha256] = relative
 
+        group = opaque_family_id(families[relative], salt)
+        signature = perceptual_signature(image)
+        if signature is not None:
+            for prior_relative, prior_group, prior_signature in signatures:
+                if prior_group == group:
+                    continue
+                if perceptually_same_plan(prior_signature, signature):
+                    raise RuntimeError(
+                        "near-duplicate real-plan rasters were assigned to different families; scans, "
+                        "screenshots, crops, resized or recompressed variants of one house must share one "
+                        f"private family label: {prior_relative} and {relative}"
+                    )
+            signatures.append((relative, group, signature))
+
         sample_id = opaque_sample_id(pixel_sha256, salt)
         if sample_id in seen_sample_ids:
             raise RuntimeError("opaque sample-id collision detected; refusing ambiguous real corpus")
         seen_sample_ids.add(sample_id)
 
-        group = opaque_family_id(families[relative], salt)
         split = family_splits.setdefault(
             group,
             group_split(group, salt, validation_fraction=validation_fraction, test_fraction=test_fraction),
@@ -223,8 +325,6 @@ def build_manifests(
         split_counts[record.split] += 1
         group_counts[record.split].add(record.source_group)
 
-    # Keep schema 1 here because build_real_teacher_consensus.py already consumes that contract. The
-    # extra privacy metadata is additive; the path-bearing artifact remains explicitly local-only.
     source_groups = {
         "schema": 1,
         "format": "manzl-source-groups-local-v2",
@@ -240,8 +340,6 @@ def build_manifests(
         },
     }
 
-    # This artifact is safe to retain/share as benchmark metadata: no source paths, filenames, raw family
-    # labels, or raw pixel hashes leave the private preparation step.
     manifest = {
         "schema": 2,
         "purpose": "private-held-out-real-floorplan-corpus",
@@ -253,6 +351,12 @@ def build_manifests(
             "sourceGroupScheme": "sha256-domain-separated-corpus-salted-pseudonym",
             "sampleIdScheme": "sha256-domain-separated-corpus-salted-pseudonym",
             "safeToCommit": True,
+        },
+        "integrityPolicy": {
+            "exactRasterDuplicatesRejected": True,
+            "crossFamilyNearDuplicatesRejected": True,
+            "nearDuplicateFingerprintsStored": False,
+            "nearDuplicateGuard": "content-cropped-phash64-plus-dhash64-conservative-v1",
         },
         "splitPolicy": {
             "unit": "source_group",
@@ -330,6 +434,7 @@ def main() -> int:
         "uniqueSourceGroups": manifest["uniqueSourceGroups"],
         "samplesBySplit": manifest["samplesBySplit"],
         "sourceGroupsBySplit": manifest["sourceGroupsBySplit"],
+        "crossFamilyNearDuplicatesRejected": manifest["integrityPolicy"]["crossFamilyNearDuplicatesRejected"],
         "safeManifest": "split-manifest.json",
         "localOnlyManifest": "source-groups.local.json",
         "sourceImagesCopied": False,
