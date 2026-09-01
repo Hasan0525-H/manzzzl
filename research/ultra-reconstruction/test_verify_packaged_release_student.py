@@ -43,6 +43,10 @@ class VerifyPackagedReleaseStudentTest(unittest.TestCase):
             "trainingAttestationVerified": True,
             "candidateArtifactIntegrityPassed": True,
             "heldOutCorpusIdentityMatchedAcrossEvidence": True,
+            "releaseCorpusScalePassed": True,
+            "releaseCorpusScalePolicyVersion": 1,
+            "releaseCorpusScaleRecomputedAtFinalize": True,
+            "semanticMetricsExactHeldOutSampleCoverage": True,
             "semanticAcceptancePolicyLocked": True,
             "semanticAcceptancePolicyEvaluated": True,
             "relativeSemanticAcceptancePassed": True,
@@ -72,6 +76,7 @@ class VerifyPackagedReleaseStudentTest(unittest.TestCase):
                     "releaseEvidence": f"models/{verifier.RELEASE_NAME}",
                     "trainingProvenance": f"models/{verifier.TRAINING_NAME}",
                     "semanticQualityFloorVersion": 1,
+                    "releaseCorpusScalePolicyVersion": 1,
                 }
             ],
             "policy": {
@@ -92,6 +97,8 @@ class VerifyPackagedReleaseStudentTest(unittest.TestCase):
             report = verifier.verify(assets)
             self.assertTrue(report["releaseReady"])
             self.assertTrue(report["releaseEvidenceBundleVerified"])
+            self.assertTrue(report["releaseCorpusScalePassed"])
+            self.assertTrue(report["semanticMetricsExactHeldOutSampleCoverage"])
             self.assertTrue(report["absoluteSemanticQualityPassed"])
             self.assertTrue(report["semanticEvidenceRecomputedAtFinalize"])
 
@@ -112,6 +119,30 @@ class VerifyPackagedReleaseStudentTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "absoluteSemanticQualityPassed"):
                 verifier.verify(assets)
 
+    def test_release_without_corpus_scale_proof_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            assets, _, release, _ = self.make_assets(pathlib.Path(tmp))
+            release.pop("releaseCorpusScalePassed")
+            (assets / verifier.RELEASE_NAME).write_text(json.dumps(release), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "releaseCorpusScalePassed"):
+                verifier.verify(assets)
+
+    def test_wrong_corpus_scale_policy_version_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            assets, _, release, _ = self.make_assets(pathlib.Path(tmp))
+            release["releaseCorpusScalePolicyVersion"] = 2
+            (assets / verifier.RELEASE_NAME).write_text(json.dumps(release), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "releaseCorpusScalePolicyVersion"):
+                verifier.verify(assets)
+
+    def test_missing_exact_heldout_semantic_coverage_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            assets, _, release, _ = self.make_assets(pathlib.Path(tmp))
+            release["semanticMetricsExactHeldOutSampleCoverage"] = False
+            (assets / verifier.RELEASE_NAME).write_text(json.dumps(release), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "semanticMetricsExactHeldOutSampleCoverage"):
+                verifier.verify(assets)
+
     def test_wrong_absolute_floor_version_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             assets, _, release, _ = self.make_assets(pathlib.Path(tmp))
@@ -126,6 +157,14 @@ class VerifyPackagedReleaseStudentTest(unittest.TestCase):
             manifest["required"][0]["semanticQualityFloorVersion"] = 2
             (assets / verifier.MANIFEST_NAME).write_text(json.dumps(manifest), encoding="utf-8")
             with self.assertRaisesRegex(RuntimeError, "semanticQualityFloorVersion"):
+                verifier.verify(assets)
+
+    def test_manifest_must_bind_same_corpus_scale_version(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            assets, _, _, manifest = self.make_assets(pathlib.Path(tmp))
+            manifest["required"][0]["releaseCorpusScalePolicyVersion"] = 2
+            (assets / verifier.MANIFEST_NAME).write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "releaseCorpusScalePolicyVersion"):
                 verifier.verify(assets)
 
     def test_different_model_bytes_are_rejected(self):
