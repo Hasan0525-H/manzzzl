@@ -1,8 +1,18 @@
 {
-  "schema": 11,
+  "schema": 12,
   "checkedAt": "2026-09-01",
   "costPolicy": "zero-paid-services",
   "projectUse": "personal-non-commercial",
+  "realCorpusIntake": {
+    "tool": "prepare_private_real_corpus.py",
+    "sourceImagesStayOutsideGit": true,
+    "rawFamilyLabelsStayPrivate": true,
+    "safeManifestContainsSourcePaths": false,
+    "localOnlySourceGroupManifest": "source-groups.local.json",
+    "splitUnit": "underlying-floorplan-family",
+    "duplicateCanonicalRastersRejected": true,
+    "emptyRequestedHoldoutFailsClosed": true
+  },
   "teachers": [
     {
       "id": "raster2seq",
