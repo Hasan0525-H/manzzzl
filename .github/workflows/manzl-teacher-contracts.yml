@@ -48,3 +48,43 @@ jobs:
             -s research/ultra-reconstruction \
             -p 'test_*.py' \
             -v
+
+  cubicasa-checkpoint-fingerprint:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Download official CubiCasa checkpoint
+        run: |
+          python -m pip install --disable-pip-version-check gdown==5.2.0
+          gdown 'https://drive.google.com/uc?id=1gRB7ez1e4H7a9Y09lLqRuna0luZO5VRK' \
+            -O /tmp/model_best_val_loss_var.pkl
+
+      - name: Fingerprint checkpoint
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          import pathlib
+
+          path = pathlib.Path('/tmp/model_best_val_loss_var.pkl')
+          data = path.read_bytes()
+          if len(data) < 100_000_000:
+              raise SystemExit(f'checkpoint unexpectedly small: {len(data)} bytes')
+          prefix = data[:64].lstrip().lower()
+          if prefix.startswith(b'<!doctype html') or prefix.startswith(b'<html'):
+              raise SystemExit('Google Drive returned HTML instead of checkpoint bytes')
+          print('CUBICASA_CHECKPOINT_FINGERPRINT=' + json.dumps({
+              'sourceFileId': '1gRB7ez1e4H7a9Y09lLqRuna0luZO5VRK',
+              'fileName': 'model_best_val_loss_var.pkl',
+              'bytes': len(data),
+              'sha256': hashlib.sha256(data).hexdigest(),
+              'first16Hex': data[:16].hex(),
+          }, sort_keys=True))
+          PY
