@@ -13,6 +13,7 @@ HERE = pathlib.Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
+import evaluate_real_student_test  # noqa: E402
 import finalize_real_student_release as finalizer  # noqa: E402
 import real_semantic_policy  # noqa: E402
 import verify_real_training_inputs  # noqa: E402
@@ -65,9 +66,9 @@ class FinalizeRealStudentReleaseTest(unittest.TestCase):
         per_class = {}
         names = ("background",) + real_semantic_policy.CRITICAL_CLASSES
         for index, name in enumerate(names):
-            tp = 800 + index * 4
-            fp = 40 + index
-            fn = 55 + index
+            tp = 900 + index * 5
+            fp = 35 + index
+            fn = 45 + index
             per_class[name] = {
                 "present": True,
                 "iou": tp / (tp + fp + fn),
@@ -85,24 +86,24 @@ class FinalizeRealStudentReleaseTest(unittest.TestCase):
             "domain": domain,
             "samples": 24,
             "inputSize": 512,
-            "semantic": {"meanIoU": 0.85, "perClass": per_class},
+            "semantic": {"meanIoU": 0.90, "perClass": per_class},
             "corners": {
                 "runtimeThreshold": 0.56,
                 "thresholdMatchesAndroidCornerSnap": True,
-                "precision": 0.9,
-                "recall": 0.88,
-                "f1": 0.89,
-                "meanAbsoluteError": 0.05,
-                "supportPixels": 900,
+                "precision": 0.91,
+                "recall": 0.90,
+                "f1": 0.905,
+                "meanAbsoluteError": 0.04,
+                "supportPixels": 1000,
                 "evaluatedPixels": 9000,
-                "tp": 800,
-                "fp": 90,
-                "fn": 110,
+                "tp": 900,
+                "fp": 89,
+                "fn": 100,
             },
             "orientation": {
                 "signInvariant": True,
-                "meanAbsCosine": 0.94,
-                "meanAngularErrorDegrees": 8.0,
+                "meanAbsCosine": 0.98,
+                "meanAngularErrorDegrees": 6.0,
                 "supportPixels": 4000,
             },
             "releaseReady": False,
@@ -154,7 +155,9 @@ class FinalizeRealStudentReleaseTest(unittest.TestCase):
         policy_sha = hashlib.sha256(policy_path.read_bytes()).hexdigest()
         test_metrics = self.metrics("private-real-held-out-test")
         acceptance = real_semantic_policy.evaluate_metrics(locked, test_metrics)
+        absolute = evaluate_real_student_test.absolute_semantic_quality(test_metrics)
         self.assertTrue(acceptance["semanticAcceptancePassed"])
+        self.assertTrue(absolute["absoluteSemanticQualityPassed"])
 
         semantic = {
             "schema": 3,
@@ -169,6 +172,9 @@ class FinalizeRealStudentReleaseTest(unittest.TestCase):
             "testMetrics": test_metrics,
             "semanticPolicySha256": policy_sha,
             "semanticAcceptanceEvaluation": acceptance,
+            "absoluteSemanticQualityEvaluation": absolute,
+            "relativeSemanticAcceptancePassed": True,
+            "absoluteSemanticQualityPassed": True,
             "testUsedForTraining": False,
             "testUsedForModelSelection": False,
             "testUsedForValidationMetrics": False,
@@ -220,6 +226,10 @@ class FinalizeRealStudentReleaseTest(unittest.TestCase):
 
             self.assertTrue(report["releaseEvidenceBundleComplete"])
             self.assertTrue(report["semanticAcceptancePolicyLocked"])
+            self.assertTrue(report["relativeSemanticAcceptancePassed"])
+            self.assertTrue(report["absoluteSemanticQualityPassed"])
+            self.assertTrue(report["semanticEvidenceRecomputedAtFinalize"])
+            self.assertEqual(report["absoluteSemanticQualityFloorVersion"], 1)
             self.assertTrue(report["semanticAcceptancePassed"])
             self.assertTrue(report["geometryReleaseEvidencePassed"])
             self.assertTrue(report["releaseReady"])
@@ -237,7 +247,7 @@ class FinalizeRealStudentReleaseTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "sha256"):
                 finalizer.finalize(splits, candidate, policy_path, semantic, geometry)
 
-    def test_failed_semantic_acceptance_is_rejected(self):
+    def test_failed_semantic_acceptance_flag_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
             splits = self.make_splits(root)
@@ -247,6 +257,33 @@ class FinalizeRealStudentReleaseTest(unittest.TestCase):
             payload["semanticAcceptancePassed"] = False
             semantic.write_text(json.dumps(payload), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "semanticAcceptancePassed"):
+                finalizer.finalize(splits, candidate, policy_path, semantic, geometry)
+
+    def test_forged_absolute_pass_cannot_hide_weak_raw_metrics(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            splits = self.make_splits(root)
+            candidate, digest, size = self.make_candidate(root)
+            policy_path, semantic, geometry = self.write_evidence_bundle(root, splits, candidate, digest, size)
+            payload = json.loads(semantic.read_text(encoding="utf-8"))
+            floor = evaluate_real_student_test.ABSOLUTE_CLASS_FLOORS["door"]["recall"]
+            payload["testMetrics"]["semantic"]["perClass"]["door"]["recall"] = floor - 0.10
+            payload["absoluteSemanticQualityPassed"] = True
+            payload["semanticAcceptancePassed"] = True
+            semantic.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "recomputed absolute semantic quality failed"):
+                finalizer.finalize(splits, candidate, policy_path, semantic, geometry)
+
+    def test_stored_semantic_evaluation_must_match_recomputation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            splits = self.make_splits(root)
+            candidate, digest, size = self.make_candidate(root)
+            policy_path, semantic, geometry = self.write_evidence_bundle(root, splits, candidate, digest, size)
+            payload = json.loads(semantic.read_text(encoding="utf-8"))
+            payload["absoluteSemanticQualityEvaluation"]["checks"]["class:door:recall"]["actual"] = 1.0
+            semantic.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "does not match recomputed"):
                 finalizer.finalize(splits, candidate, policy_path, semantic, geometry)
 
     def test_different_held_out_corpus_fingerprint_is_rejected(self):
