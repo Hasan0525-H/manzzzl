@@ -3,8 +3,8 @@
 
 This is the APK boundary. A packaged student is accepted only when the app assets contain the exact
 ONNX artifact referenced by the final real-student release bundle produced after a release-scale real
-benchmark, locked relative semantic acceptance, immutable absolute semantic quality, and end-to-end
-geometry PASS. The verifier never upgrades an artifact or infers readiness from a training file.
+benchmark, full held-out semantic measurement, locked relative semantic acceptance, immutable absolute
+semantic quality, and end-to-end geometry PASS.
 """
 
 from __future__ import annotations
@@ -56,6 +56,7 @@ def verify(asset_root: pathlib.Path) -> dict:
         "releaseCorpusScalePassed": True,
         "releaseCorpusScalePolicyVersion": 1,
         "releaseCorpusScaleRecomputedAtFinalize": True,
+        "semanticMetricsExactHeldOutSampleCoverage": True,
         "semanticAcceptancePolicyLocked": True,
         "semanticAcceptancePolicyEvaluated": True,
         "relativeSemanticAcceptancePassed": True,
@@ -147,6 +148,7 @@ def verify(asset_root: pathlib.Path) -> dict:
         "releaseCorpusScalePassed": True,
         "releaseCorpusScalePolicyVersion": 1,
         "releaseCorpusScaleRecomputedAtFinalize": True,
+        "semanticMetricsExactHeldOutSampleCoverage": True,
         "relativeSemanticAcceptancePassed": True,
         "absoluteSemanticQualityPassed": True,
         "absoluteSemanticQualityFloorVersion": 1,
