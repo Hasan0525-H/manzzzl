@@ -16,15 +16,27 @@ if str(HERE) not in sys.path:
 import evaluate_real_student_test  # noqa: E402
 import finalize_real_student_release as finalizer  # noqa: E402
 import real_semantic_policy  # noqa: E402
+import release_corpus_scale  # noqa: E402
 import verify_real_training_inputs  # noqa: E402
 
 
 class FinalizeRealStudentReleaseTest(unittest.TestCase):
-    def write_sample(self, split: pathlib.Path, digest: str, group: str, value: int) -> None:
+    TRAIN_GROUPS = release_corpus_scale.MIN_SOURCE_GROUPS["train"]
+    VALIDATION_GROUPS = release_corpus_scale.MIN_SOURCE_GROUPS["validation"]
+    TEST_GROUPS = release_corpus_scale.MIN_SOURCE_GROUPS["test"]
+
+    def write_sample(self, split: pathlib.Path, index: int) -> None:
         split.mkdir(parents=True, exist_ok=True)
+        digest = f"{index:032x}"
+        group = "private:" + f"{index:032x}"
+        # Every sample has distinct source pixels so exact-raster leakage checks stay meaningful.
+        image = np.zeros((12, 16, 3), dtype=np.uint8)
+        image[:, :, 0] = index % 251
+        image[index % 12, :, 1] = (index * 7) % 251
+        image[:, index % 16, 2] = (index * 11) % 251
         np.savez_compressed(
             split / f"sample-{digest}.npz",
-            image=np.full((12, 16, 3), value, dtype=np.uint8),
+            image=image,
             semantic=np.zeros((12, 16), dtype=np.int64),
             supervision_mask=np.ones((12, 16), dtype=np.float32),
             source_group=np.asarray(group),
@@ -33,15 +45,23 @@ class FinalizeRealStudentReleaseTest(unittest.TestCase):
     def make_splits(self, root: pathlib.Path) -> pathlib.Path:
         splits = root / "splits"
         splits.mkdir()
-        self.write_sample(splits / "train", "1" * 32, "private:" + "a" * 32, 10)
-        self.write_sample(splits / "validation", "2" * 32, "private:" + "b" * 32, 20)
-        self.write_sample(splits / "test", "3" * 32, "private:" + "c" * 32, 30)
+        cursor = 1
+        counts = {
+            "train": self.TRAIN_GROUPS,
+            "validation": self.VALIDATION_GROUPS,
+            "test": self.TEST_GROUPS,
+        }
+        for name, count in counts.items():
+            for _ in range(count):
+                self.write_sample(splits / name, cursor)
+                cursor += 1
+
         report = {
             "schema": 2,
             "pipeline": "private-real-consensus-to-held-out-splits",
-            "samples": 3,
-            "samplesBySplit": {"train": 1, "validation": 1, "test": 1},
-            "sourceGroupsBySplit": {"train": 1, "validation": 1, "test": 1},
+            "samples": sum(counts.values()),
+            "samplesBySplit": counts,
+            "sourceGroupsBySplit": counts,
             "splitPolicy": {
                 "unit": "source_group",
                 "deterministic": True,
@@ -81,10 +101,11 @@ class FinalizeRealStudentReleaseTest(unittest.TestCase):
                 "intersection": tp,
                 "union": tp + fp + fn,
             }
+        samples = self.VALIDATION_GROUPS if domain == "private-real-validation" else self.TEST_GROUPS
         return {
             "schema": 2,
             "domain": domain,
-            "samples": 24,
+            "samples": samples,
             "inputSize": 512,
             "semantic": {"meanIoU": 0.90, "perClass": per_class},
             "corners": {
@@ -221,10 +242,13 @@ class FinalizeRealStudentReleaseTest(unittest.TestCase):
             splits = self.make_splits(root)
             candidate, digest, size = self.make_candidate(root)
             policy_path, semantic, geometry = self.write_evidence_bundle(root, splits, candidate, digest, size)
-
             report = finalizer.finalize(splits, candidate, policy_path, semantic, geometry)
 
             self.assertTrue(report["releaseEvidenceBundleComplete"])
+            self.assertTrue(report["releaseCorpusScalePassed"])
+            self.assertEqual(report["releaseCorpusScalePolicyVersion"], 1)
+            self.assertTrue(report["releaseCorpusScaleRecomputedAtFinalize"])
+            self.assertTrue(report["semanticMetricsExactHeldOutSampleCoverage"])
             self.assertTrue(report["semanticAcceptancePolicyLocked"])
             self.assertTrue(report["relativeSemanticAcceptancePassed"])
             self.assertTrue(report["absoluteSemanticQualityPassed"])
@@ -272,6 +296,18 @@ class FinalizeRealStudentReleaseTest(unittest.TestCase):
             payload["semanticAcceptancePassed"] = True
             semantic.write_text(json.dumps(payload), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "recomputed absolute semantic quality failed"):
+                finalizer.finalize(splits, candidate, policy_path, semantic, geometry)
+
+    def test_semantic_subset_cannot_claim_full_heldout_coverage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            splits = self.make_splits(root)
+            candidate, digest, size = self.make_candidate(root)
+            policy_path, semantic, geometry = self.write_evidence_bundle(root, splits, candidate, digest, size)
+            payload = json.loads(semantic.read_text(encoding="utf-8"))
+            payload["testMetrics"]["samples"] = self.TEST_GROUPS - 1
+            semantic.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "do not cover the exact full test split"):
                 finalizer.finalize(splits, candidate, policy_path, semantic, geometry)
 
     def test_stored_semantic_evaluation_must_match_recomputation(self):
