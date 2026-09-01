@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the official CubiCasa5K FloorTrans model as a Manzl development-time teacher.
+"""Run the pinned CubiCasa5K FloorTrans model as a Manzl development-time teacher.
 
 The upstream model produces 44 channels split as 21 junction heatmaps, 12 room classes and 11 icon
 classes. Manzl consumes only evidence that maps cleanly into its mobile reconstruction vocabulary:
@@ -20,15 +20,21 @@ thin polygon-outline evidence; consensus still requires the two teachers to agre
 The teacher deliberately does not claim stairs, columns, courtyards or shafts. Those classes remain
 abstentions until an independent teacher actually supports them.
 
-CubiCasa5K code/data and the published pretrained weight are CC-BY-NC-4.0 for the current checkpoint
-lineage. This script is therefore for the user's personal/non-commercial development-time distillation
-pipeline only. The checkpoint must never be bundled in the public APK. Runtime remains offline and
-zero-cost.
+Both upstream source revision and checkpoint bytes are pinned. The checkpoint is verified by exact
+size + SHA-256 before PyTorch deserialization. The upstream ``get_model`` helper is intentionally not
+used because it first loads a legacy human-pose pretraining file from the process working directory;
+that initialization is unnecessary when the full CubiCasa checkpoint is loaded immediately afterward
+and makes modern/reproducible invocation fragile.
+
+CubiCasa5K code/data and the published pretrained weight are CC-BY-NC-4.0. This script is therefore for
+personal/non-commercial development-time distillation only. Neither upstream weights nor source are
+bundled in the Android APK. Runtime remains offline and zero-cost.
 
 Expected preparation:
 
   python research/ultra-reconstruction/bootstrap_teachers.py
-  # Place the official model_best_val_loss_var.pkl inside the cloned CubiCasa repository.
+  python -m pip install gdown==5.2.0
+  python research/ultra-reconstruction/fetch_cubicasa_teacher.py
 
 For pixel alignment with Raster2Seq, point ``--input`` at Raster2Seq's saved transformed images. The
 script preserves each source image's exact dimensions and relative stem when writing NPZ samples.
@@ -38,15 +44,19 @@ from __future__ import annotations
 
 import argparse
 import pathlib
+import subprocess
 import sys
 from typing import Iterable
 
 import cv2
 import numpy as np
 
+from fetch_cubicasa_teacher import verify as verify_checkpoint
+
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 DEFAULT_REPOSITORY = ROOT / ".cache" / "manzl-teachers" / "cubicasa-floortrans"
 DEFAULT_CHECKPOINT_NAME = "model_best_val_loss_var.pkl"
+PINNED_REPOSITORY_REVISION = "c34440266665a11f4484eb06cd2e4b7d72ad76c1"
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"}
 
 HEATMAP_CHANNELS = 21
@@ -180,13 +190,7 @@ def encode_floortrans_probabilities(
     wall_score = wall * (1.0 - opening) * boundary_suppression
     background_score = (1.0 - wall) * (1.0 - opening) * boundary_suppression
     scores = np.stack(
-        [
-            background_score,
-            wall_score,
-            door,
-            window,
-            boundary,
-        ],
+        [background_score, wall_score, door, window, boundary],
         axis=0,
     ).astype(np.float32)
     semantic_probs = normalize_distribution(scores, axis=0)
@@ -199,26 +203,58 @@ def encode_floortrans_probabilities(
     return semantic_probs, confidence, valid_mask
 
 
+def verify_repository_revision(repository: pathlib.Path) -> None:
+    if not (repository / ".git").exists():
+        raise RuntimeError(
+            f"CubiCasa source must be a pinned git checkout, but .git is missing: {repository}"
+        )
+    try:
+        actual = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repository,
+            text=True,
+            stderr=subprocess.STDOUT,
+        ).strip()
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise RuntimeError(f"Could not verify CubiCasa source revision: {repository}") from error
+    if actual != PINNED_REPOSITORY_REVISION:
+        raise RuntimeError(
+            "CubiCasa source revision mismatch: "
+            f"{actual} != {PINNED_REPOSITORY_REVISION}. Run bootstrap_teachers.py."
+        )
+
+
+def trusted_torch_load(torch_module, checkpoint: pathlib.Path, device):
+    """Load only after exact byte verification; support both old and new PyTorch APIs."""
+    verify_checkpoint(checkpoint)
+    try:
+        return torch_module.load(checkpoint, map_location=device, weights_only=False)
+    except TypeError:
+        # ``weights_only`` did not exist in older PyTorch. The bytes are still pinned and verified.
+        return torch_module.load(checkpoint, map_location=device)
+
+
 def load_model(repository: pathlib.Path, checkpoint: pathlib.Path, device_name: str):
-    # Upstream FloorTrans is an old research stack. Import it lazily from the pinned local clone so the
-    # lightweight contract suite does not need those heavyweight dependencies.
+    # Upstream FloorTrans is an old research stack. Import it lazily from the exact pinned local clone
+    # so lightweight contract tooling does not need PyTorch.
     import torch
 
     if not repository.is_dir():
         raise FileNotFoundError(
-            f"CubiCasa repository is missing: {repository}. "
-            "Run bootstrap_teachers.py first."
+            f"CubiCasa repository is missing: {repository}. Run bootstrap_teachers.py first."
         )
     if not checkpoint.is_file():
         raise FileNotFoundError(
-            f"CubiCasa checkpoint is missing: {checkpoint}. "
-            "Place the official model_best_val_loss_var.pkl there before inference."
+            f"CubiCasa checkpoint is missing: {checkpoint}. Run fetch_cubicasa_teacher.py first."
         )
+    verify_repository_revision(repository)
 
     repository_text = str(repository.resolve())
     if repository_text not in sys.path:
         sys.path.insert(0, repository_text)
-    from floortrans.models import get_model
+    # Do not call floortrans.models.get_model(): it invokes init_weights(), which loads a separate
+    # legacy file relative to process cwd. The complete pinned checkpoint replaces all weights anyway.
+    from floortrans.models.hg_furukawa_original import hg_furukawa_original
 
     if device_name == "auto":
         device_name = "cuda" if torch.cuda.is_available() else "cpu"
@@ -226,7 +262,7 @@ def load_model(repository: pathlib.Path, checkpoint: pathlib.Path, device_name: 
         raise RuntimeError("--device cuda requested but CUDA is unavailable")
     device = torch.device(device_name)
 
-    model = get_model("hg_furukawa_original", 51)
+    model = hg_furukawa_original(n_classes=51)
     model.conv4_ = torch.nn.Conv2d(256, TOTAL_CHANNELS, bias=True, kernel_size=1)
     model.upsample = torch.nn.ConvTranspose2d(
         TOTAL_CHANNELS,
@@ -235,7 +271,7 @@ def load_model(repository: pathlib.Path, checkpoint: pathlib.Path, device_name: 
         stride=4,
     )
 
-    checkpoint_payload = torch.load(checkpoint, map_location=device)
+    checkpoint_payload = trusted_torch_load(torch, checkpoint, device)
     if not isinstance(checkpoint_payload, dict):
         raise ValueError("Unexpected CubiCasa checkpoint payload")
     state = checkpoint_payload.get("model_state")
@@ -324,7 +360,7 @@ def save_prediction(
         semantic_classes=np.asarray(LOCAL_CLASSES, dtype="U32"),
         confidence=confidence,
         valid_mask=valid_mask,
-        teacher_format=np.asarray(["cubicasa-floortrans-room-icon-v2-boundary"], dtype="U64"),
+        teacher_format=np.asarray(["cubicasa-floortrans-room-icon-v3-pinned"], dtype="U64"),
     )
 
 
