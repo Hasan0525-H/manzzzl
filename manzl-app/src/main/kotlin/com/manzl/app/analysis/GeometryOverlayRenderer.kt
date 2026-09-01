@@ -4,9 +4,11 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Path
 import com.manzl.app.model.FloorPlan
 import com.manzl.app.model.GeometryFidelityIssueKind
 import com.manzl.app.model.GeometryFidelityStatus
+import com.manzl.app.model.StructuralColumn
 import com.manzl.app.model.Vec2
 import com.manzl.app.model.WallSegment
 import kotlin.math.PI
@@ -17,9 +19,9 @@ import kotlin.math.sin
 /**
  * Renders the extracted geometry directly over the uploaded plan.
  *
- * This is a development/user trust surface, not a decorative preview: if a wall is missing, shifted
- * or stops just short of a real junction, the mismatch is visible before the user is allowed into
- * 3D. The source bitmap is never modified.
+ * This is a development/user trust surface, not a decorative preview: if a wall/column is missing,
+ * shifted or stops just short of a real junction, the mismatch is visible before the user is allowed
+ * into 3D. The source bitmap is never modified.
  */
 internal object GeometryOverlayRenderer {
 
@@ -65,8 +67,10 @@ internal object GeometryOverlayRenderer {
             canvas.drawCircle(bx, by, radius, endpointPaint)
         }
 
-        // Draw these after walls so the exact crack remains visible instead of being hidden under the
-        // regular amber/green endpoint dots. The marker is diagnostic only and never snaps geometry.
+        drawColumns(canvas, plan, transform, pixelsPerMeter)
+
+        // Draw these after walls/columns so the exact crack remains visible instead of being hidden
+        // under regular endpoint/structural markers. The marker is diagnostic only and never snaps.
         drawTopologyNearMisses(canvas, plan, transform, pixelsPerMeter)
 
         val doorPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -103,6 +107,65 @@ internal object GeometryOverlayRenderer {
 
         if (scaled !== source && !scaled.isRecycled) scaled.recycle()
         return output
+    }
+
+    private fun drawColumns(
+        canvas: Canvas,
+        plan: FloorPlan,
+        transform: PlanRasterTransform,
+        pixelsPerMeter: Float,
+    ) {
+        if (plan.columns.isEmpty()) return
+        val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.FILL
+            color = Color.argb(72, 111, 57, 176)
+        }
+        val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeJoin = Paint.Join.ROUND
+            strokeWidth = max(2.5f, pixelsPerMeter * 0.025f)
+            color = Color.argb(235, 92, 42, 158)
+        }
+
+        plan.columns
+            .filter { it.confidence >= MIN_COLUMN_OVERLAY_CONFIDENCE }
+            .forEach { column ->
+                val corners = columnCorners(column)
+                if (corners.size != 4) return@forEach
+                val path = Path()
+                val first = transform.planToImage(corners.first())
+                path.moveTo(first.first, first.second)
+                corners.drop(1).forEach { point ->
+                    val pixel = transform.planToImage(point)
+                    path.lineTo(pixel.first, pixel.second)
+                }
+                path.close()
+                canvas.drawPath(path, fill)
+                canvas.drawPath(path, stroke)
+            }
+    }
+
+    private fun columnCorners(column: StructuralColumn): List<Vec2> {
+        if (column.widthMeters <= 0f || column.depthMeters <= 0f) return emptyList()
+        val radians = column.rotationDegrees * PI.toFloat() / 180f
+        val ux = cos(radians)
+        val uz = sin(radians)
+        val nx = -uz
+        val nz = ux
+        val halfW = column.widthMeters * 0.5f
+        val halfD = column.depthMeters * 0.5f
+
+        fun point(along: Float, depth: Float) = Vec2(
+            x = column.center.x + ux * along + nx * depth,
+            z = column.center.z + uz * along + nz * depth,
+        )
+
+        return listOf(
+            point(-halfW, -halfD),
+            point(halfW, -halfD),
+            point(halfW, halfD),
+            point(-halfW, halfD),
+        )
     }
 
     private fun drawLocalizedIssues(
@@ -216,5 +279,6 @@ internal object GeometryOverlayRenderer {
     private const val DEFAULT_MAX_SIDE = 1200
     private const val MIN_WALL_STROKE_PX = 2.5f
     private const val MIN_ENDPOINT_RADIUS_PX = 2.2f
+    private const val MIN_COLUMN_OVERLAY_CONFIDENCE = 0.74f
     private const val TOPOLOGY_MARKER_RADIUS_METERS = 0.08f
 }
