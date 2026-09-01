@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import pathlib
+import sys
 import tempfile
 import unittest
 
@@ -13,6 +14,7 @@ MODULE_PATH = pathlib.Path(__file__).with_name("prepare_private_real_corpus.py")
 SPEC = importlib.util.spec_from_file_location("prepare_private_real_corpus", MODULE_PATH)
 assert SPEC is not None and SPEC.loader is not None
 module = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = module
 SPEC.loader.exec_module(module)
 
 
