@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import pathlib
 import sys
 import tempfile
@@ -77,6 +78,50 @@ class RealTeacherAlignmentTest(unittest.TestCase):
 
             with self.assertRaisesRegex(RuntimeError, "sample sets are not identical"):
                 real_consensus.validate_exact_alignment(teachers)
+
+    def test_source_group_manifest_must_cover_exact_sample_set(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="manzl-source-groups-") as raw_tmp:
+            base = pathlib.Path(raw_tmp)
+            manifest = base / "groups.json"
+            manifest.write_text(
+                json.dumps({"schema": 1, "groups": {"nested/a.npz": "house:A"}}),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "exact teacher sample set"):
+                real_consensus.load_source_groups(
+                    manifest,
+                    [pathlib.Path("nested/a.npz"), pathlib.Path("nested/b.npz")],
+                )
+
+    def test_source_group_manifest_preserves_family_variants(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="manzl-source-groups-valid-") as raw_tmp:
+            base = pathlib.Path(raw_tmp)
+            manifest = base / "groups.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "schema": 1,
+                        "groups": {
+                            "scan/a.npz": "private:house-17",
+                            "cad/a.npz": "private:house-17",
+                            "scan/b.npz": "private:house-99",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            samples = [
+                pathlib.Path("cad/a.npz"),
+                pathlib.Path("scan/a.npz"),
+                pathlib.Path("scan/b.npz"),
+            ]
+
+            groups = real_consensus.load_source_groups(manifest, samples)
+
+            self.assertEqual("private:house-17", groups[pathlib.Path("scan/a.npz")])
+            self.assertEqual("private:house-17", groups[pathlib.Path("cad/a.npz")])
+            self.assertEqual(2, len(set(groups.values())))
 
 
 if __name__ == "__main__":
