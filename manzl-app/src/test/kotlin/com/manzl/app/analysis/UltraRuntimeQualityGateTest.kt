@@ -15,6 +15,10 @@ class UltraRuntimeQualityGateTest {
                     UltraModelCatalog.MOBILE_SAM_ENCODER,
                     UltraModelCatalog.MOBILE_SAM_DECODER,
                 ),
+                integrityVerifiedAssets = setOf(
+                    UltraModelCatalog.MOBILE_SAM_ENCODER,
+                    UltraModelCatalog.MOBILE_SAM_DECODER,
+                ),
             )
         )
 
@@ -29,6 +33,10 @@ class UltraRuntimeQualityGateTest {
             UltraModelAvailability(
                 onnxRuntimeReady = true,
                 presentAssets = UltraModelCatalog.requiredForUltraRuntime.toSet(),
+                integrityVerifiedAssets = setOf(
+                    UltraModelCatalog.MOBILE_SAM_ENCODER,
+                    UltraModelCatalog.MOBILE_SAM_DECODER,
+                ),
             )
         )
 
@@ -38,14 +46,14 @@ class UltraRuntimeQualityGateTest {
     }
 
     @Test
-    fun `release approved student with matching integrity allows ultra reconstruction`() {
+    fun `release approved student with every verified digest allows ultra reconstruction`() {
         val student = UltraModelCatalog.MANZL_RECONSTRUCTION_STUDENT
         val decision = UltraRuntimeQualityGate.evaluate(
             UltraModelAvailability(
                 onnxRuntimeReady = true,
                 presentAssets = UltraModelCatalog.requiredForUltraRuntime.toSet(),
                 releaseApprovedAssets = setOf(student),
-                integrityVerifiedAssets = setOf(student),
+                integrityVerifiedAssets = UltraModelCatalog.requiredIntegrityAssets,
             )
         )
 
@@ -57,14 +65,38 @@ class UltraRuntimeQualityGateTest {
     }
 
     @Test
-    fun `approved metadata with mismatched model hash blocks ultra reconstruction`() {
+    fun `approved student still blocks when MobileSAM encoder digest is not verified`() {
         val student = UltraModelCatalog.MANZL_RECONSTRUCTION_STUDENT
         val decision = UltraRuntimeQualityGate.evaluate(
             UltraModelAvailability(
                 onnxRuntimeReady = true,
                 presentAssets = UltraModelCatalog.requiredForUltraRuntime.toSet(),
                 releaseApprovedAssets = setOf(student),
-                integrityVerifiedAssets = emptySet(),
+                integrityVerifiedAssets = setOf(
+                    student,
+                    UltraModelCatalog.MOBILE_SAM_DECODER,
+                ),
+            )
+        )
+
+        assertFalse(decision.ready)
+        assertTrue(UltraModelCatalog.MOBILE_SAM_ENCODER in decision.integrityFailedAssets)
+        assertTrue(decision.messageArabic.orEmpty().contains("MobileSAM Encoder"))
+        assertTrue(decision.messageArabic.orEmpty().contains("SHA-256"))
+    }
+
+    @Test
+    fun `approved metadata with mismatched student hash blocks ultra reconstruction`() {
+        val student = UltraModelCatalog.MANZL_RECONSTRUCTION_STUDENT
+        val decision = UltraRuntimeQualityGate.evaluate(
+            UltraModelAvailability(
+                onnxRuntimeReady = true,
+                presentAssets = UltraModelCatalog.requiredForUltraRuntime.toSet(),
+                releaseApprovedAssets = setOf(student),
+                integrityVerifiedAssets = setOf(
+                    UltraModelCatalog.MOBILE_SAM_ENCODER,
+                    UltraModelCatalog.MOBILE_SAM_DECODER,
+                ),
             )
         )
 
@@ -81,7 +113,7 @@ class UltraRuntimeQualityGateTest {
                 onnxRuntimeReady = false,
                 presentAssets = UltraModelCatalog.requiredForUltraRuntime.toSet(),
                 releaseApprovedAssets = setOf(student),
-                integrityVerifiedAssets = setOf(student),
+                integrityVerifiedAssets = UltraModelCatalog.requiredIntegrityAssets,
             )
         )
 
