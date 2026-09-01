@@ -63,10 +63,6 @@ internal data class UltraModelAvailability(
         }
 }
 
-/**
- * Loads bundled ONNX assets only. There is deliberately no URL/download path here; the release APK
- * must work in airplane mode and can never silently switch to a paid/cloud inference service.
- */
 internal class OnnxAssetModelRepository(context: Context) : Closeable {
     private val appContext = context.applicationContext
     private val environment: OrtEnvironment? = runCatching { OrtEnvironment.getEnvironment() }.getOrNull()
@@ -78,16 +74,10 @@ internal class OnnxAssetModelRepository(context: Context) : Closeable {
         val release = studentFinalReleaseAttestation()
         val integrity = buildSet {
             if (release.integrityVerified) add(UltraModelCatalog.MANZL_RECONSTRUCTION_STUDENT)
-            if (
-                sha256Asset(UltraModelCatalog.MOBILE_SAM_ENCODER) ==
-                UltraModelCatalog.MOBILE_SAM_ENCODER_SHA256
-            ) {
+            if (sha256Asset(UltraModelCatalog.MOBILE_SAM_ENCODER) == UltraModelCatalog.MOBILE_SAM_ENCODER_SHA256) {
                 add(UltraModelCatalog.MOBILE_SAM_ENCODER)
             }
-            if (
-                sha256Asset(UltraModelCatalog.MOBILE_SAM_DECODER) ==
-                UltraModelCatalog.MOBILE_SAM_DECODER_SHA256
-            ) {
+            if (sha256Asset(UltraModelCatalog.MOBILE_SAM_DECODER) == UltraModelCatalog.MOBILE_SAM_DECODER_SHA256) {
                 add(UltraModelCatalog.MOBILE_SAM_DECODER)
             }
         }
@@ -129,12 +119,6 @@ internal class OnnxAssetModelRepository(context: Context) : Closeable {
         appContext.assets.open(assetPath).use { true }
     }.getOrDefault(false)
 
-    /**
-     * Mirrors the Python APK boundary gate at runtime. A proposal/bootstrap quality file is never an
-     * approval source. Only the final held-out release bundle, bound to the exact ONNX digest, a
-     * release-scale independent real corpus, immutable semantic quality floor, and release-ready
-     * runtime manifest, may promote the student into Ultra.
-     */
     private fun studentFinalReleaseAttestation(): StudentReleaseAttestation {
         val model = readAssetBytes(UltraModelCatalog.MANZL_RECONSTRUCTION_STUDENT)
             ?: return StudentReleaseAttestation.NOT_APPROVED
@@ -156,15 +140,14 @@ internal class OnnxAssetModelRepository(context: Context) : Closeable {
             jsonBoolean(release, "candidateArtifactIntegrityPassed") == true &&
             jsonBoolean(release, "heldOutCorpusIdentityMatchedAcrossEvidence") == true &&
             jsonBoolean(release, "releaseCorpusScalePassed") == true &&
-            jsonInt(release, "releaseCorpusScalePolicyVersion") ==
-                UltraModelCatalog.RELEASE_CORPUS_SCALE_POLICY_VERSION &&
+            jsonInt(release, "releaseCorpusScalePolicyVersion") == UltraModelCatalog.RELEASE_CORPUS_SCALE_POLICY_VERSION &&
             jsonBoolean(release, "releaseCorpusScaleRecomputedAtFinalize") == true &&
+            jsonBoolean(release, "semanticMetricsExactHeldOutSampleCoverage") == true &&
             jsonBoolean(release, "semanticAcceptancePolicyLocked") == true &&
             jsonBoolean(release, "semanticAcceptancePolicyEvaluated") == true &&
             jsonBoolean(release, "relativeSemanticAcceptancePassed") == true &&
             jsonBoolean(release, "absoluteSemanticQualityPassed") == true &&
-            jsonInt(release, "absoluteSemanticQualityFloorVersion") ==
-                UltraModelCatalog.SEMANTIC_QUALITY_FLOOR_VERSION &&
+            jsonInt(release, "absoluteSemanticQualityFloorVersion") == UltraModelCatalog.SEMANTIC_QUALITY_FLOOR_VERSION &&
             jsonBoolean(release, "semanticEvidenceRecomputedAtFinalize") == true &&
             jsonBoolean(release, "semanticAcceptancePassed") == true &&
             jsonBoolean(release, "semanticHeldOutMeasurementCompleted") == true &&
@@ -175,17 +158,12 @@ internal class OnnxAssetModelRepository(context: Context) : Closeable {
             jsonNull(release, "blockingReason") &&
             jsonString(manifest, "status") == "real-held-out-release-ready" &&
             jsonBoolean(manifest, "releaseReady") == true &&
-            jsonInt(manifest, "semanticQualityFloorVersion") ==
-                UltraModelCatalog.SEMANTIC_QUALITY_FLOOR_VERSION &&
-            jsonInt(manifest, "releaseCorpusScalePolicyVersion") ==
-                UltraModelCatalog.RELEASE_CORPUS_SCALE_POLICY_VERSION &&
+            jsonInt(manifest, "semanticQualityFloorVersion") == UltraModelCatalog.SEMANTIC_QUALITY_FLOOR_VERSION &&
+            jsonInt(manifest, "releaseCorpusScalePolicyVersion") == UltraModelCatalog.RELEASE_CORPUS_SCALE_POLICY_VERSION &&
             jsonString(manifest, "releaseEvidence") == "models/manzl_reconstruction_student.release.json" &&
             jsonString(manifest, "trainingProvenance") == "models/manzl_reconstruction_student.training.json"
 
-        return StudentReleaseAttestation(
-            releaseApproved = releaseApproved,
-            integrityVerified = integrityVerified,
-        )
+        return StudentReleaseAttestation(releaseApproved, integrityVerified)
     }
 
     private fun readAssetBytes(assetPath: String): ByteArray? = runCatching {
@@ -215,18 +193,14 @@ internal class OnnxAssetModelRepository(context: Context) : Closeable {
         sessions.clear()
     }
 
-    private fun recommendedIntraOpThreads(): Int =
-        Runtime.getRuntime().availableProcessors().coerceIn(1, 4)
+    private fun recommendedIntraOpThreads(): Int = Runtime.getRuntime().availableProcessors().coerceIn(1, 4)
 
     private data class StudentReleaseAttestation(
         val releaseApproved: Boolean,
         val integrityVerified: Boolean,
     ) {
         companion object {
-            val NOT_APPROVED = StudentReleaseAttestation(
-                releaseApproved = false,
-                integrityVerified = false,
-            )
+            val NOT_APPROVED = StudentReleaseAttestation(false, false)
         }
     }
 
@@ -251,12 +225,8 @@ internal class OnnxAssetModelRepository(context: Context) : Closeable {
             return regex.containsMatchIn(json)
         }
 
-        private fun sha256(bytes: ByteArray): String = MessageDigest
-            .getInstance("SHA-256")
-            .digest(bytes)
-            .toHex()
+        private fun sha256(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256").digest(bytes).toHex()
 
-        private fun ByteArray.toHex(): String =
-            joinToString(separator = "") { byte -> "%02x".format(byte) }
+        private fun ByteArray.toHex(): String = joinToString(separator = "") { byte -> "%02x".format(byte) }
     }
 }
