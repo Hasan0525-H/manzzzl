@@ -46,6 +46,8 @@ class TrainRealStudentIsolationTest(unittest.TestCase):
             self.assertNotIn(str(args.splits / "test"), train_command)
             self.assertIn(str(args.splits / "validation"), validation_command)
             self.assertNotIn(str(args.splits / "test"), validation_command)
+            domain_index = validation_command.index("--domain")
+            self.assertEqual(validation_command[domain_index + 1], "private-real-validation")
 
     def test_test_path_injected_into_any_command_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:

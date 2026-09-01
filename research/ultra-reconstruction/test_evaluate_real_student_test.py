@@ -24,6 +24,8 @@ class EvaluateRealStudentTestIsolationTest(unittest.TestCase):
             self.assertIn(str(splits / "test"), command)
             self.assertNotIn(str(splits / "train"), command)
             self.assertNotIn(str(splits / "validation"), command)
+            domain_index = command.index("--domain")
+            self.assertEqual(command[domain_index + 1], "private-real-held-out-test")
 
     def test_train_or_validation_in_final_command_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:

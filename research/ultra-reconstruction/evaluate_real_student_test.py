@@ -68,6 +68,7 @@ def build_test_command(model_path: pathlib.Path, splits: pathlib.Path, output: p
         "--data", str(splits / "test"),
         "--output", str(output),
         "--size", str(size),
+        "--domain", "private-real-held-out-test",
     ]
 
 
@@ -106,6 +107,10 @@ def evaluate(args: argparse.Namespace) -> dict:
     if not result_path.is_file() or result_path.stat().st_size <= 0:
         raise RuntimeError("final held-out evaluator did not produce test metrics")
     metrics = json.loads(result_path.read_text(encoding="utf-8"))
+    if metrics.get("schema") != 2 or metrics.get("domain") != "private-real-held-out-test":
+        raise RuntimeError("held-out semantic evidence has incorrect evaluator provenance")
+    if metrics.get("releaseReady") is not False:
+        raise RuntimeError("semantic evaluator must never declare a release model")
 
     test_fingerprint = preflight["opaqueSplitSetFingerprints"]["test"]
     final = {
@@ -130,9 +135,9 @@ def evaluate(args: argparse.Namespace) -> dict:
         "geometryGatesEvaluatedByThisStep": False,
         "releaseReady": False,
         "reason": (
-            "The untouched real-plan semantic test has been measured and bound to the exact opaque test "
-            "set and ONNX digest. Release still requires a locked semantic acceptance policy plus the "
-            "separate measured end-to-end 2D-to-3D geometry gates."
+            "The untouched real-plan semantic test has been measured across all three student heads and "
+            "bound to the exact opaque test set and ONNX digest. Release still requires a locked semantic "
+            "acceptance policy plus the separate measured end-to-end 2D-to-3D geometry gates."
         ),
     }
     attestation_path.write_text(json.dumps(final, indent=2, sort_keys=True), encoding="utf-8")

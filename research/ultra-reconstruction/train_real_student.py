@@ -44,7 +44,7 @@ def build_train_command(args: argparse.Namespace, staging: pathlib.Path) -> list
         "--seed", str(args.seed),
         "--patience", str(args.patience),
         "--min-improvement", str(args.min_improvement),
-        *( ["--cpu"] if args.cpu else [] ),
+        *(["--cpu"] if args.cpu else []),
     ]
 
 
@@ -56,6 +56,7 @@ def build_validation_command(args: argparse.Namespace, staging: pathlib.Path) ->
         "--data", str(args.splits / "validation"),
         "--output", str(staging / "validation-eval.json"),
         "--size", str(args.size),
+        "--domain", "private-real-validation",
     ]
 
 
@@ -105,6 +106,11 @@ def train(args: argparse.Namespace) -> dict:
                 raise RuntimeError(f"real student training did not produce required output: {required.name}")
 
         validation = json.loads(validation_path.read_text(encoding="utf-8"))
+        if validation.get("schema") != 2 or validation.get("domain") != "private-real-validation":
+            raise RuntimeError("real validation evidence has incorrect evaluator provenance")
+        if validation.get("releaseReady") is not False:
+            raise RuntimeError("validation evaluator must never declare a release model")
+
         digest = hashlib.sha256(model_path.read_bytes()).hexdigest()
         attestation = {
             "schema": 1,
