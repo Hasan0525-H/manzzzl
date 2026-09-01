@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Verify the packaged Manzl student is an actual measured release model.
 
-This is the APK boundary. It deliberately knows nothing about proposal/bootstrap quality. A packaged
-student is accepted only when the app assets contain the exact ONNX artifact referenced by the final
-real-student release bundle produced after locked semantic held-out acceptance and end-to-end geometry
-PASS. The verifier never upgrades an artifact or infers readiness from a training file.
+This is the APK boundary. A packaged student is accepted only when the app assets contain the exact
+ONNX artifact referenced by the final real-student release bundle produced after locked relative
+semantic acceptance, immutable absolute semantic quality, and end-to-end geometry PASS. The verifier
+never upgrades an artifact or infers readiness from a training file.
 """
 
 from __future__ import annotations
@@ -55,6 +55,10 @@ def verify(asset_root: pathlib.Path) -> dict:
         "heldOutCorpusIdentityMatchedAcrossEvidence": True,
         "semanticAcceptancePolicyLocked": True,
         "semanticAcceptancePolicyEvaluated": True,
+        "relativeSemanticAcceptancePassed": True,
+        "absoluteSemanticQualityPassed": True,
+        "absoluteSemanticQualityFloorVersion": 1,
+        "semanticEvidenceRecomputedAtFinalize": True,
         "semanticAcceptancePassed": True,
         "semanticHeldOutMeasurementCompleted": True,
         "geometryReleaseEvidencePassed": True,
@@ -110,6 +114,7 @@ def verify(asset_root: pathlib.Path) -> dict:
         "releaseReady": True,
         "releaseEvidence": f"models/{RELEASE_NAME}",
         "trainingProvenance": f"models/{TRAINING_NAME}",
+        "semanticQualityFloorVersion": 1,
     }
     for key, expected in manifest_required.items():
         if student.get(key) != expected:
@@ -135,6 +140,10 @@ def verify(asset_root: pathlib.Path) -> dict:
         "model": MODEL_NAME,
         "sha256": digest,
         "bytes": size,
+        "relativeSemanticAcceptancePassed": True,
+        "absoluteSemanticQualityPassed": True,
+        "absoluteSemanticQualityFloorVersion": 1,
+        "semanticEvidenceRecomputedAtFinalize": True,
         "semanticAcceptancePassed": True,
         "geometryReleaseEvidencePassed": True,
         "releaseEvidenceBundleVerified": True,
