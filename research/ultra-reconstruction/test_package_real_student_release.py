@@ -43,9 +43,7 @@ class PackageRealStudentReleaseTest(unittest.TestCase):
             "realTrainingPreflightPassed": True,
             "releaseReady": False,
         }
-        (candidate / "real-training-attestation.json").write_text(
-            json.dumps(training), encoding="utf-8"
-        )
+        (candidate / "real-training-attestation.json").write_text(json.dumps(training), encoding="utf-8")
 
         release = {
             "schema": 2,
@@ -56,6 +54,10 @@ class PackageRealStudentReleaseTest(unittest.TestCase):
             "trainingAttestationVerified": True,
             "candidateArtifactIntegrityPassed": True,
             "heldOutCorpusIdentityMatchedAcrossEvidence": True,
+            "releaseCorpusScalePassed": True,
+            "releaseCorpusScalePolicyVersion": 1,
+            "releaseCorpusScaleRecomputedAtFinalize": True,
+            "semanticMetricsExactHeldOutSampleCoverage": True,
             "semanticAcceptancePolicyLocked": True,
             "semanticAcceptancePolicyEvaluated": True,
             "relativeSemanticAcceptancePassed": True,
@@ -102,6 +104,8 @@ class PackageRealStudentReleaseTest(unittest.TestCase):
             candidate, release_path, assets, _ = self.make_fixture(pathlib.Path(tmp))
             report = packager.package_release(candidate, release_path, assets)
             self.assertTrue(report["releaseReady"])
+            self.assertTrue(report["releaseCorpusScalePassed"])
+            self.assertTrue(report["semanticMetricsExactHeldOutSampleCoverage"])
             self.assertTrue(report["absoluteSemanticQualityPassed"])
             self.assertTrue(report["semanticEvidenceRecomputedAtFinalize"])
             self.assertFalse((assets / packager.STALE_QUALITY_NAME).exists())
@@ -111,6 +115,7 @@ class PackageRealStudentReleaseTest(unittest.TestCase):
             packaged_manifest = json.loads((assets / packager.MANIFEST_NAME).read_text(encoding="utf-8"))
             student = packaged_manifest["required"][0]
             self.assertEqual(student["semanticQualityFloorVersion"], 1)
+            self.assertEqual(student["releaseCorpusScalePolicyVersion"], 1)
             self.assertTrue(verifier.verify(assets)["releaseReady"])
 
     def test_nonrelease_bundle_is_rejected_before_asset_mutation(self):
@@ -133,6 +138,24 @@ class PackageRealStudentReleaseTest(unittest.TestCase):
             release.pop("semanticEvidenceRecomputedAtFinalize")
             release_path.write_text(json.dumps(release), encoding="utf-8")
             with self.assertRaisesRegex(RuntimeError, "absoluteSemanticQualityPassed"):
+                packager.package_release(candidate, release_path, assets)
+            self.assertFalse((assets / packager.MODEL_NAME).exists())
+
+    def test_legacy_release_without_corpus_scale_proof_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            candidate, release_path, assets, release = self.make_fixture(pathlib.Path(tmp))
+            release.pop("releaseCorpusScalePassed")
+            release_path.write_text(json.dumps(release), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "releaseCorpusScalePassed"):
+                packager.package_release(candidate, release_path, assets)
+            self.assertFalse((assets / packager.MODEL_NAME).exists())
+
+    def test_release_without_exact_heldout_semantic_coverage_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            candidate, release_path, assets, release = self.make_fixture(pathlib.Path(tmp))
+            release["semanticMetricsExactHeldOutSampleCoverage"] = False
+            release_path.write_text(json.dumps(release), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "semanticMetricsExactHeldOutSampleCoverage"):
                 packager.package_release(candidate, release_path, assets)
             self.assertFalse((assets / packager.MODEL_NAME).exists())
 
