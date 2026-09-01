@@ -12,12 +12,41 @@
   ],
   "inputSize": 512,
   "width": 16,
-  "bestSelectionLoss": 0.3430453684995882,
-  "bestEpoch": 3,
+  "bestSelectionScore": 0.35304166972637174,
+  "bestEpoch": 7,
   "validation": {
-    "loss": 0.3430453684995882,
-    "mean_iou": 0.24861416220664978
+    "loss": 1.006628040340729,
+    "mean_iou": 0.44074419140815735,
+    "foreground_mean_iou": 0.37438151240348816,
+    "critical_mean_iou": 0.29746511578559875
   },
   "source": "Manzl fail-closed multi-teacher consensus training pipeline",
-  "uncertaintyPolicy": "teacher disagreement is masked from supervision; geometry-critical pseudo-labels require corroboration"
+  "uncertaintyPolicy": "teacher disagreement is masked from supervision; geometry-critical pseudo-labels require corroboration",
+  "semanticLossPolicy": {
+    "classWeights": [
+      0.2,
+      1.0,
+      5.0,
+      4.5,
+      4.0,
+      8.0,
+      2.5,
+      4.5,
+      5.0
+    ],
+    "focalGamma": 1.5,
+    "diceWeights": [
+      0.0,
+      1.0,
+      2.5,
+      2.5,
+      2.0,
+      3.0,
+      1.5,
+      2.0,
+      2.5
+    ],
+    "checkpointSelection": "20% global mIoU + 35% foreground mIoU + 45% critical-geometry mIoU"
+  },
+  "cornerLossPolicy": "sqrt class-imbalance positive boost capped at 20x"
 }

@@ -7,7 +7,7 @@
       "path": "models/manzl_reconstruction_student.onnx",
       "role": "multi-head floor-plan understanding distilled from the teacher ensemble",
       "status": "mixed-rights-safe-bootstrap-proposal-only",
-      "sha256": "04ee6e7443a72e6bf91ef3c426803df582bafb54e6e014e80a08ac8c45d06f9d",
+      "sha256": "bc174438d47e0f3ff4c7d519443d0f9331fa2640ec693c010a697283a04ff43a",
       "releaseReady": false,
       "trainingSource": "two original Manzl procedural corpora + CC BY 4.0 ResPlan geometry renderings",
       "attribution": "research/ultra-reconstruction/RESPLAN_ATTRIBUTION.md",
