@@ -21,20 +21,19 @@ import kotlin.math.sqrt
  * for room closure and symbol search, then are removed from the final user-visible plan unless an
  * independent semantic/user signal confirms that the gap is actually a door.
  *
- * The ultra path can run a distilled multi-teacher student first, then an independent OpenCV expert,
- * then MobileSAM only as a boundary refiner. The student's door/window/stair/courtyard/shaft
- * observations are reused from that same inference later as semantics; columns are accepted only by a
- * dedicated source-raster structural verifier. None of the neural/CV experts becomes geometry
- * authority.
- *
- * Production/default analysis is fail-closed when the Ultra runtime bundle is incomplete. This is
- * intentional: the legacy deterministic extractor remains an adjudicator and diagnostic fallback,
- * but it is no longer allowed to silently become the user-visible quality tier.
+ * The Ultra path runs the distilled multi-teacher student, an independent OpenCV wall expert and
+ * MobileSAM boundary verification. An expert is allowed to report "no safe improvement", but it is
+ * not allowed to disappear because of a missing/corrupt model, OOM or runtime exception and then let
+ * the weaker pipeline continue silently. Runtime health is therefore fail-closed before any 3D can be
+ * exposed. The student's door/window/stair/courtyard/shaft observations are reused from that same
+ * inference later as semantics; columns are accepted only by a dedicated source-raster verifier.
+ * None of the neural/CV experts becomes geometry authority.
  *
  * A second reconstruction gate runs after semantics/topology. It blocks 3D when strong wall gaps are
- * still unclassified, when trusted closed-room coverage is too sparse to construct real floors and
- * ceilings without inventing a rectangular house footprint, or when a verified vertical shaft cannot
- * yet be represented faithfully by the mesh path.
+ * still unclassified, when a room polygon is not physically backed by measured walls/openings, when
+ * trusted closed-room coverage is too sparse to construct real floors and ceilings without inventing
+ * a rectangular house footprint, or when a verified vertical shaft cannot yet be represented
+ * faithfully by the mesh path.
  */
 internal class HybridFloorPlanAnalyzer(
     private val structuralAnalyzer: FloorPlanAnalyzer = ClassicalFloorPlanAnalyzer(),
@@ -131,31 +130,37 @@ internal class HybridFloorPlanAnalyzer(
                 }
             }
 
-            onDeviceStudent?.let { student ->
-                progress.onUpdate(AnalysisUpdate(79, "خبير Manzl العصبي يفحص المخطط عالمياً وعلى قصاصات عالية الدقة"))
-                val studentResult = try {
-                    withContext(Dispatchers.Default) {
-                        student.refine(bitmap, structural)
-                    }
-                } catch (error: CancellationException) {
-                    throw error
-                } catch (_: OutOfMemoryError) {
-                    null
-                } catch (_: RuntimeException) {
-                    null
+            val student = onDeviceStudent ?: throw UltraRuntimeUnavailableException(
+                "أوقفت التحويل لأن خبير Manzl Reconstruction Student لم يُنشأ رغم أن بوابة Ultra اعتبرته متاحاً. لن أتابع بالمسار الأضعف وحده."
+            )
+            progress.onUpdate(AnalysisUpdate(79, "خبير Manzl العصبي يفحص المخطط عالمياً وعلى قصاصات عالية الدقة"))
+            val studentResult = try {
+                withContext(Dispatchers.Default) {
+                    student.refine(bitmap, structural)
                 }
-                if (studentResult != null) {
-                    if (studentResult.acceptedWalls > 0) structural = studentResult.plan
-                    if (studentResult.inferenceRegions > 0) {
-                        progress.onUpdate(
-                            AnalysisUpdate(
-                                79,
-                                "Manzl فحص ${studentResult.inferenceRegions} مناطق، اقترح ${studentResult.proposedWalls} جداراً، قبل ${studentResult.acceptedWalls}، ورصد ${studentResult.semanticObservations} دلالة معمارية",
-                            )
-                        )
-                    }
-                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: OutOfMemoryError) {
+                throw UltraRuntimeUnavailableException(
+                    "أوقفت التحويل لأن الذاكرة لم تكفِ لتشغيل Manzl Reconstruction Student بالجودة المطلوبة. لن أخفض الدقة أو أتجاوز الخبير بصمت."
+                )
+            } catch (_: RuntimeException) {
+                throw UltraRuntimeUnavailableException(
+                    "أوقفت التحويل لأن Manzl Reconstruction Student فشل أثناء الاستدلال المحلي. لن أستبدله تلقائياً بمسار أقل جودة."
+                )
             }
+            if (!studentResult.modelAvailable || studentResult.inferenceRegions <= 0) {
+                throw UltraRuntimeUnavailableException(
+                    "أوقفت التحويل لأن نموذج Manzl المحلي لم يُنتج أي مرور استدلال صالح. وجود ملف النموذج وحده لا يكفي لاعتبار Ultra جاهزاً."
+                )
+            }
+            if (studentResult.acceptedWalls > 0) structural = studentResult.plan
+            progress.onUpdate(
+                AnalysisUpdate(
+                    79,
+                    "Manzl فحص ${studentResult.inferenceRegions} مناطق، اقترح ${studentResult.proposedWalls} جداراً، قبل ${studentResult.acceptedWalls}، ورصد ${studentResult.semanticObservations} دلالة معمارية",
+                )
+            )
 
             progress.onUpdate(AnalysisUpdate(79, "خبير OpenCV يقيس وجهي الجدار ثم يبحث عن الجدران المفقودة"))
             val openCvResult = try {
@@ -165,42 +170,61 @@ internal class HybridFloorPlanAnalyzer(
             } catch (error: CancellationException) {
                 throw error
             } catch (_: OutOfMemoryError) {
-                null
+                throw UltraRuntimeUnavailableException(
+                    "أوقفت التحويل لأن خبير OpenCV لم يكتمل بسبب الذاكرة. لن أسقط رأياً مستقلاً من الـEnsemble ثم أتابع كأن الجودة لم تتغير."
+                )
             } catch (_: RuntimeException) {
-                null
+                throw UltraRuntimeUnavailableException(
+                    "أوقفت التحويل لأن خبير OpenCV الهندسي فشل. لا يوجد downgrade صامت إلى نتيجة أقل ثقة."
+                )
             }
-            if (openCvResult != null && openCvResult.acceptedCount > 0) {
-                structural = openCvResult.plan
+            if (openCvResult.acceptedCount > 0) structural = openCvResult.plan
+            progress.onUpdate(
+                AnalysisUpdate(
+                    79,
+                    "OpenCV اقترح ${openCvResult.proposedCount} مرشحاً وقبل التحقق ${openCvResult.acceptedCount} فقط",
+                )
+            )
+
+            val refiner = boundaryRefiner ?: throw UltraRuntimeUnavailableException(
+                "أوقفت التحويل لأن MobileSAM Boundary Refiner لم يُنشأ. لا أسمح ببناء 3D بدون مرحلة تدقيق وجوه الجدران عالية الدقة."
+            )
+            progress.onUpdate(AnalysisUpdate(79, "MobileSAM يدقق وجوه الجدران ونهاياتها على الصورة الأصلية"))
+            val refined = try {
+                withContext(Dispatchers.Default) {
+                    refiner.refine(bitmap, structural)
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: OutOfMemoryError) {
+                throw UltraRuntimeUnavailableException(
+                    "أوقفت التحويل لأن MobileSAM لم يكتمل بسبب الذاكرة. لن أتجاوز تدقيق حدود الجدران بالجودة الأقل."
+                )
+            } catch (_: RuntimeException) {
+                throw UltraRuntimeUnavailableException(
+                    "أوقفت التحويل لأن MobileSAM فشل أثناء تدقيق حدود الجدران محلياً."
+                )
+            }
+            if (!refined.runtimeAvailable || refined.attemptedWalls <= 0) {
+                throw UltraRuntimeUnavailableException(
+                    "أوقفت التحويل لأن MobileSAM لم يتمكن من تنفيذ تدقيق فعلي لأي جدار. لن أعتبر وجود النموذج على الجهاز دليلاً على أن مرحلة الجودة اشتغلت."
+                )
+            }
+            if (refined.accepted) {
+                structural = refined.plan
                 progress.onUpdate(
                     AnalysisUpdate(
                         79,
-                        "OpenCV اقترح ${openCvResult.proposedCount} مرشحاً وقبل التحقق ${openCvResult.acceptedCount} فقط",
+                        "MobileSAM دقق ${refined.refinedWalls} من ${refined.attemptedWalls} جداراً واجتاز إعادة المطابقة",
                     )
                 )
-            }
-
-            boundaryRefiner?.let { refiner ->
-                progress.onUpdate(AnalysisUpdate(79, "MobileSAM يدقق وجوه الجدران ونهاياتها على الصورة الأصلية"))
-                val refined = try {
-                    withContext(Dispatchers.Default) {
-                        refiner.refine(bitmap, structural)
-                    }
-                } catch (error: CancellationException) {
-                    throw error
-                } catch (_: OutOfMemoryError) {
-                    null
-                } catch (_: RuntimeException) {
-                    null
-                }
-                if (refined?.accepted == true) {
-                    structural = refined.plan
-                    progress.onUpdate(
-                        AnalysisUpdate(
-                            79,
-                            "MobileSAM دقق ${refined.refinedWalls} من ${refined.attemptedWalls} جداراً واجتاز إعادة المطابقة",
-                        )
+            } else {
+                progress.onUpdate(
+                    AnalysisUpdate(
+                        79,
+                        "MobileSAM دقق ${refined.attemptedWalls} جداراً ولم يجد تعديلاً يحسن المطابقة بأمان؛ أبقى الهندسة المقاسة كما هي",
                     )
-                }
+                )
             }
 
             // Columns are compact structural masses, not wall/room semantics. A student observation
@@ -212,11 +236,15 @@ internal class HybridFloorPlanAnalyzer(
             } catch (error: CancellationException) {
                 throw error
             } catch (_: OutOfMemoryError) {
-                null
+                throw UltraRuntimeUnavailableException(
+                    "أوقفت التحويل لأن تحقق الأعمدة الإنشائية لم يكتمل بسبب الذاكرة؛ لن أسقط هذه الطبقة بصمت."
+                )
             } catch (_: RuntimeException) {
-                null
+                throw UltraRuntimeUnavailableException(
+                    "أوقفت التحويل لأن مرحلة تحقق الأعمدة الإنشائية فشلت قبل اكتمال إعادة البناء."
+                )
             }
-            if (columnResult != null && columnResult.acceptedCount > 0) {
+            if (columnResult.acceptedCount > 0) {
                 structural = columnResult.plan
                 progress.onUpdate(
                     AnalysisUpdate(
@@ -312,7 +340,7 @@ internal class HybridFloorPlanAnalyzer(
             // that merely has a door-like width receive frames, animated leaves or façade joinery.
             val finalPlan = DoorPresentationPolicy.stripUnclassifiedGaps(topologyEnriched)
 
-            progress.onUpdate(AnalysisUpdate(99, "فحص أن المنزل قابل للبناء بدون أرضيات أو فتحات مخترعة"))
+            progress.onUpdate(AnalysisUpdate(99, "فحص أن المنزل قابل للبناء بدون أرضيات أو فتحات أو حدود غرف مخترعة"))
             ReconstructionReadinessGate.rejectionMessageArabic(finalPlan)?.let { rejection ->
                 val reviewPlan = ReconstructionReadinessGate.planForReview(finalPlan)
                 GeometryReviewStore.recordFinal(bitmap, reviewPlan)
