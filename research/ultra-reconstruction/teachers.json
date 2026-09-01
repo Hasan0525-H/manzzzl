@@ -1,5 +1,5 @@
 {
-  "schema": 8,
+  "schema": 9,
   "checkedAt": "2026-09-01",
   "costPolicy": "zero-paid-services",
   "projectUse": "personal-non-commercial",
@@ -41,6 +41,19 @@
         "fingerprintedAt": "2026-09-01",
         "fingerprintMethod": "official Google Drive file downloaded on clean GitHub Actions runner and SHA-256 hashed before pinning"
       },
+      "runtimeSmoke": {
+        "testedAt": "2026-09-01",
+        "python": "3.11.16",
+        "torch": "2.8.0+cpu",
+        "device": "cpu",
+        "inputShape": [256, 256, 3],
+        "outputProbabilityShape": [5, 256, 256],
+        "teacherFormat": "cubicasa-floortrans-room-icon-v3-pinned",
+        "roomBoundaryMaxProbability": 0.9756348133087158,
+        "checkpointVerifiedBeforeLoad": true,
+        "sourceRevisionVerifiedBeforeLoad": true,
+        "passed": true
+      },
       "roomBoundaryEvidence": "high-confidence room segmentation transitions supported by wall/railing or a different room class; direct room-to-background transitions abstain",
       "roomBoundaryQuorumWith": "raster2seq",
       "shipInPublicApk": false,
@@ -49,6 +62,7 @@
     {
       "id": "mitunet-wall",
       "repository": "https://github.com/aliasstudio/mitunet.git",
+      "repositoryRevision": "ade0aa6ba01c72f02a32a33a605c36b54b264a7a",
       "codeLicense": "MIT",
       "pretrainedWeightLicense": "CC-BY-NC-4.0",
       "inputDomain": "raster-floorplan",
