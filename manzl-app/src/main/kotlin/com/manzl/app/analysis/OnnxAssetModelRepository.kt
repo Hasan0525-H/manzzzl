@@ -20,11 +20,11 @@ internal object UltraModelCatalog {
     const val MOBILE_SAM_ENCODER = "models/mobile_sam_encoder.onnx"
     const val MOBILE_SAM_DECODER = "models/mobile_sam_decoder.onnx"
 
-    // These hashes are pinned to the same MobileSAM revision verified by fetch_runtime_models.py.
     const val MOBILE_SAM_ENCODER_SHA256 =
         "580f5fb648ea1062c0aabc26217aed56921985f03f0cbbd852bba81d760cc749"
     const val MOBILE_SAM_DECODER_SHA256 =
         "93915fc7c993ab9d59ab8c9ccd3bce37f7509c81ab4150a74abd4d2abbd8570d"
+    const val SEMANTIC_QUALITY_FLOOR_VERSION = 1
 
     val requiredForUltraRuntime = listOf(
         MANZL_RECONSTRUCTION_STUDENT,
@@ -32,10 +32,7 @@ internal object UltraModelCatalog {
         MOBILE_SAM_DECODER,
     )
 
-    /** Models whose mere presence is insufficient: they need final held-out release evidence. */
     val releaseAttestedAssets = setOf(MANZL_RECONSTRUCTION_STUDENT)
-
-    /** Every executable model must match the exact artifact that was approved/fetched. */
     val requiredIntegrityAssets = requiredForUltraRuntime.toSet()
 }
 
@@ -133,8 +130,8 @@ internal class OnnxAssetModelRepository(context: Context) : Closeable {
 
     /**
      * Mirrors the Python APK boundary gate at runtime. A proposal/bootstrap quality file is never an
-     * approval source. Only the final held-out release bundle, bound to the exact ONNX digest and the
-     * release-ready runtime manifest, may promote the student into the user-visible Ultra path.
+     * approval source. Only the final held-out release bundle, bound to the exact ONNX digest, immutable
+     * semantic quality floor, and release-ready runtime manifest, may promote the student into Ultra.
      */
     private fun studentFinalReleaseAttestation(): StudentReleaseAttestation {
         val model = readAssetBytes(UltraModelCatalog.MANZL_RECONSTRUCTION_STUDENT)
@@ -158,6 +155,11 @@ internal class OnnxAssetModelRepository(context: Context) : Closeable {
             jsonBoolean(release, "heldOutCorpusIdentityMatchedAcrossEvidence") == true &&
             jsonBoolean(release, "semanticAcceptancePolicyLocked") == true &&
             jsonBoolean(release, "semanticAcceptancePolicyEvaluated") == true &&
+            jsonBoolean(release, "relativeSemanticAcceptancePassed") == true &&
+            jsonBoolean(release, "absoluteSemanticQualityPassed") == true &&
+            jsonInt(release, "absoluteSemanticQualityFloorVersion") ==
+                UltraModelCatalog.SEMANTIC_QUALITY_FLOOR_VERSION &&
+            jsonBoolean(release, "semanticEvidenceRecomputedAtFinalize") == true &&
             jsonBoolean(release, "semanticAcceptancePassed") == true &&
             jsonBoolean(release, "semanticHeldOutMeasurementCompleted") == true &&
             jsonBoolean(release, "geometryReleaseEvidencePassed") == true &&
@@ -167,6 +169,8 @@ internal class OnnxAssetModelRepository(context: Context) : Closeable {
             jsonNull(release, "blockingReason") &&
             jsonString(manifest, "status") == "real-held-out-release-ready" &&
             jsonBoolean(manifest, "releaseReady") == true &&
+            jsonInt(manifest, "semanticQualityFloorVersion") ==
+                UltraModelCatalog.SEMANTIC_QUALITY_FLOOR_VERSION &&
             jsonString(manifest, "releaseEvidence") == "models/manzl_reconstruction_student.release.json" &&
             jsonString(manifest, "trainingProvenance") == "models/manzl_reconstruction_student.training.json"
 
