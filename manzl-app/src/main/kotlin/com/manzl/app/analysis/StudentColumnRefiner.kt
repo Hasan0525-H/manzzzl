@@ -14,12 +14,11 @@ import kotlin.math.sin
 import kotlin.math.sqrt
 
 /**
- * Turns a student COLUMN observation into canonical geometry only after source-raster verification.
+ * Column ensemble refiner: deterministic OpenCV first, distilled-student proposals second.
  *
- * The student supplies a compact oriented bounding box in source-image coordinates. This class maps
- * that box to plan metres, rejects implausible dimensions/aspect ratios, then samples the original
- * structural ink along the proposed four faces and interior. A candidate must have strong raster
- * support and must not overlap an already accepted column. No column is created from style priors.
+ * Both paths are source-raster bound. OpenCV can recover clean compact column symbols even when the
+ * student asset is absent; student proposals are promoted only after a second oriented border/interior
+ * ink verification and deduplication against the deterministic result. No style prior creates columns.
  */
 internal object StudentColumnRefiner {
 
@@ -31,27 +30,33 @@ internal object StudentColumnRefiner {
 
     fun refine(source: Bitmap, seed: FloorPlan): Result {
         if (source.width <= 16 || source.height <= 16) return Result(seed, 0, 0)
+
+        val deterministic = OpenCvColumnExpert.refine(source, seed)
+        val base = deterministic.plan
         val components = StudentSemanticEvidenceStore.get(source)
             .filter { component ->
                 component.classId == StudentSemanticComponentDecoder.COLUMN_CLASS_ID &&
                     component.confidence >= MIN_STUDENT_COLUMN_CONFIDENCE &&
                     !component.touchesModelEdge
             }
-        if (components.isEmpty()) return Result(seed, 0, 0)
+        if (components.isEmpty()) {
+            return Result(base, deterministic.proposedCount, deterministic.acceptedCount)
+        }
 
-        val sourceTransform = PlanRasterTransform.forImage(seed, source.width, source.height)
+        val sourceTransform = PlanRasterTransform.forImage(base, source.width, source.height)
         val candidates = components.mapNotNull { component ->
             componentToColumn(component, sourceTransform)
         }.sortedByDescending { it.confidence }
-
-        if (candidates.isEmpty()) return Result(seed, components.size, 0)
+        if (candidates.isEmpty()) {
+            return Result(base, deterministic.proposedCount + components.size, deterministic.acceptedCount)
+        }
 
         val working = source.downscaleForColumnAnalysis(MAX_ANALYSIS_SIDE)
         return try {
             val raster = StructuralRasterMask.classify(working)
-            val workingTransform = PlanRasterTransform.forImage(seed, working.width, working.height)
-            val accepted = ArrayList(seed.columns)
-            var acceptedCount = 0
+            val workingTransform = PlanRasterTransform.forImage(base, working.width, working.height)
+            val accepted = ArrayList(base.columns)
+            var neuralAccepted = 0
 
             for (candidate in candidates) {
                 if (accepted.any { existing -> duplicate(existing, candidate) }) continue
@@ -71,15 +76,16 @@ internal object StudentColumnRefiner {
                         ).coerceIn(MIN_ACCEPTED_COLUMN_CONFIDENCE, MAX_ACCEPTED_COLUMN_CONFIDENCE),
                 )
                 accepted += verified
-                acceptedCount++
+                neuralAccepted++
                 if (accepted.size >= MAX_COLUMNS_PER_FLOOR) break
             }
 
-            if (acceptedCount == 0) {
-                Result(seed, candidates.size, 0)
-            } else {
-                Result(seed.copy(columns = accepted), candidates.size, acceptedCount)
-            }
+            val totalAccepted = deterministic.acceptedCount + neuralAccepted
+            Result(
+                plan = if (neuralAccepted == 0) base else base.copy(columns = accepted),
+                proposedCount = deterministic.proposedCount + candidates.size,
+                acceptedCount = totalAccepted,
+            )
         } finally {
             if (working !== source && !working.isRecycled) working.recycle()
         }
@@ -252,10 +258,7 @@ internal object StudentColumnRefiner {
         )
     }
 
-    private data class Support(
-        val accepted: Boolean,
-        val confidence: Float,
-    )
+    private data class Support(val accepted: Boolean, val confidence: Float)
 
     private const val MAX_ANALYSIS_SIDE = 2400
     private const val MIN_STUDENT_COLUMN_CONFIDENCE = 0.72f
@@ -265,7 +268,6 @@ internal object StudentColumnRefiner {
     private const val MIN_COLUMN_AREA_SQ_METERS = 0.035f
     private const val MAX_COLUMN_AREA_SQ_METERS = 1.60f
     private const val MAX_COLUMNS_PER_FLOOR = 64
-
     private const val SAMPLE_GRID = 9
     private const val BORDER_SAMPLE_THRESHOLD = 0.72f
     private const val INK_SEARCH_RADIUS_METERS = 0.018f
@@ -276,7 +278,6 @@ internal object StudentColumnRefiner {
     private const val MIN_FILLED_BORDER_SUPPORT = 0.36f
     private const val INTERIOR_CONFIDENCE_FACTOR = 0.58f
     private const val BORDER_CONFIDENCE_FACTOR = 0.42f
-
     private const val STUDENT_WEIGHT = 0.42f
     private const val RASTER_WEIGHT = 0.58f
     private const val MIN_ACCEPTED_COLUMN_CONFIDENCE = 0.74f
