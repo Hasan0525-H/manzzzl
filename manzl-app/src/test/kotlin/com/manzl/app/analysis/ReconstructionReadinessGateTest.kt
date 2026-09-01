@@ -24,6 +24,7 @@ class ReconstructionReadinessGateTest {
 
         assertTrue(report.ready)
         assertTrue(report.unresolvedOpenings.isEmpty())
+        assertTrue(report.unsupportedVerticalVoids.isEmpty())
         assertTrue(report.trustedRoomCoverage >= 0.32f)
     }
 
@@ -126,6 +127,54 @@ class ReconstructionReadinessGateTest {
 
         assertFalse(report.ready)
         assertTrue(report.trustedRoomCoverage < 0.32f)
+    }
+
+    @Test
+    fun `room coverage below renderer threshold cannot slip through readiness gate`() {
+        val mediumRoom = RoomRegion(
+            id = "medium",
+            polygon = listOf(
+                Vec2(-2.5f, -2f),
+                Vec2(2.5f, -2f),
+                Vec2(2.5f, 2f),
+                Vec2(-2.5f, 2f),
+            ),
+            confidence = 0.96f,
+        )
+        val report = ReconstructionReadinessGate.evaluate(
+            plan(
+                walls = rectangleWalls(),
+                rooms = listOf(mediumRoom),
+            )
+        )
+
+        // 20m² inside an 80m² plan is intentionally below the 32% production floor threshold.
+        assertFalse(report.ready)
+        assertTrue(report.trustedRoomCoverage in 0.20f..0.30f)
+    }
+
+    @Test
+    fun `verified shaft room blocks 3d until polygon hole meshing exists`() {
+        val shaft = RoomRegion(
+            id = "shaft",
+            polygon = listOf(
+                Vec2(-1f, -1f),
+                Vec2(1f, -1f),
+                Vec2(1f, 1f),
+                Vec2(-1f, 1f),
+            ),
+            label = "shaft",
+            confidence = 0.94f,
+        )
+        val report = ReconstructionReadinessGate.evaluate(
+            plan(
+                walls = rectangleWalls(),
+                rooms = listOf(largeRoom(), shaft),
+            )
+        )
+
+        assertFalse(report.ready)
+        assertTrue(report.unsupportedVerticalVoids.any { it.id == "shaft" })
     }
 
     private fun rectangleWalls(): List<WallSegment> = listOf(
