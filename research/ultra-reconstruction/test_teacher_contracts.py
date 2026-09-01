@@ -18,6 +18,7 @@ if str(HERE) not in sys.path:
 
 import adapt_raster2seq_predictions as raster2seq  # noqa: E402
 import build_teacher_consensus as consensus  # noqa: E402
+import run_cubicasa_teacher as cubicasa  # noqa: E402
 import run_mitunet_teacher as mitunet  # noqa: E402
 
 
@@ -133,6 +134,71 @@ class MitUNetTeacherContractTest(unittest.TestCase):
             }
             self.assertEqual(known_names, {"background", "wall_face"})
             for class_name in ("door", "window", "stair", "column", "room_boundary", "courtyard", "shaft"):
+                self.assertFalse(loaded.class_known[consensus.CLASS_TO_INDEX[class_name]])
+
+
+class CubiCasaTeacherContractTest(unittest.TestCase):
+    def test_floortrans_mapping_preserves_wall_and_opening_votes(self) -> None:
+        height = width = 4
+        rooms = np.zeros((cubicasa.ROOM_CHANNELS, height, width), dtype=np.float32)
+        icons = np.zeros((cubicasa.ICON_CHANNELS, height, width), dtype=np.float32)
+
+        # Default to confident background/empty evidence everywhere.
+        rooms[0] = 0.95
+        rooms[cubicasa.ROOM_WALL] = 0.05
+        icons[0] = 0.98
+        icons[cubicasa.ICON_WINDOW] = 0.01
+        icons[cubicasa.ICON_DOOR] = 0.01
+
+        # Wall-only pixel.
+        rooms[0, 0, 1] = 0.02
+        rooms[cubicasa.ROOM_WALL, 0, 1] = 0.98
+
+        # Door/window deliberately sit on strong wall evidence. The semantic mapper must keep the
+        # opening as the winning opinion instead of letting the host wall suppress it.
+        rooms[0, 1, 1] = 0.02
+        rooms[cubicasa.ROOM_WALL, 1, 1] = 0.98
+        icons[0, 1, 1] = 0.01
+        icons[cubicasa.ICON_DOOR, 1, 1] = 0.98
+        icons[cubicasa.ICON_WINDOW, 1, 1] = 0.01
+
+        rooms[0, 2, 2] = 0.02
+        rooms[cubicasa.ROOM_WALL, 2, 2] = 0.98
+        icons[0, 2, 2] = 0.01
+        icons[cubicasa.ICON_WINDOW, 2, 2] = 0.98
+        icons[cubicasa.ICON_DOOR, 2, 2] = 0.01
+
+        probabilities, confidence, valid = cubicasa.encode_floortrans_probabilities(rooms, icons)
+        self.assertEqual(probabilities.shape, (len(cubicasa.LOCAL_CLASSES), height, width))
+        np.testing.assert_allclose(probabilities.sum(axis=0), 1.0, atol=1e-6)
+        self.assertTrue(np.all((confidence >= 0.0) & (confidence <= 1.0)))
+        self.assertTrue(np.all(valid == 1))
+
+        winners = np.argmax(probabilities, axis=0)
+        self.assertEqual(int(winners[0, 0]), cubicasa.LOCAL_CLASS["background"])
+        self.assertEqual(int(winners[0, 1]), cubicasa.LOCAL_CLASS["wall_face"])
+        self.assertEqual(int(winners[1, 1]), cubicasa.LOCAL_CLASS["door"])
+        self.assertEqual(int(winners[2, 2]), cubicasa.LOCAL_CLASS["window"])
+
+        with tempfile.TemporaryDirectory(prefix="manzl-cubicasa-contract-") as raw_tmp:
+            root = pathlib.Path(raw_tmp)
+            output = root / "cubicasa"
+            destination = output / "sample.npz"
+            image = np.full((height, width, 3), 200, dtype=np.uint8)
+            cubicasa.save_prediction(destination, image, rooms, icons)
+
+            loaded = consensus.load_prediction(
+                consensus.TeacherSpec("cubicasa", output, 1.0),
+                pathlib.Path("sample.npz"),
+            )
+            self.assertIsNotNone(loaded)
+            assert loaded is not None
+            known_names = {
+                consensus.SEMANTIC_CLASSES[index]
+                for index in np.flatnonzero(loaded.class_known)
+            }
+            self.assertEqual(known_names, {"background", "wall_face", "door", "window"})
+            for class_name in ("stair", "column", "room_boundary", "courtyard", "shaft"):
                 self.assertFalse(loaded.class_known[consensus.CLASS_TO_INDEX[class_name]])
 
 
