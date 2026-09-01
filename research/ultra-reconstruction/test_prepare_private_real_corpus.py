@@ -26,6 +26,23 @@ class PreparePrivateRealCorpusTest(unittest.TestCase):
         cv2.rectangle(image, (3, 3), (28, 20), (0, 0, 0), 2)
         self.assertTrue(cv2.imwrite(str(path), image))
 
+    def plan_image(self) -> np.ndarray:
+        image = np.full((240, 320, 3), 255, dtype=np.uint8)
+        cv2.rectangle(image, (32, 25), (286, 211), (0, 0, 0), 5)
+        cv2.line(image, (150, 25), (150, 130), (0, 0, 0), 4)
+        cv2.line(image, (150, 155), (150, 211), (0, 0, 0), 4)
+        cv2.line(image, (32, 120), (108, 120), (0, 0, 0), 4)
+        cv2.line(image, (132, 120), (286, 120), (0, 0, 0), 4)
+        cv2.rectangle(image, (220, 145), (265, 190), (0, 0, 0), 3)
+        cv2.line(image, (75, 120), (75, 80), (0, 0, 0), 3)
+        cv2.circle(image, (150, 142), 13, (0, 0, 0), 2)
+        return image
+
+    def write_plan(self, root: pathlib.Path, relative: str, image: np.ndarray | None = None) -> None:
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.assertTrue(cv2.imwrite(str(path), self.plan_image() if image is None else image))
+
     def write_families(self, path: pathlib.Path, payload: dict[str, str]) -> None:
         path.write_text(json.dumps(payload), encoding="utf-8")
 
@@ -64,6 +81,8 @@ class PreparePrivateRealCorpusTest(unittest.TestCase):
             self.assertTrue(manifest["privacy"]["safeToCommit"])
             self.assertFalse(manifest["privacy"]["sourcePathsStored"])
             self.assertFalse(manifest["privacy"]["rawRasterHashesStored"])
+            self.assertTrue(manifest["integrityPolicy"]["crossFamilyNearDuplicatesRejected"])
+            self.assertFalse(manifest["integrityPolicy"]["nearDuplicateFingerprintsStored"])
             self.assertIn("riyadh/private-villa-name.npz", local_text)
             self.assertFalse(source_groups["privacy"]["safeToCommit"])
             self.assertTrue(source_groups["privacy"]["localOnly"])
@@ -98,6 +117,47 @@ class PreparePrivateRealCorpusTest(unittest.TestCase):
 
             with self.assertRaisesRegex(RuntimeError, "duplicate canonical real-plan raster"):
                 module.build_manifests(root, families, "stable-salt", 0.15, 0.15)
+
+    def test_resized_recompressed_same_plan_cannot_be_split_as_different_families(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp) / "images"
+            root.mkdir()
+            base = self.plan_image()
+            self.write_plan(root, "original.png", base)
+            # Change resolution, page margin and lossy codec without changing the underlying plan.
+            padded = cv2.copyMakeBorder(base, 18, 27, 22, 35, cv2.BORDER_CONSTANT, value=(255, 255, 255))
+            variant = cv2.resize(padded, (430, 330), interpolation=cv2.INTER_AREA)
+            self.write_plan(root, "phone-export.jpg", variant)
+            families = pathlib.Path(tmp) / "families.json"
+            self.write_families(
+                families,
+                {"original.png": "house-a", "phone-export.jpg": "house-b"},
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "near-duplicate real-plan rasters"):
+                module.build_manifests(root, families, "stable-salt", 0.15, 0.15)
+
+    def test_resized_recompressed_variants_are_allowed_when_family_is_shared(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp) / "images"
+            root.mkdir()
+            base = self.plan_image()
+            self.write_plan(root, "scan.png", base)
+            variant = cv2.resize(
+                cv2.copyMakeBorder(base, 12, 20, 15, 28, cv2.BORDER_CONSTANT, value=(255, 255, 255)),
+                (390, 300),
+                interpolation=cv2.INTER_AREA,
+            )
+            self.write_plan(root, "scan-compressed.jpg", variant)
+            families = pathlib.Path(tmp) / "families.json"
+            self.write_families(
+                families,
+                {"scan.png": "same-house", "scan-compressed.jpg": "same-house"},
+            )
+
+            _, manifest = module.build_manifests(root, families, "stable-salt", 0.15, 0.15)
+            self.assertEqual(manifest["uniqueSourceGroups"], 1)
+            self.assertEqual(len({record["split"] for record in manifest["records"]}), 1)
 
     def test_family_map_must_cover_exact_image_set(self):
         with tempfile.TemporaryDirectory() as tmp:
