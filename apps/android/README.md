@@ -1,10 +1,20 @@
 # Manzzzl AI Android App
 
-النسخة الأولى:
-- شاشة دخول بسيطة
-- إنشاء مشروع منزل
-- رفع مخطط
-- متابعة المعالجة
-- عرض نموذج 3D لاحقاً
+## MVP
+- Android first
+- Simple login screen
+- Create home project
+- Upload floor plan
+- AI processing status
+- External 3D preview
 
-هذا المجلد مخصص لتطبيق Android.
+## Core rules
+- The floor plan is the source of truth.
+- Saudi architecture knowledge improves appearance only.
+- No furniture in the first version.
+- Support one or two floors.
+
+## Future
+- Indoor walkthrough
+- Voice commands
+- Digital twin interaction
