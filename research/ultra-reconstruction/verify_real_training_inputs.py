@@ -2,17 +2,16 @@
 """Verify Manzl's private real-plan splits before release-candidate student training.
 
 This gate is intentionally stricter than the generic dataset split checker. A release-candidate training
-run must consume the exact transactional output of ``materialize_private_real_splits.py`` and must keep
-three independent partitions:
+run must consume the exact transactional output of ``materialize_private_real_splits.py`` and keep three
+independent partitions: train, validation, and untouched test.
 
-* ``train``: the only split used for gradient updates.
-* ``validation``: model selection / early stopping only.
-* ``test``: reserved and untouched until final held-out evaluation.
+Two aggregate fingerprints are emitted per split:
+* ``opaqueSplitSetFingerprints`` binds membership using opaque sample IDs only.
+* ``opaqueSplitArtifactFingerprints`` binds the exact NPZ bytes behind those opaque IDs.
 
-The materialization report is treated as a provenance contract, not as evidence of model quality. This
-script re-measures sample/family counts, within-family variant density and pairwise leakage from the NPZ
-files themselves, requires opaque output filenames, and fails closed if the report or directory layout
-is inconsistent.
+The artifact fingerprint is one domain-separated digest for the whole split; no per-image/raster hash,
+path, filename from the private source corpus, or raw family label is exposed. This lets later release
+stages detect post-training sample replacement while preserving the privacy model.
 """
 
 from __future__ import annotations
@@ -27,6 +26,7 @@ import verify_dataset_split
 
 SPLITS = ("train", "validation", "test")
 OPAQUE_SAMPLE = re.compile(r"^sample-[0-9a-f]{32}\.npz$")
+ARTIFACT_FINGERPRINT_DOMAIN = b"manzl-private-real-split-artifacts-v1\0"
 
 
 def load_report(split_root: pathlib.Path) -> dict:
@@ -89,6 +89,26 @@ def opaque_set_fingerprint(files: list[pathlib.Path]) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def opaque_artifact_fingerprint(files: list[pathlib.Path]) -> str:
+    """Bind the exact opaque NPZ artifacts without publishing per-sample content hashes."""
+    if not files:
+        raise RuntimeError("cannot artifact-fingerprint an empty release split")
+    digest = hashlib.sha256()
+    digest.update(ARTIFACT_FINGERPRINT_DOMAIN)
+    for path in sorted(files, key=lambda item: item.name):
+        if OPAQUE_SAMPLE.fullmatch(path.name) is None:
+            raise RuntimeError(f"artifact fingerprint received a non-opaque sample: {path.name}")
+        raw = path.read_bytes()
+        if not raw:
+            raise RuntimeError(f"release sample is empty while artifact-fingerprinting: {path.name}")
+        digest.update(path.name.encode("ascii"))
+        digest.update(b"\0")
+        digest.update(len(raw).to_bytes(8, "big"))
+        digest.update(raw)
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
 def measured_group_index(root: pathlib.Path) -> dict[str, list[pathlib.Path]]:
     _, _, groups = verify_dataset_split.index_split(root)
     if not groups:
@@ -125,10 +145,7 @@ def verify(split_root: pathlib.Path) -> dict:
     if int(report.get("samples", -1)) != sum(measured_samples.values()):
         raise RuntimeError("materialization report total sample count is inconsistent")
 
-    group_indexes = {
-        name: measured_group_index(split_root / name)
-        for name in SPLITS
-    }
+    group_indexes = {name: measured_group_index(split_root / name) for name in SPLITS}
     measured_groups = {name: len(groups) for name, groups in group_indexes.items()}
     expected_groups = report.get("sourceGroupsBySplit")
     if measured_groups != expected_groups:
@@ -150,7 +167,8 @@ def verify(split_root: pathlib.Path) -> dict:
     if len(all_names) != len(set(all_names)):
         raise RuntimeError("one opaque sampleId/filename appears in more than one held-out split")
 
-    fingerprints = {name: opaque_set_fingerprint(files[name]) for name in SPLITS}
+    membership_fingerprints = {name: opaque_set_fingerprint(files[name]) for name in SPLITS}
+    artifact_fingerprints = {name: opaque_artifact_fingerprint(files[name]) for name in SPLITS}
     return {
         "schema": 2,
         "pipeline": "private-real-release-training-input-gate",
@@ -162,8 +180,11 @@ def verify(split_root: pathlib.Path) -> dict:
         "validationSourceGroups": measured_groups["validation"],
         "testSourceGroups": measured_groups["test"],
         "variantDensityBySplit": density,
-        "opaqueSplitSetFingerprints": fingerprints,
+        "opaqueSplitSetFingerprints": membership_fingerprints,
+        "opaqueSplitArtifactFingerprints": artifact_fingerprints,
         "fingerprintContainsOnlyOpaqueSampleIds": True,
+        "artifactFingerprintIsAggregateOnly": True,
+        "perSampleContentHashesStored": False,
         "pairwiseLeakageChecks": pairwise,
         "trainerMayRead": ["train", "validation"],
         "trainerMustNotRead": ["test"],
