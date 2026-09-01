@@ -1,5 +1,5 @@
 {
-  "schema": 6,
+  "schema": 7,
   "checkedAt": "2026-09-01",
   "costPolicy": "zero-paid-services",
   "projectUse": "personal-non-commercial",
@@ -32,6 +32,14 @@
       "codeAndDataLicense": "CC-BY-NC-4.0",
       "inputDomain": "raster-floorplan",
       "role": "independent direct-raster wall/opening/room-segmentation teacher and second room-boundary vote",
+      "selectedCheckpoint": {
+        "fileId": "1gRB7ez1e4H7a9Y09lLqRuna0luZO5VRK",
+        "path": "model_best_val_loss_var.pkl",
+        "sha256": "dd20b4e1bf1d670f2125107b079df06958b1ccd36e49a464ab739aeb00b8e7a2",
+        "bytes": 208651193,
+        "fingerprintedAt": "2026-09-01",
+        "fingerprintMethod": "official Google Drive file downloaded on clean GitHub Actions runner and SHA-256 hashed before pinning"
+      },
       "roomBoundaryEvidence": "high-confidence room segmentation transitions supported by wall/railing or a different room class; direct room-to-background transitions abstain",
       "roomBoundaryQuorumWith": "raster2seq",
       "shipInPublicApk": false,
