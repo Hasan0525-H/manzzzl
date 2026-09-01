@@ -45,6 +45,10 @@ class VerifyPackagedReleaseStudentTest(unittest.TestCase):
             "heldOutCorpusIdentityMatchedAcrossEvidence": True,
             "semanticAcceptancePolicyLocked": True,
             "semanticAcceptancePolicyEvaluated": True,
+            "relativeSemanticAcceptancePassed": True,
+            "absoluteSemanticQualityPassed": True,
+            "absoluteSemanticQualityFloorVersion": 1,
+            "semanticEvidenceRecomputedAtFinalize": True,
             "semanticAcceptancePassed": True,
             "semanticHeldOutMeasurementCompleted": True,
             "geometryReleaseEvidencePassed": True,
@@ -67,6 +71,7 @@ class VerifyPackagedReleaseStudentTest(unittest.TestCase):
                     "releaseReady": True,
                     "releaseEvidence": f"models/{verifier.RELEASE_NAME}",
                     "trainingProvenance": f"models/{verifier.TRAINING_NAME}",
+                    "semanticQualityFloorVersion": 1,
                 }
             ],
             "policy": {
@@ -87,6 +92,8 @@ class VerifyPackagedReleaseStudentTest(unittest.TestCase):
             report = verifier.verify(assets)
             self.assertTrue(report["releaseReady"])
             self.assertTrue(report["releaseEvidenceBundleVerified"])
+            self.assertTrue(report["absoluteSemanticQualityPassed"])
+            self.assertTrue(report["semanticEvidenceRecomputedAtFinalize"])
 
     def test_proposal_or_nonrelease_bundle_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -95,6 +102,30 @@ class VerifyPackagedReleaseStudentTest(unittest.TestCase):
             release["blockingReason"] = "proposal-only"
             (assets / verifier.RELEASE_NAME).write_text(json.dumps(release), encoding="utf-8")
             with self.assertRaisesRegex(RuntimeError, "releaseReady"):
+                verifier.verify(assets)
+
+    def test_legacy_release_without_absolute_proof_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            assets, _, release, _ = self.make_assets(pathlib.Path(tmp))
+            release.pop("absoluteSemanticQualityPassed")
+            (assets / verifier.RELEASE_NAME).write_text(json.dumps(release), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "absoluteSemanticQualityPassed"):
+                verifier.verify(assets)
+
+    def test_wrong_absolute_floor_version_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            assets, _, release, _ = self.make_assets(pathlib.Path(tmp))
+            release["absoluteSemanticQualityFloorVersion"] = 0
+            (assets / verifier.RELEASE_NAME).write_text(json.dumps(release), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "absoluteSemanticQualityFloorVersion"):
+                verifier.verify(assets)
+
+    def test_manifest_must_bind_same_quality_floor_version(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            assets, _, _, manifest = self.make_assets(pathlib.Path(tmp))
+            manifest["required"][0]["semanticQualityFloorVersion"] = 2
+            (assets / verifier.MANIFEST_NAME).write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "semanticQualityFloorVersion"):
                 verifier.verify(assets)
 
     def test_different_model_bytes_are_rejected(self):
