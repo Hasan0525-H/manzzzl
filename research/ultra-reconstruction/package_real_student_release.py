@@ -1,0 +1,208 @@
+#!/usr/bin/env python3
+"""Package one fully measured Manzl real-plan student into Android assets.
+
+This is deliberately downstream of ``finalize_real_student_release.py``. It never creates release
+evidence and never promotes a candidate based on training metrics. The candidate ONNX, real-training
+attestation, and final release bundle are first assembled in an isolated staging directory and verified
+with the exact APK boundary contract. Only a verified staging package may replace app assets; the
+manifest is written last so a partial copy remains fail-closed.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import pathlib
+import shutil
+import tempfile
+
+import verify_packaged_release_student as packaged_verifier
+
+MODEL_NAME = packaged_verifier.MODEL_NAME
+TRAINING_NAME = packaged_verifier.TRAINING_NAME
+RELEASE_NAME = packaged_verifier.RELEASE_NAME
+MANIFEST_NAME = packaged_verifier.MANIFEST_NAME
+STALE_QUALITY_NAME = "manzl_reconstruction_student.quality.json"
+
+
+def _load_json(path: pathlib.Path, label: str) -> dict:
+    if not path.is_file():
+        raise FileNotFoundError(f"{label} is missing: {path}")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"{label} must be a JSON object")
+    return payload
+
+
+def _candidate_contract(candidate: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path, dict, str, int]:
+    candidate = candidate.resolve()
+    model = candidate / MODEL_NAME
+    training_path = candidate / "real-training-attestation.json"
+    training = _load_json(training_path, "real-training attestation")
+    if not model.is_file() or model.stat().st_size <= 100_000:
+        raise RuntimeError("release candidate must contain a non-trivial student ONNX")
+    digest = hashlib.sha256(model.read_bytes()).hexdigest()
+    size = model.stat().st_size
+    required = {
+        "schema": 1,
+        "pipeline": "manzl-private-real-student-release-candidate",
+        "model": MODEL_NAME,
+        "sha256": digest,
+        "bytes": size,
+        "trainingSplit": "train",
+        "modelSelectionSplit": "validation",
+        "testSplitPresentAndVerified": True,
+        "testUsedForTraining": False,
+        "testUsedForModelSelection": False,
+        "testUsedForValidationMetrics": False,
+        "testReservedForFinalEvaluation": True,
+        "realTrainingPreflightPassed": True,
+        "releaseReady": False,
+    }
+    for key, expected in required.items():
+        if training.get(key) != expected:
+            raise RuntimeError(
+                f"release candidate training contract failed for {key}: "
+                f"{training.get(key)!r} != {expected!r}"
+            )
+    return model, training_path, training, digest, size
+
+
+def _release_contract(release_path: pathlib.Path, digest: str, size: int) -> dict:
+    release = _load_json(release_path, "final real-student release evidence")
+    required = {
+        "schema": 2,
+        "pipeline": "manzl-real-student-release-evidence-bundle",
+        "model": MODEL_NAME,
+        "sha256": digest,
+        "bytes": size,
+        "trainingAttestationVerified": True,
+        "candidateArtifactIntegrityPassed": True,
+        "heldOutCorpusIdentityMatchedAcrossEvidence": True,
+        "semanticAcceptancePolicyLocked": True,
+        "semanticAcceptancePolicyEvaluated": True,
+        "semanticAcceptancePassed": True,
+        "semanticHeldOutMeasurementCompleted": True,
+        "geometryReleaseEvidencePassed": True,
+        "allEvidenceBoundToExactModelDigest": True,
+        "releaseEvidenceBundleComplete": True,
+        "releaseReady": True,
+        "blockingReason": None,
+    }
+    for key, expected in required.items():
+        if release.get(key) != expected:
+            raise RuntimeError(
+                f"final release contract failed for {key}: {release.get(key)!r} != {expected!r}"
+            )
+    return release
+
+
+def _release_manifest(manifest: dict, digest: str, size: int, replace: bool) -> dict:
+    required_models = manifest.get("required")
+    if not isinstance(required_models, list):
+        raise ValueError("runtime model manifest required list is missing")
+    student = next(
+        (item for item in required_models if isinstance(item, dict) and item.get("id") == "manzl_reconstruction_student"),
+        None,
+    )
+    if student is None:
+        raise RuntimeError("runtime model manifest does not declare the reconstruction student")
+    if student.get("releaseReady") is True and not replace:
+        raise RuntimeError("a release-ready student is already packaged; pass --replace to replace it explicitly")
+
+    policy = manifest.get("policy")
+    if not isinstance(policy, dict):
+        raise ValueError("runtime model manifest policy is missing")
+    for key, expected in {
+        "networkAtRuntime": False,
+        "paidApiFallback": False,
+        "silentQualityDowngrade": False,
+    }.items():
+        if policy.get(key) != expected:
+            raise RuntimeError(f"runtime model policy changed unexpectedly for {key}")
+
+    student.update(
+        {
+            "path": f"models/{MODEL_NAME}",
+            "status": "real-held-out-release-ready",
+            "sha256": digest,
+            "bytes": size,
+            "releaseReady": True,
+            "releaseEvidence": f"models/{RELEASE_NAME}",
+            "trainingProvenance": f"models/{TRAINING_NAME}",
+        }
+    )
+    for stale_key in ("generatedValidation", "proposalOnly", "trainingSource", "attribution"):
+        student.pop(stale_key, None)
+    return manifest
+
+
+def package_release(
+    candidate: pathlib.Path,
+    release_path: pathlib.Path,
+    assets: pathlib.Path,
+    replace: bool = False,
+) -> dict:
+    assets = assets.resolve()
+    if not assets.is_dir():
+        raise FileNotFoundError(f"Android model assets directory is missing: {assets}")
+
+    model, training_path, _, digest, size = _candidate_contract(candidate)
+    _release_contract(release_path.resolve(), digest, size)
+    manifest_path = assets / MANIFEST_NAME
+    manifest = _load_json(manifest_path, "runtime model manifest")
+    staged_manifest = _release_manifest(json.loads(json.dumps(manifest)), digest, size, replace)
+
+    staging = pathlib.Path(tempfile.mkdtemp(prefix=".manzl-release-stage-", dir=str(assets.parent)))
+    try:
+        shutil.copy2(model, staging / MODEL_NAME)
+        shutil.copy2(training_path, staging / TRAINING_NAME)
+        shutil.copy2(release_path.resolve(), staging / RELEASE_NAME)
+        (staging / MANIFEST_NAME).write_text(
+            json.dumps(staged_manifest, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+        # Validate exactly what the APK workflow will validate before touching app assets.
+        report = packaged_verifier.verify(staging)
+
+        # Data files first, manifest last. The manifest is the release commit point.
+        for name in (MODEL_NAME, TRAINING_NAME, RELEASE_NAME):
+            os.replace(staging / name, assets / name)
+        stale_quality = assets / STALE_QUALITY_NAME
+        if stale_quality.exists():
+            stale_quality.unlink()
+        os.replace(staging / MANIFEST_NAME, manifest_path)
+
+        final_report = packaged_verifier.verify(assets)
+        if final_report != report:
+            raise RuntimeError("packaged release verification changed after committing Android assets")
+        return final_report
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--candidate", type=pathlib.Path, required=True)
+    parser.add_argument("--release-evidence", type=pathlib.Path, required=True)
+    parser.add_argument(
+        "--assets",
+        type=pathlib.Path,
+        default=pathlib.Path("manzl-app/src/main/assets/models"),
+    )
+    parser.add_argument("--replace", action="store_true")
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    report = package_release(args.candidate, args.release_evidence, args.assets, args.replace)
+    print(json.dumps(report, indent=2, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
