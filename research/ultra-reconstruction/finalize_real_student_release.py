@@ -4,8 +4,12 @@
 Release succeeds only when the same model digest and opaque held-out corpus are covered by:
 1) verified real training provenance,
 2) a semantic policy locked from validation before test,
-3) held-out semantic PASS against that policy, and
+3) held-out semantic PASS against both the locked relative policy and immutable absolute quality floors,
 4) production runtime end-to-end geometry PASS.
+
+The finalizer deliberately recomputes semantic acceptance from the raw held-out ``testMetrics``. It does
+not trust stored PASS booleans or stored evaluation objects, so editing an attestation cannot promote a
+weak model.
 """
 
 from __future__ import annotations
@@ -35,6 +39,40 @@ def require_contract(payload: dict, required: dict, label: str) -> None:
             raise ValueError(
                 f"{label} contract failed for {key}: {payload.get(key)!r} != {expected!r}"
             )
+
+
+def _same_json(left: dict, right: dict) -> bool:
+    return real_semantic_policy.canonical_digest(left) == real_semantic_policy.canonical_digest(right)
+
+
+def recompute_semantic_evidence(policy: dict, semantic: dict, model_sha256: str) -> tuple[dict, dict]:
+    """Re-evaluate both semantic gates from immutable raw held-out metrics."""
+    metrics = semantic.get("testMetrics")
+    if not isinstance(metrics, dict) or metrics.get("schema") != 2 or metrics.get("domain") != "private-real-held-out-test":
+        raise ValueError("semantic final-test attestation contains invalid held-out testMetrics")
+    if metrics.get("releaseReady") is not False:
+        raise ValueError("raw held-out testMetrics must remain non-release")
+
+    relative = real_semantic_policy.evaluate_metrics(policy, metrics)
+    absolute = evaluate_real_student_test.absolute_semantic_quality(metrics)
+    if relative.get("semanticAcceptancePassed") is not True:
+        raise ValueError("recomputed relative semantic acceptance failed")
+    if absolute.get("absoluteSemanticQualityPassed") is not True:
+        raise ValueError("recomputed absolute semantic quality failed")
+    if relative.get("policyModelSha256") != model_sha256:
+        raise ValueError("recomputed relative semantic acceptance is bound to a different model")
+    if relative.get("validationEvaluationSha256") != policy.get("validationEvaluationSha256"):
+        raise ValueError("recomputed relative semantic acceptance is bound to different validation evidence")
+    if absolute.get("qualityFloorVersion") != 1:
+        raise ValueError("unexpected absolute semantic quality-floor version")
+
+    stored_relative = semantic.get("semanticAcceptanceEvaluation")
+    stored_absolute = semantic.get("absoluteSemanticQualityEvaluation")
+    if not isinstance(stored_relative, dict) or not _same_json(stored_relative, relative):
+        raise ValueError("stored semantic acceptance evaluation does not match recomputed held-out metrics")
+    if not isinstance(stored_absolute, dict) or not _same_json(stored_absolute, absolute):
+        raise ValueError("stored absolute semantic quality evaluation does not match recomputed held-out metrics")
+    return relative, absolute
 
 
 def finalize(
@@ -74,6 +112,8 @@ def finalize(
             "testSetFingerprint": test_fingerprint,
             "fingerprintContainsOnlyOpaqueSampleIds": True,
             "semanticPolicySha256": policy_sha,
+            "relativeSemanticAcceptancePassed": True,
+            "absoluteSemanticQualityPassed": True,
             "testUsedForTraining": False,
             "testUsedForModelSelection": False,
             "testUsedForValidationMetrics": False,
@@ -88,16 +128,7 @@ def finalize(
         },
         "semantic final-test attestation",
     )
-    metrics = semantic.get("testMetrics")
-    if not isinstance(metrics, dict) or metrics.get("schema") != 2 or metrics.get("domain") != "private-real-held-out-test":
-        raise ValueError("semantic final-test attestation contains invalid held-out testMetrics")
-    acceptance = semantic.get("semanticAcceptanceEvaluation")
-    if not isinstance(acceptance, dict) or acceptance.get("semanticAcceptancePassed") is not True:
-        raise ValueError("semantic acceptance evaluation is missing or failed")
-    if acceptance.get("policyModelSha256") != model_sha256:
-        raise ValueError("semantic acceptance evaluation is bound to a different model")
-    if acceptance.get("validationEvaluationSha256") != policy.get("validationEvaluationSha256"):
-        raise ValueError("semantic acceptance evaluation is bound to different validation evidence")
+    _, absolute = recompute_semantic_evidence(policy, semantic, model_sha256)
 
     geometry = load_json_object(geometry_attestation_path, "geometry release attestation")
     require_contract(
@@ -141,6 +172,10 @@ def finalize(
         "heldOutCorpusIdentityMatchedAcrossEvidence": True,
         "semanticAcceptancePolicyLocked": True,
         "semanticAcceptancePolicyEvaluated": True,
+        "relativeSemanticAcceptancePassed": True,
+        "absoluteSemanticQualityPassed": True,
+        "absoluteSemanticQualityFloorVersion": absolute["qualityFloorVersion"],
+        "semanticEvidenceRecomputedAtFinalize": True,
         "semanticAcceptancePassed": True,
         "semanticHeldOutMeasurementCompleted": True,
         "geometryReleaseEvidencePassed": True,
@@ -149,9 +184,9 @@ def finalize(
         "releaseReady": True,
         "blockingReason": None,
         "reason": (
-            "The exact ONNX candidate passed the pre-registered semantic held-out policy and all production "
-            "end-to-end geometry gates on the exact opaque held-out corpus. The student model is release-ready; "
-            "APK packaging remains a separate build step."
+            "The exact ONNX candidate passed recomputed relative and immutable absolute semantic gates plus "
+            "all production end-to-end geometry gates on the exact opaque held-out corpus. The student model "
+            "is release-ready; APK packaging remains a separate build step."
         ),
     }
 
