@@ -20,20 +20,16 @@ import kotlin.math.sqrt
  * Lightweight 2D collision world for the first-person camera.
  *
  * The player is represented by a circle on the X/Z floor plane. Movement is sub-stepped so a
- * low-frame-rate device cannot tunnel through thin walls or compact structural columns, then any
- * penetration is projected out of nearby capsules/oriented column boxes. Window metadata adds a
- * solid barrier across raster wall gaps, while only verified door spans on the same measured wall
- * axis may become traversable. This prevents a door beside a corner/crossing wall from accidentally
- * punching a passage through the wrong wall.
+ * low-frame-rate device cannot tunnel through thin walls or compact structural columns. Wall/window
+ * barriers use capsule collision; verified columns use exact circle-vs-oriented-box contact so corners
+ * stay rounded and walkable space is not unnecessarily lost.
  */
 internal class CollisionWorld(private val plan: FloorPlan) {
 
     private val barriers: List<CollisionBarrier> = buildList {
         plan.walls.forEach { wall -> add(CollisionBarrier(wall, permitsDoorPassage = true)) }
         plan.windows.forEach { window ->
-            window.toCollisionWall()?.let { wall ->
-                add(CollisionBarrier(wall, permitsDoorPassage = false))
-            }
+            window.toCollisionWall()?.let { wall -> add(CollisionBarrier(wall, permitsDoorPassage = false)) }
         }
     }
 
@@ -45,25 +41,18 @@ internal class CollisionWorld(private val plan: FloorPlan) {
 
     fun move(position: Vec2, deltaX: Float, deltaZ: Float, radius: Float): Vec2 {
         val distance = sqrt(deltaX * deltaX + deltaZ * deltaZ)
-        val steps = ceil(distance / MAX_SUBSTEP_METERS)
-            .toInt()
-            .coerceIn(1, MAX_SUBSTEPS)
+        val steps = ceil(distance / MAX_SUBSTEP_METERS).toInt().coerceIn(1, MAX_SUBSTEPS)
         val stepX = deltaX / steps
         val stepZ = deltaZ / steps
-
         var result = position
         repeat(steps) {
-            result = resolvePenetration(
-                candidate = Vec2(result.x + stepX, result.z + stepZ),
-                radius = radius,
-            )
+            result = resolvePenetration(Vec2(result.x + stepX, result.z + stepZ), radius)
         }
         return result
     }
 
     fun findSpawn(radius: Float = DEFAULT_PLAYER_RADIUS): Vec2 {
         WalkableSpawnResolver.find(plan, radius, ::isClear)?.let { return it }
-
         val centre = Vec2(0f, 0f)
         if (isClear(centre, radius)) return centre
 
@@ -73,20 +62,18 @@ internal class CollisionWorld(private val plan: FloorPlan) {
             ceil(halfWidth / SPAWN_GRID_METERS).toInt(),
             ceil(halfDepth / SPAWN_GRID_METERS).toInt(),
         )
-
         for (ring in 1..maxRing) {
             for (gx in -ring..ring) {
                 for (gz in -ring..ring) {
                     if (abs(gx) != ring && abs(gz) != ring) continue
                     val candidate = Vec2(
-                        x = (gx * SPAWN_GRID_METERS).coerceIn(-halfWidth, halfWidth),
-                        z = (gz * SPAWN_GRID_METERS).coerceIn(-halfDepth, halfDepth),
+                        (gx * SPAWN_GRID_METERS).coerceIn(-halfWidth, halfWidth),
+                        (gz * SPAWN_GRID_METERS).coerceIn(-halfDepth, halfDepth),
                     )
                     if (isClear(candidate, radius)) return candidate
                 }
             }
         }
-
         return resolvePenetration(centre, radius)
     }
 
@@ -95,9 +82,8 @@ internal class CollisionWorld(private val plan: FloorPlan) {
         val halfDepth = plan.depthMeters / 2f - BOUNDARY_PADDING
         if (point.x - radius < -halfWidth || point.x + radius > halfWidth) return false
         if (point.z - radius < -halfDepth || point.z + radius > halfDepth) return false
-
-        if (barriers.any { barrier -> collidesWithBarrier(point, radius, barrier) }) return false
-        return columns.none { column -> collidesWithColumn(point, radius, column) }
+        if (barriers.any { collidesWithBarrier(point, radius, it) }) return false
+        return columns.none { collidesWithColumn(point, radius, it) }
     }
 
     private fun resolvePenetration(candidate: Vec2, radius: Float): Vec2 {
@@ -117,12 +103,9 @@ internal class CollisionWorld(private val plan: FloorPlan) {
                 val vz = end.z - start.z
                 val lengthSquared = vx * vx + vz * vz
                 if (lengthSquared <= EPSILON) continue
-
-                val projection = (((x - start.x) * vx + (z - start.z) * vz) / lengthSquared)
-                    .coerceIn(0f, 1f)
+                val projection = (((x - start.x) * vx + (z - start.z) * vz) / lengthSquared).coerceIn(0f, 1f)
                 val closestX = start.x + vx * projection
                 val closestZ = start.z + vz * projection
-
                 if (barrier.permitsDoorPassage && isDoorPassage(wall, projection, radius)) continue
 
                 val dx = x - closestX
@@ -130,7 +113,6 @@ internal class CollisionWorld(private val plan: FloorPlan) {
                 val minDistance = radius + wall.thicknessMeters / 2f + CONTACT_SKIN_METERS
                 val distanceSquared = dx * dx + dz * dz
                 if (distanceSquared >= minDistance * minDistance) continue
-
                 val distance = sqrt(distanceSquared)
                 val nx: Float
                 val nz: Float
@@ -142,12 +124,9 @@ internal class CollisionWorld(private val plan: FloorPlan) {
                     nx = -vz / wallLength
                     nz = vx / wallLength
                 }
-
                 val push = minDistance - distance
-                x += nx * push
-                z += nz * push
-                x = x.coerceIn(-halfWidth, halfWidth)
-                z = z.coerceIn(-halfDepth, halfDepth)
+                x = (x + nx * push).coerceIn(-halfWidth, halfWidth)
+                z = (z + nz * push).coerceIn(-halfDepth, halfDepth)
                 changed = true
             }
 
@@ -157,11 +136,9 @@ internal class CollisionWorld(private val plan: FloorPlan) {
                 z = (z + correction.z).coerceIn(-halfDepth, halfDepth)
                 changed = true
             }
-
             if (!changed) break
             pass++
         }
-
         return Vec2(x, z)
     }
 
@@ -171,11 +148,8 @@ internal class CollisionWorld(private val plan: FloorPlan) {
         val vz = wall.end.z - wall.start.z
         val lengthSquared = vx * vx + vz * vz
         if (lengthSquared <= EPSILON) return false
-
-        val projection = (((point.x - wall.start.x) * vx + (point.z - wall.start.z) * vz) / lengthSquared)
-            .coerceIn(0f, 1f)
+        val projection = (((point.x - wall.start.x) * vx + (point.z - wall.start.z) * vz) / lengthSquared).coerceIn(0f, 1f)
         if (barrier.permitsDoorPassage && isDoorPassage(wall, projection, radius)) return false
-
         val closestX = wall.start.x + vx * projection
         val closestZ = wall.start.z + vz * projection
         val dx = point.x - closestX
@@ -184,64 +158,83 @@ internal class CollisionWorld(private val plan: FloorPlan) {
         return dx * dx + dz * dz < minDistance * minDistance
     }
 
-    /** Conservative circle-vs-oriented-box test used for verified structural columns. */
+    /** Exact circle-vs-OBB check: unlike a rectangular Minkowski approximation, corners stay round. */
     private fun collidesWithColumn(point: Vec2, radius: Float, column: StructuralColumn): Boolean {
-        val frame = columnFrame(column)
-        val dx = point.x - column.center.x
-        val dz = point.z - column.center.z
-        val along = dx * frame.ux + dz * frame.uz
-        val depth = dx * frame.nx + dz * frame.nz
-        val halfAlong = column.widthMeters * 0.5f + radius + CONTACT_SKIN_METERS
-        val halfDepth = column.depthMeters * 0.5f + radius + CONTACT_SKIN_METERS
-        return abs(along) < halfAlong && abs(depth) < halfDepth
+        val local = columnLocalPoint(point, column)
+        val halfAlong = column.widthMeters * 0.5f + CONTACT_SKIN_METERS
+        val halfDepth = column.depthMeters * 0.5f + CONTACT_SKIN_METERS
+        val closestAlong = local.along.coerceIn(-halfAlong, halfAlong)
+        val closestDepth = local.depth.coerceIn(-halfDepth, halfDepth)
+        val da = local.along - closestAlong
+        val dd = local.depth - closestDepth
+        return da * da + dd * dd < radius * radius ||
+            (abs(local.along) < halfAlong && abs(local.depth) < halfDepth)
     }
 
-    private fun columnPenetrationCorrection(
-        point: Vec2,
-        radius: Float,
-        column: StructuralColumn,
-    ): Vec2? {
+    private fun columnPenetrationCorrection(point: Vec2, radius: Float, column: StructuralColumn): Vec2? {
         val frame = columnFrame(column)
+        val local = columnLocalPoint(point, column, frame)
+        val halfAlong = column.widthMeters * 0.5f + CONTACT_SKIN_METERS
+        val halfDepth = column.depthMeters * 0.5f + CONTACT_SKIN_METERS
+
+        val inside = abs(local.along) <= halfAlong && abs(local.depth) <= halfDepth
+        if (inside) {
+            val toAlongFace = halfAlong - abs(local.along)
+            val toDepthFace = halfDepth - abs(local.depth)
+            return if (toAlongFace <= toDepthFace) {
+                val sign = if (local.along < 0f) -1f else 1f
+                val push = toAlongFace + radius + COLUMN_RESOLUTION_SKIN_METERS
+                Vec2(frame.ux * push * sign, frame.uz * push * sign)
+            } else {
+                val sign = if (local.depth < 0f) -1f else 1f
+                val push = toDepthFace + radius + COLUMN_RESOLUTION_SKIN_METERS
+                Vec2(frame.nx * push * sign, frame.nz * push * sign)
+            }
+        }
+
+        val closestAlong = local.along.coerceIn(-halfAlong, halfAlong)
+        val closestDepth = local.depth.coerceIn(-halfDepth, halfDepth)
+        val da = local.along - closestAlong
+        val dd = local.depth - closestDepth
+        val distanceSquared = da * da + dd * dd
+        if (distanceSquared >= radius * radius) return null
+        val distance = sqrt(distanceSquared)
+        if (distance <= EPSILON) return null
+        val push = radius - distance + COLUMN_RESOLUTION_SKIN_METERS
+        val localNormalA = da / distance
+        val localNormalD = dd / distance
+        return Vec2(
+            x = (frame.ux * localNormalA + frame.nx * localNormalD) * push,
+            z = (frame.uz * localNormalA + frame.nz * localNormalD) * push,
+        )
+    }
+
+    private fun columnLocalPoint(
+        point: Vec2,
+        column: StructuralColumn,
+        frame: ColumnFrame = columnFrame(column),
+    ): LocalPoint {
         val dx = point.x - column.center.x
         val dz = point.z - column.center.z
-        val along = dx * frame.ux + dz * frame.uz
-        val depth = dx * frame.nx + dz * frame.nz
-        val halfAlong = column.widthMeters * 0.5f + radius + CONTACT_SKIN_METERS
-        val halfDepth = column.depthMeters * 0.5f + radius + CONTACT_SKIN_METERS
-        val alongPenetration = halfAlong - abs(along)
-        val depthPenetration = halfDepth - abs(depth)
-        if (alongPenetration <= 0f || depthPenetration <= 0f) return null
-
-        return if (alongPenetration <= depthPenetration) {
-            val sign = if (along < 0f) -1f else 1f
-            Vec2(
-                x = frame.ux * (alongPenetration + COLUMN_RESOLUTION_SKIN_METERS) * sign,
-                z = frame.uz * (alongPenetration + COLUMN_RESOLUTION_SKIN_METERS) * sign,
-            )
-        } else {
-            val sign = if (depth < 0f) -1f else 1f
-            Vec2(
-                x = frame.nx * (depthPenetration + COLUMN_RESOLUTION_SKIN_METERS) * sign,
-                z = frame.nz * (depthPenetration + COLUMN_RESOLUTION_SKIN_METERS) * sign,
-            )
-        }
+        return LocalPoint(
+            along = dx * frame.ux + dz * frame.uz,
+            depth = dx * frame.nx + dz * frame.nz,
+        )
     }
 
     private fun columnFrame(column: StructuralColumn): ColumnFrame {
         val radians = column.rotationDegrees * PI.toFloat() / 180f
         val ux = cos(radians)
         val uz = sin(radians)
-        return ColumnFrame(ux = ux, uz = uz, nx = -uz, nz = ux)
+        return ColumnFrame(ux, uz, -uz, ux)
     }
 
     private fun isDoorPassage(wall: WallSegment, wallProjection: Float, radius: Float): Boolean {
         if (plan.doors.isEmpty()) return false
-
         val vx = wall.end.x - wall.start.x
         val vz = wall.end.z - wall.start.z
         val wallLength = sqrt(vx * vx + vz * vz)
         if (wallLength <= EPSILON) return false
-
         return plan.doors.any { door ->
             door.widthMeters > radius * 2f + MIN_DOOR_CLEARANCE_METERS &&
                 doorBelongsToWall(door, wall, vx, vz, wallLength, wallProjection, radius)
@@ -258,13 +251,9 @@ internal class CollisionWorld(private val plan: FloorPlan) {
         radius: Float,
     ): Boolean {
         val wallRotation = Math.toDegrees(atan2(vz.toDouble(), vx.toDouble())).toFloat()
-        if (axisAngleDifference(wallRotation, door.rotationDegrees) > MAX_DOOR_AXIS_ERROR_DEGREES) {
-            return false
-        }
-
+        if (axisAngleDifference(wallRotation, door.rotationDegrees) > MAX_DOOR_AXIS_ERROR_DEGREES) return false
         val lengthSquared = wallLength * wallLength
-        val doorProjection = (((door.center.x - wall.start.x) * vx +
-            (door.center.z - wall.start.z) * vz) / lengthSquared).coerceIn(0f, 1f)
+        val doorProjection = (((door.center.x - wall.start.x) * vx + (door.center.z - wall.start.z) * vz) / lengthSquared).coerceIn(0f, 1f)
         val wallX = wall.start.x + vx * doorProjection
         val wallZ = wall.start.z + vz * doorProjection
         val perpendicularDistance = sqrt(
@@ -272,7 +261,6 @@ internal class CollisionWorld(private val plan: FloorPlan) {
                 (door.center.z - wallZ) * (door.center.z - wallZ)
         )
         if (perpendicularDistance > wall.thicknessMeters + DOOR_ASSOCIATION_TOLERANCE_METERS) return false
-
         val alongDistance = abs(wallProjection - doorProjection) * wallLength
         val usableHalfWidth = door.widthMeters / 2f - radius * DOOR_EDGE_SAFETY_FACTOR
         return usableHalfWidth > 0f && alongDistance <= usableHalfWidth
@@ -293,7 +281,7 @@ internal class CollisionWorld(private val plan: FloorPlan) {
 
     private fun WindowOpening.toCollisionWall(): WallSegment? {
         if (widthMeters <= MIN_WINDOW_COLLISION_WIDTH_METERS) return null
-        val radians = rotationDegrees * (PI.toFloat() / 180f)
+        val radians = rotationDegrees * PI.toFloat() / 180f
         val axisX = cos(radians)
         val axisZ = sin(radians)
         val half = widthMeters * 0.5f
@@ -306,17 +294,9 @@ internal class CollisionWorld(private val plan: FloorPlan) {
         )
     }
 
-    private data class CollisionBarrier(
-        val wall: WallSegment,
-        val permitsDoorPassage: Boolean,
-    )
-
-    private data class ColumnFrame(
-        val ux: Float,
-        val uz: Float,
-        val nx: Float,
-        val nz: Float,
-    )
+    private data class CollisionBarrier(val wall: WallSegment, val permitsDoorPassage: Boolean)
+    private data class ColumnFrame(val ux: Float, val uz: Float, val nx: Float, val nz: Float)
+    private data class LocalPoint(val along: Float, val depth: Float)
 
     companion object {
         const val DEFAULT_PLAYER_RADIUS = 0.27f
