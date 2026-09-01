@@ -1,5 +1,5 @@
 {
-  "schema": 10,
+  "schema": 11,
   "checkedAt": "2026-09-01",
   "costPolicy": "zero-paid-services",
   "projectUse": "personal-non-commercial",
@@ -7,6 +7,7 @@
     {
       "id": "raster2seq",
       "repository": "https://github.com/Cornell-VAILab/Raster2Seq.git",
+      "repositoryRevision": "a6c4e27a68d11d7a459f6e4a2601fd887227dd1a",
       "modelHub": "https://huggingface.co/haopt/Raster2Seq",
       "codeLicense": "MIT",
       "officialModelRepositoryLicense": "MIT",
@@ -21,9 +22,25 @@
         "publishedRoomF1": 98.1,
         "inputSize": 512
       },
+      "runtimeSmoke": {
+        "testedAt": "2026-09-01",
+        "python": "3.10.21",
+        "torch": "2.3.1+cpu",
+        "torchvision": "0.18.1+cpu",
+        "device": "cpu",
+        "cpuReferenceAttention": true,
+        "inputShape": [512, 512, 3],
+        "rawRoomPolygons": 4,
+        "semanticClassesAfterAdaptation": ["room_boundary"],
+        "teacherFormatAfterAdaptation": "raster2seq-r2g512-json-v3-room-boundary-only",
+        "checkpointVerifiedBeforeLoad": true,
+        "sourceRevisionVerifiedBeforeLoad": true,
+        "runtimeCacheBuffersIgnoredOnlyByExactPattern": true,
+        "passed": true
+      },
       "roomBoundaryEvidence": "predicted room-polygon outlines",
       "shipInPublicApk": false,
-      "notes": "Official checkpoint repository is marked MIT. The 1.13 GB teacher stays development-time because it is far too large for Android; it generates global vectors/pseudo-labels for the Manzl student. Its room-boundary vote is accepted only where a second independent in-domain teacher also reaches quorum."
+      "notes": "Official checkpoint repository is marked MIT. The 1.13 GB teacher stays development-time because it is far too large for Android. The pinned source/checkpoint passed a real CPU reference-attention inference and produced four room polygons on a rights-safe smoke floorplan; adaptation emitted room_boundary only. Persisted KV/V cache buffers are ignored only by exact runtime-cache key patterns because upstream regenerates them from each inference sequence. Any other checkpoint/model mismatch remains fail-closed."
     },
     {
       "id": "cubicasa-floortrans",
