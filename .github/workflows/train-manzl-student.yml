@@ -7,6 +7,7 @@ on:
       - 'feature/manzl-*'
     paths:
       - 'research/ultra-reconstruction/generate_rights_safe_synthetic.py'
+      - 'research/ultra-reconstruction/generate_synthetic_corpus.py'
       - 'research/ultra-reconstruction/train_student.py'
       - 'research/ultra-reconstruction/build_teacher_consensus.py'
       - '.github/workflows/train-manzl-student.yml'
@@ -37,22 +38,47 @@ jobs:
       - name: Install local-training dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install numpy==2.1.3 onnx==1.17.0
+          python -m pip install numpy==2.1.3 onnx==1.17.0 opencv-python-headless==4.10.0.84
           python -m pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu
 
-      - name: Generate rights-safe train corpus
+      - name: Generate dual rights-safe train corpus
         run: |
           rm -rf /tmp/manzl-train /tmp/manzl-val /tmp/manzl-student
+          mkdir -p /tmp/manzl-train /tmp/manzl-val
+
+          # Curriculum A: exact procedural residential layouts from the original Manzl generator.
           python research/ultra-reconstruction/generate_rights_safe_synthetic.py \
             --output /tmp/manzl-train \
-            --count 240 \
+            --count 160 \
             --size 512 \
             --seed 43926
           python research/ultra-reconstruction/generate_rights_safe_synthetic.py \
             --output /tmp/manzl-val \
-            --count 64 \
+            --count 48 \
             --size 512 \
             --seed 90439
+
+          # Curriculum B: independent raster renderer with blueprint/scan degradation, arbitrary-angle
+          # walls, openings, columns, stairs, courtyards, shafts and drafting-line distractors.
+          python research/ultra-reconstruction/generate_synthetic_corpus.py \
+            --output /tmp/manzl-train \
+            --count 80 \
+            --size 512 \
+            --seed 260901
+          python research/ultra-reconstruction/generate_synthetic_corpus.py \
+            --output /tmp/manzl-val \
+            --count 16 \
+            --size 512 \
+            --seed 260902
+
+          python - <<'PY'
+          import pathlib
+          train = list(pathlib.Path('/tmp/manzl-train').glob('*.npz'))
+          val = list(pathlib.Path('/tmp/manzl-val').glob('*.npz'))
+          assert len(train) == 240, len(train)
+          assert len(val) == 64, len(val)
+          print(f'train samples: {len(train)}; val samples: {len(val)}')
+          PY
 
       - name: Train proposal-only bootstrap student
         run: |
@@ -110,16 +136,18 @@ jobs:
           training = json.loads(training_path.read_text(encoding='utf-8'))
           digest = hashlib.sha256(model_path.read_bytes()).hexdigest()
           attestation = {
-              'schema': 1,
+              'schema': 2,
               'model': model_path.name,
               'sha256': digest,
               'bytes': model_path.stat().st_size,
-              'trainingSource': 'rights-safe procedural Manzl corpus only',
+              'trainingSource': 'two independent rights-safe procedural Manzl corpora only',
+              'trainingSamples': 240,
+              'validationSamples': 64,
               'validation': training.get('validation'),
               'proposalOnly': True,
               'realPlanBenchmarkPassed': False,
               'releaseReady': False,
-              'reason': 'Synthetic bootstrap enables local proposal inference but is not evidence of real-plan Ultra quality. Teacher-consensus + real Saudi/Arabic regression gates are still required.'
+              'reason': 'The bootstrap student makes the complete offline Ultra runtime executable, but synthetic validation is not evidence of real-plan quality. Teacher-consensus + real Saudi/Arabic regression gates remain mandatory.'
           }
           pathlib.Path('/tmp/manzl-student/manzl_reconstruction_student.quality.json').write_text(
               json.dumps(attestation, indent=2), encoding='utf-8'
@@ -137,7 +165,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Commit bootstrap student onto latest feature head
+      - name: Commit rights-safe bootstrap student onto latest feature head
         if: github.event_name == 'push'
         run: |
           # Development can continue while the CPU trainer runs. Re-anchor the generated model on the
@@ -145,6 +173,7 @@ jobs:
           git fetch origin "${GITHUB_REF_NAME}"
           git reset --hard "origin/${GITHUB_REF_NAME}"
 
+          mkdir -p manzl-app/src/main/assets/models
           cp /tmp/manzl-student/manzl_reconstruction_student.onnx \
             manzl-app/src/main/assets/models/manzl_reconstruction_student.onnx
           cp /tmp/manzl-student/manzl_reconstruction_student.json \
@@ -165,6 +194,7 @@ jobs:
                   item['status'] = 'synthetic-bootstrap-proposal-only'
                   item['sha256'] = quality['sha256']
                   item['releaseReady'] = False
+                  item['trainingSource'] = quality['trainingSource']
           manifest_path.write_text(json.dumps(manifest, indent=2), encoding='utf-8')
           PY
 
