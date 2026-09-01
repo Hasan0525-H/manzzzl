@@ -7,8 +7,14 @@ screenshots, crops or exports derived from one underlying floor plan keep one st
 That identity is copied into each consensus NPZ and can later be used to block train/validation family
 leakage.
 
-No quality gate is relaxed here. Semantic classes still require independent quorum. Raster2Seq-only
-room-boundary labels remain unsupervised until another independent polygon/topology teacher exists.
+No quality gate is relaxed here. Semantic classes still require independent quorum. In particular,
+``room_boundary`` is trainable only where two in-domain signals agree: Raster2Seq's predicted room
+polygon outline and CubiCasa/FloorTrans's independently derived architectural room-segmentation
+transition. CubiCasa room-to-background crop edges abstain, and an old CubiCasa export that lacks the
+room-boundary channel is rejected before consensus is written. RoomFormer remains an architecture
+reference unless it is explicitly retrained/adapted for raster drawings; its off-the-shelf density-map
+checkpoint is not counted as direct evidence.
+
 Everything runs locally; no cloud or paid API is used.
 """
 
@@ -31,6 +37,7 @@ class TeacherRoot:
 
 
 TEACHER_ORDER = ("raster2seq", "mitunet", "cubicasa")
+ROOM_BOUNDARY_TEACHERS = ("raster2seq", "cubicasa")
 
 
 def discover_npz(root: pathlib.Path) -> set[pathlib.Path]:
@@ -142,6 +149,26 @@ def load_source_groups(path: pathlib.Path, samples: list[pathlib.Path]) -> dict[
     return groups
 
 
+def validate_room_boundary_quorum_capability(
+    predictions: list[consensus.TeacherPrediction],
+    relative: pathlib.Path,
+) -> None:
+    """Require both independent in-domain room-boundary sources on every real sample."""
+    by_id = {prediction.teacher_id: prediction for prediction in predictions}
+    room_index = consensus.CLASS_TO_INDEX["room_boundary"]
+    for teacher_id in ROOM_BOUNDARY_TEACHERS:
+        prediction = by_id.get(teacher_id)
+        if prediction is None:
+            raise RuntimeError(
+                f"room-boundary quorum teacher {teacher_id} is missing for {relative}"
+            )
+        if not bool(prediction.class_known[room_index]):
+            raise RuntimeError(
+                f"room-boundary quorum teacher {teacher_id} does not export room_boundary for "
+                f"{relative}; regenerate predictions with the current adapter"
+            )
+
+
 def class_supervision_counts(semantic: np.ndarray, supervision: np.ndarray) -> dict[str, int]:
     active = supervision > 0.5
     return {
@@ -183,6 +210,7 @@ def build(args: argparse.Namespace) -> dict:
                 raise RuntimeError(f"Teacher sample disappeared during build: {spec.teacher_id}/{relative}")
             predictions.append(prediction)
         consensus.validate_shapes(predictions, relative)
+        validate_room_boundary_quorum_capability(predictions, relative)
         output = consensus.build_sample(predictions, build_args)
         if "image" not in output:
             raise RuntimeError(f"Consensus sample unexpectedly lost source image: {relative}")
@@ -201,7 +229,7 @@ def build(args: argparse.Namespace) -> dict:
 
     coverage = supervised_pixels / max(total_pixels, 1)
     manifest = {
-        "schema": 2,
+        "schema": 3,
         "pipeline": "raster2seq+mitunet+cubicasa-fail-closed",
         "teacherIds": list(TEACHER_ORDER),
         "samples": len(samples),
@@ -212,6 +240,13 @@ def build(args: argparse.Namespace) -> dict:
         "totalPixels": total_pixels,
         "supervisionCoverage": coverage,
         "supervisedPixelsByClass": per_class,
+        "roomBoundaryEvidence": {
+            "quorumTeachers": list(ROOM_BOUNDARY_TEACHERS),
+            "raster2seqSignal": "predicted-room-polygon-outline",
+            "cubicasaSignal": "architecturally-supported-room-segmentation-transition",
+            "minimumIndependentVotes": args.min_votes,
+            "directRoomToBackgroundAllowed": False,
+        },
         "thresholds": {
             "minVotes": args.min_votes,
             "criticalMinVotes": args.critical_min_votes,
