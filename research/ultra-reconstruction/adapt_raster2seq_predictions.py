@@ -1,23 +1,19 @@
 #!/usr/bin/env python3
-"""Convert official Raster2Seq saved predictions into Manzl teacher-consensus NPZ samples.
+"""Convert the pinned Raster2Graph-512 Raster2Seq predictions into Manzl teacher NPZ samples.
 
-Raster2Seq's official ``predict.py --save_pred`` writes one JSON per image under ``jsons/`` and a
-matching transformed source image beside that directory. Each JSON item contains ``segmentation``
-polygon coordinates and a ``category_id``. For CubiCasa-style checkpoints, categories 9/10 are
-Window/Door; the remaining categories are room polygons.
+The selected Manzl Raster2Seq teacher is **Raster2Graph-512**, not the CubiCasa checkpoint. Its
+published semantic label space contains room/space categories only; notably category 9 is
+``washing_room`` and category 10 is ``PS``. They MUST NOT be interpreted as Window/Door. Earlier
+CubiCasa-style adapters commonly use 9/10 for Window/Door, so this file intentionally locks the
+pinned R2G contract and exports only ``room_boundary`` evidence.
 
-This adapter deliberately keeps Raster2Seq in its strongest role: global polygons/topology. It does
-not hallucinate wall thickness from room boundaries. Room polygon edges become ``room_boundary``
-supervision, while predicted door/window polygons become semantic evidence. Exact wall faces still
-come from MITUNet/CubiCasa/OpenCV/MobileSAM and are adjudicated against the original raster.
+Raster2Seq remains a global topology teacher. Every valid predicted R2G room polygon contributes a
+thin closed boundary, corner heat evidence and tangent orientation. Room interiors, wall faces,
+openings, stairs, columns, courtyards, shafts and background are all true abstentions. CubiCasa and
+other independent experts provide opening/wall semantics.
 
-Important consensus contract: Raster2Seq must *abstain* from classes it does not predict. Therefore the
-adapter exports only door/window/room-boundary class names and marks only emitted evidence pixels as
-valid. It never emits implicit background, wall-face, stair, column, courtyard or shaft supervision.
-This prevents a missing Raster2Seq channel from being misread as negative evidence against another
-teacher that actually measures that class.
-
-The output format is consumed by ``build_teacher_consensus.py``.
+The output is consumed by ``build_teacher_consensus.py`` and the stricter
+``build_real_teacher_consensus.py``.
 """
 
 from __future__ import annotations
@@ -30,18 +26,13 @@ import pathlib
 import cv2
 import numpy as np
 
-# These are the only semantic classes the official saved Raster2Seq vectors can support directly.
-# Keep this list local/compact: build_teacher_consensus.py maps the names into Manzl's global class
-# order and treats every omitted class as an abstention.
-EVIDENCE_CLASSES = [
-    "door",
-    "window",
-    "room_boundary",
-]
+EVIDENCE_CLASSES = ["room_boundary"]
 CLASS = {name: index for index, name in enumerate(EVIDENCE_CLASSES)}
 
-CC5K_WINDOW = 9
-CC5K_DOOR = 10
+# Official Raster2Graph label mapping at the pinned Raster2Seq source revision:
+# 0 unknown, 1 living_room, 2 kitchen, 3 bedroom, 4 bathroom, 5 restroom,
+# 6 balcony, 7 closet, 8 corridor, 9 washing_room, 10 PS, 11 outside.
+R2G_ROOM_CATEGORY_IDS = frozenset(range(12))
 
 
 def polygon_points(raw) -> np.ndarray:
@@ -92,8 +83,8 @@ def draw_room_boundary(
     for point in integer:
         cv2.circle(corners, tuple(point), max(1, line_width), 1.0, thickness=-1, lineType=cv2.LINE_8)
 
-    # Axial tangent orientation on the same boundary band. v and -v are intentionally equivalent;
-    # the consensus builder uses doubled-angle averaging across teachers.
+    # Axial tangent orientation on the exact same boundary band. v and -v are equivalent; consensus
+    # uses doubled-angle averaging when another independent orientation source is available.
     for index in range(len(points)):
         a = points[index]
         b = points[(index + 1) % len(points)]
@@ -110,20 +101,6 @@ def draw_room_boundary(
         active = segment_mask.astype(bool)
         orientation[0, active] = ux
         orientation[1, active] = uy
-
-
-def fill_instance(
-    semantic: np.ndarray,
-    valid_mask: np.ndarray,
-    points: np.ndarray,
-    class_name: str,
-) -> None:
-    height, width = semantic.shape
-    integer = clipped_int_points(points, width, height)
-    if len(integer) < 3:
-        return
-    cv2.fillPoly(semantic, [integer], color=int(CLASS[class_name]), lineType=cv2.LINE_8)
-    cv2.fillPoly(valid_mask, [integer], color=1, lineType=cv2.LINE_8)
 
 
 def load_image(save_root: pathlib.Path, stem: str) -> np.ndarray:
@@ -160,24 +137,21 @@ def adapt_one(
     if not isinstance(records, list):
         raise ValueError(f"Expected a JSON list in {json_path}")
 
-    # Draw room boundaries first, then doors/windows so semantic instances win where they overlap.
-    room_polygons: list[np.ndarray] = []
-    openings: list[tuple[np.ndarray, str]] = []
+    accepted = 0
     for record in records:
         if not isinstance(record, dict):
+            continue
+        try:
+            category = int(record.get("category_id", -1))
+        except (TypeError, ValueError):
+            continue
+        # Fail closed for any label outside the published R2G room label space. In particular there
+        # is no Window/Door mapping in this checkpoint's label contract.
+        if category not in R2G_ROOM_CATEGORY_IDS:
             continue
         points = polygon_points(record.get("segmentation", []))
         if len(points) < 3:
             continue
-        category = int(record.get("category_id", -1))
-        if category == CC5K_WINDOW:
-            openings.append((points, "window"))
-        elif category == CC5K_DOOR:
-            openings.append((points, "door"))
-        else:
-            room_polygons.append(points)
-
-    for points in room_polygons:
         draw_room_boundary(
             semantic,
             valid_mask,
@@ -186,18 +160,15 @@ def adapt_one(
             points,
             line_width=line_width,
         )
-    for points, class_name in openings:
-        fill_instance(semantic, valid_mask, points, class_name)
+        accepted += 1
 
-    # Only emitted room-boundary pixels own orientation supervision. Opening polygons can overwrite a
-    # room-boundary label, so require both a boundary local class and a valid evidence pixel.
-    orientation_mask = (
-        (semantic == CLASS["room_boundary"]) & (valid_mask > 0)
-    ).astype(np.float32)
+    if records and accepted == 0:
+        raise RuntimeError(
+            f"Raster2Seq emitted records but none matched the pinned Raster2Graph-512 room contract: {json_path}"
+        )
+
+    orientation_mask = (valid_mask > 0).astype(np.float32)
     orientation *= orientation_mask[None, ...]
-
-    # Confidence is meaningful only where valid_mask=1. Keeping a dense array preserves the generic
-    # teacher contract while valid_mask makes all other pixels explicit abstentions.
     teacher_confidence = np.full((height, width), confidence, dtype=np.float32)
 
     destination = output_root / f"{stem}.npz"
@@ -213,7 +184,7 @@ def adapt_one(
         corner_confidence=teacher_confidence,
         orientation=orientation,
         orientation_mask=orientation_mask,
-        teacher_format=np.asarray(["raster2seq-official-json-v2-abstaining"], dtype="U64"),
+        teacher_format=np.asarray(["raster2seq-r2g512-json-v3-room-boundary-only"], dtype="U64"),
     )
     return destination
 
@@ -246,18 +217,18 @@ def main() -> int:
     if not json_files:
         raise RuntimeError(f"No Raster2Seq JSON predictions under {json_root}")
 
-    written = []
-    for json_path in json_files:
-        written.append(
-            adapt_one(
-                json_path=json_path,
-                save_root=args.prediction_root,
-                output_root=args.output,
-                confidence=args.confidence,
-                line_width=args.line_width,
-            )
+    written = [
+        adapt_one(
+            json_path=json_path,
+            save_root=args.prediction_root,
+            output_root=args.output,
+            confidence=args.confidence,
+            line_width=args.line_width,
         )
-    print(f"adapted Raster2Seq predictions: {len(written)}")
+        for json_path in json_files
+    ]
+    print(f"adapted Raster2Seq R2G-512 predictions: {len(written)}")
+    print("semantic classes: room_boundary only; openings are abstentions")
     print("output:", args.output)
     return 0
 
