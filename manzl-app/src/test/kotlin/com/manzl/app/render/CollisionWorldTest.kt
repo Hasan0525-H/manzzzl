@@ -3,6 +3,7 @@ package com.manzl.app.render
 import com.manzl.app.model.DoorOpening
 import com.manzl.app.model.FloorPlan
 import com.manzl.app.model.RoomRegion
+import com.manzl.app.model.StructuralColumn
 import com.manzl.app.model.Vec2
 import com.manzl.app.model.WallSegment
 import com.manzl.app.model.WindowOpening
@@ -29,6 +30,54 @@ class CollisionWorldTest {
         )
 
         assertTrue("player crossed a solid wall: ${result.x}", result.x < -0.30f)
+    }
+
+    @Test
+    fun `verified structural column blocks player and prevents tunnelling`() {
+        val world = CollisionWorld(
+            plan(
+                walls = emptyList(),
+                columns = listOf(
+                    StructuralColumn(
+                        center = Vec2(0f, 0f),
+                        widthMeters = 0.60f,
+                        depthMeters = 0.50f,
+                        rotationDegrees = 28f,
+                        confidence = 0.95f,
+                    )
+                ),
+            )
+        )
+
+        assertTrue("column centre should be blocked", !world.isClear(Vec2(0f, 0f)))
+        val result = world.move(
+            position = Vec2(-1.3f, 0f),
+            deltaX = 2.6f,
+            deltaZ = 0f,
+            radius = CollisionWorld.DEFAULT_PLAYER_RADIUS,
+        )
+
+        assertTrue("player crossed a structural column: $result", result.x < 0.05f)
+        assertTrue("resolved position still overlaps the structural column: $result", world.isClear(result))
+    }
+
+    @Test
+    fun `low confidence column proposal is not promoted into collision`() {
+        val world = CollisionWorld(
+            plan(
+                walls = emptyList(),
+                columns = listOf(
+                    StructuralColumn(
+                        center = Vec2(0f, 0f),
+                        widthMeters = 0.55f,
+                        depthMeters = 0.55f,
+                        confidence = 0.50f,
+                    )
+                ),
+            )
+        )
+
+        assertTrue("unverified column should not become physical geometry", world.isClear(Vec2(0f, 0f), 0.10f))
     }
 
     @Test
@@ -136,11 +185,19 @@ class CollisionWorldTest {
     }
 
     @Test
-    fun `spawn point is never inside a wall or window barrier`() {
+    fun `spawn point is never inside a wall window or verified column barrier`() {
         val world = CollisionWorld(
             plan(
                 walls = listOf(
                     WallSegment(start = Vec2(-2f, 0f), end = Vec2(2f, 0f), thicknessMeters = 0.3f),
+                ),
+                columns = listOf(
+                    StructuralColumn(
+                        center = Vec2(0.6f, -1f),
+                        widthMeters = 0.45f,
+                        depthMeters = 0.45f,
+                        confidence = 0.93f,
+                    )
                 ),
                 windows = listOf(
                     WindowOpening(
@@ -218,6 +275,7 @@ class CollisionWorldTest {
 
     private fun plan(
         walls: List<WallSegment>,
+        columns: List<StructuralColumn> = emptyList(),
         doors: List<DoorOpening> = emptyList(),
         windows: List<WindowOpening> = emptyList(),
         rooms: List<RoomRegion> = emptyList(),
@@ -227,6 +285,7 @@ class CollisionWorldTest {
         widthMeters = widthMeters,
         depthMeters = depthMeters,
         walls = walls,
+        columns = columns,
         doors = doors,
         windows = windows,
         rooms = rooms,
