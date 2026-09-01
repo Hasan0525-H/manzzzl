@@ -1,0 +1,250 @@
+{
+  "corners": {
+    "evaluatedPixels": 25165824,
+    "f1": 0.00039047247169074587,
+    "fn": 35769,
+    "fp": 71,
+    "meanAbsoluteError": 0.0034404444607692617,
+    "precision": 0.08974358974358974,
+    "recall": 0.0001956618962432916,
+    "runtimeThreshold": 0.56,
+    "supportPixels": 35776,
+    "thresholdMatchesAndroidCornerSnap": true,
+    "tp": 7
+  },
+  "domain": "generated-validation-not-real-plan-benchmark",
+  "inputSize": 512,
+  "meanIoU": 0.2486141397556762,
+  "orientation": {
+    "meanAbsCosine": 0.9418819402592301,
+    "meanAngularErrorDegrees": 11.990645840956901,
+    "signInvariant": true,
+    "supportPixels": 1848802
+  },
+  "perClass": {
+    "background": {
+      "fn": 2470245,
+      "fp": 332426,
+      "intersection": 27946413,
+      "iou": 0.9088535125143891,
+      "precision": 0.9882447083488823,
+      "present": true,
+      "recall": 0.9187864426131234,
+      "supportPixels": 30416658,
+      "tp": 27946413,
+      "union": 30749084
+    },
+    "column": {
+      "fn": 33340,
+      "fp": 58,
+      "intersection": 183,
+      "iou": 0.005449510139662309,
+      "precision": 0.7593360995850622,
+      "present": true,
+      "recall": 0.005458938639143275,
+      "supportPixels": 33523,
+      "tp": 183,
+      "union": 33581
+    },
+    "courtyard": {
+      "fn": 121728,
+      "fp": 38010,
+      "intersection": 13014,
+      "iou": 0.07533342595165324,
+      "precision": 0.25505644402634053,
+      "present": true,
+      "recall": 0.09658458387139868,
+      "supportPixels": 134742,
+      "tp": 13014,
+      "union": 172752
+    },
+    "door": {
+      "fn": 102207,
+      "fp": 7562,
+      "intersection": 11047,
+      "iou": 0.09143656469341808,
+      "precision": 0.5936374872373583,
+      "present": true,
+      "recall": 0.0975418086778392,
+      "supportPixels": 113254,
+      "tp": 11047,
+      "union": 120816
+    },
+    "room_boundary": {
+      "fn": 0,
+      "fp": 0,
+      "intersection": 0,
+      "iou": null,
+      "precision": 0.0,
+      "present": false,
+      "recall": 0.0,
+      "supportPixels": 0,
+      "tp": 0,
+      "union": 0
+    },
+    "shaft": {
+      "fn": 116823,
+      "fp": 102,
+      "intersection": 10,
+      "iou": 8.55175952452217e-05,
+      "precision": 0.08928571428571429,
+      "present": true,
+      "recall": 8.559225561271217e-05,
+      "supportPixels": 116833,
+      "tp": 10,
+      "union": 116935
+    },
+    "stair": {
+      "fn": 48207,
+      "fp": 2643787,
+      "intersection": 138151,
+      "iou": 0.04881410669771337,
+      "precision": 0.049659985233315766,
+      "present": true,
+      "recall": 0.7413204692044345,
+      "supportPixels": 186358,
+      "tp": 138151,
+      "union": 2830145
+    },
+    "wall_face": {
+      "fn": 236743,
+      "fp": 244176,
+      "intersection": 2171010,
+      "iou": 0.8186531389037942,
+      "precision": 0.8988997120718653,
+      "present": true,
+      "recall": 0.9016747149728398,
+      "supportPixels": 2407753,
+      "tp": 2171010,
+      "union": 2651929
+    },
+    "window": {
+      "fn": 139355,
+      "fp": 2527,
+      "intersection": 5956,
+      "iou": 0.04028734154953395,
+      "precision": 0.7021101025580573,
+      "present": true,
+      "recall": 0.040987949983139614,
+      "supportPixels": 145311,
+      "tp": 5956,
+      "union": 147838
+    }
+  },
+  "releaseReady": false,
+  "samples": 128,
+  "schema": 2,
+  "semantic": {
+    "meanIoU": 0.2486141397556762,
+    "perClass": {
+      "background": {
+        "fn": 2470245,
+        "fp": 332426,
+        "intersection": 27946413,
+        "iou": 0.9088535125143891,
+        "precision": 0.9882447083488823,
+        "present": true,
+        "recall": 0.9187864426131234,
+        "supportPixels": 30416658,
+        "tp": 27946413,
+        "union": 30749084
+      },
+      "column": {
+        "fn": 33340,
+        "fp": 58,
+        "intersection": 183,
+        "iou": 0.005449510139662309,
+        "precision": 0.7593360995850622,
+        "present": true,
+        "recall": 0.005458938639143275,
+        "supportPixels": 33523,
+        "tp": 183,
+        "union": 33581
+      },
+      "courtyard": {
+        "fn": 121728,
+        "fp": 38010,
+        "intersection": 13014,
+        "iou": 0.07533342595165324,
+        "precision": 0.25505644402634053,
+        "present": true,
+        "recall": 0.09658458387139868,
+        "supportPixels": 134742,
+        "tp": 13014,
+        "union": 172752
+      },
+      "door": {
+        "fn": 102207,
+        "fp": 7562,
+        "intersection": 11047,
+        "iou": 0.09143656469341808,
+        "precision": 0.5936374872373583,
+        "present": true,
+        "recall": 0.0975418086778392,
+        "supportPixels": 113254,
+        "tp": 11047,
+        "union": 120816
+      },
+      "room_boundary": {
+        "fn": 0,
+        "fp": 0,
+        "intersection": 0,
+        "iou": null,
+        "precision": 0.0,
+        "present": false,
+        "recall": 0.0,
+        "supportPixels": 0,
+        "tp": 0,
+        "union": 0
+      },
+      "shaft": {
+        "fn": 116823,
+        "fp": 102,
+        "intersection": 10,
+        "iou": 8.55175952452217e-05,
+        "precision": 0.08928571428571429,
+        "present": true,
+        "recall": 8.559225561271217e-05,
+        "supportPixels": 116833,
+        "tp": 10,
+        "union": 116935
+      },
+      "stair": {
+        "fn": 48207,
+        "fp": 2643787,
+        "intersection": 138151,
+        "iou": 0.04881410669771337,
+        "precision": 0.049659985233315766,
+        "present": true,
+        "recall": 0.7413204692044345,
+        "supportPixels": 186358,
+        "tp": 138151,
+        "union": 2830145
+      },
+      "wall_face": {
+        "fn": 236743,
+        "fp": 244176,
+        "intersection": 2171010,
+        "iou": 0.8186531389037942,
+        "precision": 0.8988997120718653,
+        "present": true,
+        "recall": 0.9016747149728398,
+        "supportPixels": 2407753,
+        "tp": 2171010,
+        "union": 2651929
+      },
+      "window": {
+        "fn": 139355,
+        "fp": 2527,
+        "intersection": 5956,
+        "iou": 0.04028734154953395,
+        "precision": 0.7021101025580573,
+        "present": true,
+        "recall": 0.040987949983139614,
+        "supportPixels": 145311,
+        "tp": 5956,
+        "union": 147838
+      }
+    }
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "semanticClasses": [
+    "background",
+    "wall_face",
+    "door",
+    "window",
+    "stair",
+    "column",
+    "room_boundary",
+    "courtyard",
+    "shaft"
+  ],
+  "inputSize": 512,
+  "width": 16,
+  "bestSelectionLoss": 0.3430453684995882,
+  "bestEpoch": 3,
+  "validation": {
+    "loss": 0.3430453684995882,
+    "mean_iou": 0.24861416220664978
+  },
+  "source": "Manzl fail-closed multi-teacher consensus training pipeline",
+  "uncertaintyPolicy": "teacher disagreement is masked from supervision; geometry-critical pseudo-labels require corroboration"
+}
