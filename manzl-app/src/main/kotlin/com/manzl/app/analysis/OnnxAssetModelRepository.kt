@@ -9,13 +9,14 @@ import java.security.MessageDigest
 /**
  * Central catalog for the high-quality reconstruction models that are allowed to ship in the APK.
  *
- * Heavy teacher checkpoints (Raster2Seq/RoomFormer) are intentionally not listed here: they are used
- * in the free development/training pipeline and distilled into a mobile-safe Manzl student model.
- * This keeps runtime completely offline while preserving the benefit of multiple stronger teachers.
+ * Heavy teacher checkpoints are development-time only and are distilled into the mobile student.
+ * Runtime remains completely offline and must never infer release readiness from file presence alone.
  */
 internal object UltraModelCatalog {
     const val MANZL_RECONSTRUCTION_STUDENT = "models/manzl_reconstruction_student.onnx"
-    const val MANZL_RECONSTRUCTION_STUDENT_QUALITY = "models/manzl_reconstruction_student.quality.json"
+    const val MANZL_RECONSTRUCTION_STUDENT_RELEASE = "models/manzl_reconstruction_student.release.json"
+    const val MANZL_RECONSTRUCTION_STUDENT_TRAINING = "models/manzl_reconstruction_student.training.json"
+    const val MANZL_MODEL_MANIFEST = "models/manifest.json"
     const val MOBILE_SAM_ENCODER = "models/mobile_sam_encoder.onnx"
     const val MOBILE_SAM_DECODER = "models/mobile_sam_decoder.onnx"
 
@@ -25,7 +26,7 @@ internal object UltraModelCatalog {
         MOBILE_SAM_DECODER,
     )
 
-    /** Models whose mere presence is insufficient: they need explicit measured release evidence. */
+    /** Models whose mere presence is insufficient: they need final held-out release evidence. */
     val releaseAttestedAssets = setOf(MANZL_RECONSTRUCTION_STUDENT)
 }
 
@@ -68,15 +69,15 @@ internal class OnnxAssetModelRepository(context: Context) : Closeable {
     fun availability(): UltraModelAvailability {
         val present = UltraModelCatalog.requiredForUltraRuntime
             .filterTo(LinkedHashSet()) { assetExists(it) }
-        val studentAttestation = studentReleaseAttestation()
+        val release = studentFinalReleaseAttestation()
         return UltraModelAvailability(
             onnxRuntimeReady = environment != null,
             presentAssets = present,
             releaseApprovedAssets = buildSet {
-                if (studentAttestation.releaseApproved) add(UltraModelCatalog.MANZL_RECONSTRUCTION_STUDENT)
+                if (release.releaseApproved) add(UltraModelCatalog.MANZL_RECONSTRUCTION_STUDENT)
             },
             integrityVerifiedAssets = buildSet {
-                if (studentAttestation.integrityVerified) add(UltraModelCatalog.MANZL_RECONSTRUCTION_STUDENT)
+                if (release.integrityVerified) add(UltraModelCatalog.MANZL_RECONSTRUCTION_STUDENT)
             },
         )
     }
@@ -101,8 +102,6 @@ internal class OnnxAssetModelRepository(context: Context) : Closeable {
         } catch (_: Exception) {
             null
         } finally {
-            // ORT copies native session configuration during construction. The options object owns
-            // only its native configuration handle and is safe to close after createSession returns.
             runCatching { options.close() }
         }
     }
@@ -112,26 +111,43 @@ internal class OnnxAssetModelRepository(context: Context) : Closeable {
     }.getOrDefault(false)
 
     /**
-     * Runtime must independently enforce the same release contract as CI. A file copied into assets is
-     * not enough to become Ultra: the student needs a real-plan release attestation and the attested
-     * SHA-256 must match the exact ONNX bytes packaged in this APK.
+     * Mirrors the Python APK boundary gate at runtime. A proposal/bootstrap quality file is never an
+     * approval source. Only the final held-out release bundle, bound to the exact ONNX digest and the
+     * release-ready runtime manifest, may promote the student into the user-visible Ultra path.
      */
-    private fun studentReleaseAttestation(): StudentReleaseAttestation {
+    private fun studentFinalReleaseAttestation(): StudentReleaseAttestation {
         val model = readAssetBytes(UltraModelCatalog.MANZL_RECONSTRUCTION_STUDENT)
             ?: return StudentReleaseAttestation.NOT_APPROVED
-        val quality = readAssetText(UltraModelCatalog.MANZL_RECONSTRUCTION_STUDENT_QUALITY)
+        val release = readAssetText(UltraModelCatalog.MANZL_RECONSTRUCTION_STUDENT_RELEASE)
+            ?: return StudentReleaseAttestation.NOT_APPROVED
+        val manifest = readAssetText(UltraModelCatalog.MANZL_MODEL_MANIFEST)
             ?: return StudentReleaseAttestation.NOT_APPROVED
 
-        val expectedSha = JSON_SHA256_REGEX.find(quality)?.groupValues?.getOrNull(1)?.lowercase()
         val actualSha = sha256(model)
-        val integrityVerified = expectedSha != null && expectedSha == actualSha
+        val releaseSha = jsonString(release, "sha256")?.lowercase()
+        val manifestSha = jsonString(manifest, "sha256")?.lowercase()
+        val integrityVerified = releaseSha == actualSha && manifestSha == actualSha
 
-        // releaseReady can also occur inside generatedValidation. The final/root attestation is emitted
-        // after nested validation data, so the last occurrence is the authoritative release decision.
-        val releaseReady = lastJsonBoolean(quality, "releaseReady") == true
-        val proposalOnly = lastJsonBoolean(quality, "proposalOnly")
-        val realPlanBenchmarkPassed = lastJsonBoolean(quality, "realPlanBenchmarkPassed") == true
-        val releaseApproved = releaseReady && proposalOnly == false && realPlanBenchmarkPassed
+        val releaseApproved =
+            jsonInt(release, "schema") == 2 &&
+            jsonString(release, "pipeline") == "manzl-real-student-release-evidence-bundle" &&
+            jsonString(release, "model") == "manzl_reconstruction_student.onnx" &&
+            jsonBoolean(release, "trainingAttestationVerified") == true &&
+            jsonBoolean(release, "candidateArtifactIntegrityPassed") == true &&
+            jsonBoolean(release, "heldOutCorpusIdentityMatchedAcrossEvidence") == true &&
+            jsonBoolean(release, "semanticAcceptancePolicyLocked") == true &&
+            jsonBoolean(release, "semanticAcceptancePolicyEvaluated") == true &&
+            jsonBoolean(release, "semanticAcceptancePassed") == true &&
+            jsonBoolean(release, "semanticHeldOutMeasurementCompleted") == true &&
+            jsonBoolean(release, "geometryReleaseEvidencePassed") == true &&
+            jsonBoolean(release, "allEvidenceBoundToExactModelDigest") == true &&
+            jsonBoolean(release, "releaseEvidenceBundleComplete") == true &&
+            jsonBoolean(release, "releaseReady") == true &&
+            jsonNull(release, "blockingReason") &&
+            jsonString(manifest, "status") == "real-held-out-release-ready" &&
+            jsonBoolean(manifest, "releaseReady") == true &&
+            jsonString(manifest, "releaseEvidence") == "models/manzl_reconstruction_student.release.json" &&
+            jsonString(manifest, "trainingProvenance") == "models/manzl_reconstruction_student.training.json"
 
         return StudentReleaseAttestation(
             releaseApproved = releaseApproved,
@@ -151,7 +167,6 @@ internal class OnnxAssetModelRepository(context: Context) : Closeable {
     override fun close() {
         sessions.values.forEach { session -> runCatching { session.close() } }
         sessions.clear()
-        // OrtEnvironment.close is a no-op on current ORT and the singleton may be shared elsewhere.
     }
 
     private fun recommendedIntraOpThreads(): Int =
@@ -170,11 +185,24 @@ internal class OnnxAssetModelRepository(context: Context) : Closeable {
     }
 
     companion object {
-        private val JSON_SHA256_REGEX = Regex("\\\"sha256\\\"\\s*:\\s*\\\"([0-9a-fA-F]{64})\\\"")
-
-        internal fun lastJsonBoolean(json: String, key: String): Boolean? {
+        internal fun jsonBoolean(json: String, key: String): Boolean? {
             val regex = Regex("\\\"${Regex.escape(key)}\\\"\\s*:\\s*(true|false)")
-            return regex.findAll(json).lastOrNull()?.groupValues?.getOrNull(1)?.toBooleanStrictOrNull()
+            return regex.find(json)?.groupValues?.getOrNull(1)?.toBooleanStrictOrNull()
+        }
+
+        internal fun jsonString(json: String, key: String): String? {
+            val regex = Regex("\\\"${Regex.escape(key)}\\\"\\s*:\\s*\\\"([^\\\"]*)\\\"")
+            return regex.find(json)?.groupValues?.getOrNull(1)
+        }
+
+        internal fun jsonInt(json: String, key: String): Int? {
+            val regex = Regex("\\\"${Regex.escape(key)}\\\"\\s*:\\s*(-?\\d+)")
+            return regex.find(json)?.groupValues?.getOrNull(1)?.toIntOrNull()
+        }
+
+        internal fun jsonNull(json: String, key: String): Boolean {
+            val regex = Regex("\\\"${Regex.escape(key)}\\\"\\s*:\\s*null(?=\\s*[,}])")
+            return regex.containsMatchIn(json)
         }
 
         private fun sha256(bytes: ByteArray): String = MessageDigest
