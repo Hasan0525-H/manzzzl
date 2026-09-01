@@ -122,11 +122,15 @@ class UltraRuntimeQualityGateTest {
     }
 
     @Test
-    fun `release evidence parser reads strict primitive fields`() {
+    fun `release evidence parser reads immutable semantic quality fields`() {
         val json = """
             {
               "schema": 2,
               "pipeline": "manzl-real-student-release-evidence-bundle",
+              "relativeSemanticAcceptancePassed": true,
+              "absoluteSemanticQualityPassed": true,
+              "absoluteSemanticQualityFloorVersion": 1,
+              "semanticEvidenceRecomputedAtFinalize": true,
               "semanticAcceptancePassed": true,
               "releaseReady": true,
               "blockingReason": null
@@ -138,9 +142,36 @@ class UltraRuntimeQualityGateTest {
             OnnxAssetModelRepository.jsonString(json, "pipeline") ==
                 "manzl-real-student-release-evidence-bundle"
         )
+        assertTrue(OnnxAssetModelRepository.jsonBoolean(json, "relativeSemanticAcceptancePassed") == true)
+        assertTrue(OnnxAssetModelRepository.jsonBoolean(json, "absoluteSemanticQualityPassed") == true)
+        assertTrue(
+            OnnxAssetModelRepository.jsonInt(json, "absoluteSemanticQualityFloorVersion") ==
+                UltraModelCatalog.SEMANTIC_QUALITY_FLOOR_VERSION
+        )
+        assertTrue(OnnxAssetModelRepository.jsonBoolean(json, "semanticEvidenceRecomputedAtFinalize") == true)
         assertTrue(OnnxAssetModelRepository.jsonBoolean(json, "semanticAcceptancePassed") == true)
         assertTrue(OnnxAssetModelRepository.jsonBoolean(json, "releaseReady") == true)
         assertTrue(OnnxAssetModelRepository.jsonNull(json, "blockingReason"))
+    }
+
+    @Test
+    fun `legacy release metadata cannot satisfy current immutable floor contract`() {
+        val legacy = """
+            {
+              "schema": 2,
+              "pipeline": "manzl-real-student-release-evidence-bundle",
+              "semanticAcceptancePassed": true,
+              "releaseReady": true,
+              "blockingReason": null
+            }
+        """.trimIndent()
+
+        assertFalse(OnnxAssetModelRepository.jsonBoolean(legacy, "absoluteSemanticQualityPassed") == true)
+        assertFalse(
+            OnnxAssetModelRepository.jsonInt(legacy, "absoluteSemanticQualityFloorVersion") ==
+                UltraModelCatalog.SEMANTIC_QUALITY_FLOOR_VERSION
+        )
+        assertFalse(OnnxAssetModelRepository.jsonBoolean(legacy, "semanticEvidenceRecomputedAtFinalize") == true)
     }
 
     @Test
