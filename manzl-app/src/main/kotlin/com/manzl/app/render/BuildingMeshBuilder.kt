@@ -13,6 +13,10 @@ import com.manzl.app.model.VerticalVoidRoomPolicy
  * prisms. Floor/ceiling surfaces are replaced with [RoomSurfaceMeshBuilder], which has no rectangular
  * fallback, subtracts nested shafts, preserves open-air voids on upper levels and cuts bounded
  * stairwells instead of deleting a whole room ceiling.
+ *
+ * High-confidence labelled rooms may also receive [InteriorStagingMeshBuilder] presentation geometry.
+ * That mesh is deliberately appended after canonical architecture and is never used as structural
+ * evidence, so furnishing cannot move or rewrite measured 2D geometry.
  */
 internal object BuildingMeshBuilder {
 
@@ -56,8 +60,10 @@ internal object BuildingMeshBuilder {
                 plan = staticPlan,
                 heightOverrideMeters = design.wallHeightMeters,
             )
+            val stagingMesh = InteriorStagingMeshBuilder.build(staticPlan)
             val levelMesh = houseMesh
                 .append(columnMesh)
+                .append(stagingMesh)
                 .translatedY(level.baseElevationMeters)
             combined = combined.append(levelMesh)
         }
