@@ -47,6 +47,14 @@ SEMANTIC_CLASSES = [
     "shaft",
 ]
 
+# Pixel area in a floor plan is extremely imbalanced. Thin openings, columns and shafts must not be
+# drowned by background/wall pixels. These are conservative priors; Dice supervision below supplies
+# a second region-level signal so the model is not forced to solve imbalance using CE weights alone.
+SEMANTIC_CLASS_WEIGHTS = [0.20, 1.00, 5.00, 4.50, 4.00, 8.00, 2.50, 4.50, 5.00]
+SEMANTIC_DICE_WEIGHTS = [0.00, 1.00, 2.50, 2.50, 2.00, 3.00, 1.50, 2.00, 2.50]
+CRITICAL_CLASS_IDS = (2, 3, 4, 5, 6, 7, 8)
+FOCAL_GAMMA = 1.5
+
 
 class FloorPlanDataset(Dataset):
     def __init__(self, root: pathlib.Path, size: int, augment: bool) -> None:
@@ -268,14 +276,49 @@ class ManzlReconstructionStudent(nn.Module):
 
 @dataclass
 class LossWeights:
-    semantic: float = 1.0
-    corners: float = 1.8
+    semantic_ce: float = 1.0
+    semantic_dice: float = 0.85
+    corners: float = 1.6
     orientation: float = 0.35
 
 
 def masked_mean(values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
     weighted = values * mask
     return weighted.sum() / mask.sum().clamp_min(1.0)
+
+
+def masked_multiclass_dice_loss(
+    logits: torch.Tensor,
+    target: torch.Tensor,
+    mask: torch.Tensor,
+) -> torch.Tensor:
+    probabilities = torch.softmax(logits, dim=1)
+    one_hot = F.one_hot(target, num_classes=len(SEMANTIC_CLASSES)).permute(0, 3, 1, 2).float()
+    mask = mask.clamp(0, 1)
+    intersection = (probabilities * one_hot * mask).sum(dim=(0, 2, 3))
+    predicted_mass = (probabilities * mask).sum(dim=(0, 2, 3))
+    target_mass = (one_hot * mask).sum(dim=(0, 2, 3))
+    dice = (2.0 * intersection + 1.0) / (predicted_mass + target_mass + 1.0)
+
+    class_weights = torch.tensor(SEMANTIC_DICE_WEIGHTS, device=logits.device, dtype=logits.dtype)
+    present = (target_mass > 1.0).to(logits.dtype)
+    effective_weights = class_weights * present
+    return ((1.0 - dice) * effective_weights).sum() / effective_weights.sum().clamp_min(1.0)
+
+
+def balanced_corner_loss(
+    logits: torch.Tensor,
+    target: torch.Tensor,
+    mask: torch.Tensor,
+) -> tuple[torch.Tensor, float]:
+    # Corner heatmaps are sparse. A plain BCE can minimize loss by predicting almost no corners. Use
+    # a bounded sqrt imbalance boost so positives matter without allowing a tiny batch to explode.
+    positive_mass = (target * mask).sum()
+    negative_mass = ((1.0 - target).clamp_min(0.0) * mask).sum()
+    positive_boost = torch.sqrt((negative_mass + 1.0) / (positive_mass + 1.0)).clamp(1.0, 20.0).detach()
+    pixel_weight = 1.0 + (positive_boost - 1.0) * target
+    corner_map = F.binary_cross_entropy_with_logits(logits, target, reduction="none") * pixel_weight
+    return masked_mean(corner_map, mask), float(positive_boost.item())
 
 
 def compute_loss(outputs, batch, weights: LossWeights):
@@ -288,32 +331,42 @@ def compute_loss(outputs, batch, weights: LossWeights):
     orientation_mask = batch["orientation_mask"] * batch["wall_mask"]
 
     class_weights = torch.tensor(
-        [0.45, 1.45, 2.2, 2.2, 2.0, 2.0, 1.35, 1.7, 1.8],
+        SEMANTIC_CLASS_WEIGHTS,
         device=semantic_logits.device,
+        dtype=semantic_logits.dtype,
     )
-    semantic_map = F.cross_entropy(
+    raw_ce = F.cross_entropy(
         semantic_logits,
         semantic_target,
         weight=class_weights,
         reduction="none",
-    ).unsqueeze(1)
-    semantic_loss = masked_mean(semantic_map, supervision)
+    )
+    target_probability = torch.softmax(semantic_logits, dim=1).gather(
+        1,
+        semantic_target.unsqueeze(1),
+    ).squeeze(1)
+    focal_factor = (1.0 - target_probability).clamp_min(0.0).pow(FOCAL_GAMMA)
+    semantic_ce_map = (raw_ce * focal_factor).unsqueeze(1)
+    semantic_ce_loss = masked_mean(semantic_ce_map, supervision)
+    semantic_dice_loss = masked_multiclass_dice_loss(semantic_logits, semantic_target, supervision)
 
-    corner_map = F.binary_cross_entropy_with_logits(corner_logits, corner_target, reduction="none")
-    corner_loss = masked_mean(corner_map, corner_mask)
+    corner_loss, corner_positive_boost = balanced_corner_loss(corner_logits, corner_target, corner_mask)
 
     target_norm = F.normalize(orientation_target, dim=1, eps=1e-6)
     cosine = (orientation * target_norm).sum(dim=1, keepdim=True).abs()
     orientation_loss = masked_mean(1.0 - cosine, orientation_mask)
 
     total = (
-        semantic_loss * weights.semantic
+        semantic_ce_loss * weights.semantic_ce
+        + semantic_dice_loss * weights.semantic_dice
         + corner_loss * weights.corners
         + orientation_loss * weights.orientation
     )
     return total, {
-        "semantic": semantic_loss.detach().item(),
+        "semantic_ce": semantic_ce_loss.detach().item(),
+        "semantic_dice": semantic_dice_loss.detach().item(),
         "corners": corner_loss.detach().item(),
+        "corner_positive_boost": corner_positive_boost,
         "orientation": orientation_loss.detach().item(),
         "supervised_fraction": batch["supervision_mask"].detach().mean().item(),
     }
@@ -344,10 +397,22 @@ def evaluate(model: nn.Module, loader: DataLoader, device: torch.device) -> dict
             unions[class_index] += (pred_class | target_class).sum()
 
     iou = torch.where(unions > 0, intersections / unions.clamp_min(1), torch.nan)
-    mean_iou = float(torch.nanmean(iou).item()) if torch.isfinite(iou).any() else 0.0
+    finite = torch.isfinite(iou)
+    mean_iou = float(torch.nanmean(iou).item()) if finite.any() else 0.0
+
+    foreground = iou[1:]
+    foreground_finite = torch.isfinite(foreground)
+    foreground_mean_iou = float(torch.nanmean(foreground).item()) if foreground_finite.any() else 0.0
+
+    critical = iou[list(CRITICAL_CLASS_IDS)]
+    critical_finite = torch.isfinite(critical)
+    critical_mean_iou = float(torch.nanmean(critical).item()) if critical_finite.any() else foreground_mean_iou
+
     return {
         "loss": total_loss / max(1, batches),
         "mean_iou": mean_iou,
+        "foreground_mean_iou": foreground_mean_iou,
+        "critical_mean_iou": critical_mean_iou,
     }
 
 
@@ -359,6 +424,16 @@ def make_loader(dataset: FloorPlanDataset, batch: int, workers: int, shuffle: bo
         num_workers=workers,
         pin_memory=device.type == "cuda",
         drop_last=shuffle and len(dataset) >= batch,
+    )
+
+
+def validation_selection_score(validation: dict[str, float]) -> float:
+    # Selecting only by global loss rewards background/wall dominance. Make rare geometry materially
+    # influence checkpoint selection while still retaining a global stability term.
+    return (
+        validation["mean_iou"] * 0.20
+        + validation["foreground_mean_iou"] * 0.35
+        + validation["critical_mean_iou"] * 0.45
     )
 
 
@@ -381,7 +456,7 @@ def train(args) -> None:
     scaler = torch.amp.GradScaler("cuda", enabled=device.type == "cuda")
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    best_metric = math.inf
+    best_score = -math.inf
     best_epoch = 0
     epochs_without_improvement = 0
 
@@ -404,15 +479,22 @@ def train(args) -> None:
 
         mean_train_loss = running / max(1, len(train_loader))
         validation = evaluate(model, val_loader, device) if val_loader is not None else None
-        selection_metric = validation["loss"] if validation is not None else mean_train_loss
+        selection_score = validation_selection_score(validation) if validation is not None else -mean_train_loss
         print(
             f"epoch={epoch} train_loss={mean_train_loss:.5f}" +
-            (f" val_loss={validation['loss']:.5f} val_mIoU={validation['mean_iou']:.4f}" if validation else "")
+            (
+                f" val_loss={validation['loss']:.5f}"
+                f" val_mIoU={validation['mean_iou']:.4f}"
+                f" val_fg_mIoU={validation['foreground_mean_iou']:.4f}"
+                f" val_critical_mIoU={validation['critical_mean_iou']:.4f}"
+                f" selection={selection_score:.4f}"
+                if validation else ""
+            )
         )
 
         torch.save({"model": model.state_dict(), "classes": SEMANTIC_CLASSES, "size": args.size}, args.output)
-        if selection_metric < best_metric - args.min_improvement:
-            best_metric = selection_metric
+        if selection_score > best_score + args.min_improvement:
+            best_score = selection_score
             best_epoch = epoch
             epochs_without_improvement = 0
             torch.save({"model": model.state_dict(), "classes": SEMANTIC_CLASSES, "size": args.size}, args.output.with_suffix(".best.pt"))
@@ -433,11 +515,18 @@ def train(args) -> None:
         "semanticClasses": SEMANTIC_CLASSES,
         "inputSize": args.size,
         "width": args.width,
-        "bestSelectionLoss": best_metric,
+        "bestSelectionScore": best_score,
         "bestEpoch": best_epoch,
         "validation": final_validation,
         "source": "Manzl fail-closed multi-teacher consensus training pipeline",
         "uncertaintyPolicy": "teacher disagreement is masked from supervision; geometry-critical pseudo-labels require corroboration",
+        "semanticLossPolicy": {
+            "classWeights": SEMANTIC_CLASS_WEIGHTS,
+            "focalGamma": FOCAL_GAMMA,
+            "diceWeights": SEMANTIC_DICE_WEIGHTS,
+            "checkpointSelection": "20% global mIoU + 35% foreground mIoU + 45% critical-geometry mIoU",
+        },
+        "cornerLossPolicy": "sqrt class-imbalance positive boost capped at 20x",
     }
     args.onnx.with_suffix(".json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
     print("exported:", args.onnx)
