@@ -2,14 +2,13 @@
 """Combine Manzl real-student release evidence for one exact ONNX candidate.
 
 Release succeeds only when the same model digest and opaque held-out corpus are covered by:
-1) verified real training provenance,
+1) verified real training provenance and a release-scale number of independent homes,
 2) a semantic policy locked from validation before test,
 3) held-out semantic PASS against both the locked relative policy and immutable absolute quality floors,
 4) production runtime end-to-end geometry PASS.
 
-The finalizer deliberately recomputes semantic acceptance from the raw held-out ``testMetrics``. It does
-not trust stored PASS booleans or stored evaluation objects, so editing an attestation cannot promote a
-weak model.
+The finalizer deliberately recomputes corpus-scale and semantic acceptance from measured evidence. It
+does not trust stored PASS booleans or stored semantic evaluation objects.
 """
 
 from __future__ import annotations
@@ -20,6 +19,7 @@ import pathlib
 
 import evaluate_real_student_test
 import real_semantic_policy
+import release_corpus_scale
 import verify_real_training_inputs
 
 
@@ -46,7 +46,6 @@ def _same_json(left: dict, right: dict) -> bool:
 
 
 def recompute_semantic_evidence(policy: dict, semantic: dict, model_sha256: str) -> tuple[dict, dict]:
-    """Re-evaluate both semantic gates from immutable raw held-out metrics."""
     metrics = semantic.get("testMetrics")
     if not isinstance(metrics, dict) or metrics.get("schema") != 2 or metrics.get("domain") != "private-real-held-out-test":
         raise ValueError("semantic final-test attestation contains invalid held-out testMetrics")
@@ -85,6 +84,7 @@ def finalize(
     splits = splits.resolve()
     candidate = candidate.resolve()
     preflight = verify_real_training_inputs.verify(splits)
+    corpus_scale = release_corpus_scale.require(preflight)
     model_path, training = evaluate_real_student_test.load_candidate(candidate)
     model_sha256 = training["sha256"]
     model_bytes = model_path.stat().st_size
@@ -163,6 +163,8 @@ def finalize(
         "model": model_path.name,
         "sha256": model_sha256,
         "bytes": model_bytes,
+        "trainSourceGroups": preflight["trainSourceGroups"],
+        "validationSourceGroups": preflight["validationSourceGroups"],
         "testSamples": test_samples,
         "testSourceGroups": test_groups,
         "testSetFingerprint": test_fingerprint,
@@ -170,6 +172,9 @@ def finalize(
         "trainingAttestationVerified": True,
         "candidateArtifactIntegrityPassed": True,
         "heldOutCorpusIdentityMatchedAcrossEvidence": True,
+        "releaseCorpusScalePassed": True,
+        "releaseCorpusScalePolicyVersion": corpus_scale["policyVersion"],
+        "releaseCorpusScaleRecomputedAtFinalize": True,
         "semanticAcceptancePolicyLocked": True,
         "semanticAcceptancePolicyEvaluated": True,
         "relativeSemanticAcceptancePassed": True,
@@ -184,9 +189,9 @@ def finalize(
         "releaseReady": True,
         "blockingReason": None,
         "reason": (
-            "The exact ONNX candidate passed recomputed relative and immutable absolute semantic gates plus "
-            "all production end-to-end geometry gates on the exact opaque held-out corpus. The student model "
-            "is release-ready; APK packaging remains a separate build step."
+            "The exact ONNX candidate was measured on a release-scale independent real-plan corpus, passed "
+            "recomputed relative and immutable absolute semantic gates, and passed every production end-to-end "
+            "geometry gate on the exact opaque held-out corpus. APK packaging remains a separate build step."
         ),
     }
 
