@@ -16,12 +16,8 @@ class ReconstructionReadinessGateTest {
     @Test
     fun `closed room with no unresolved openings is ready`() {
         val report = ReconstructionReadinessGate.evaluate(
-            plan(
-                walls = rectangleWalls(),
-                rooms = listOf(largeRoom()),
-            )
+            plan(walls = rectangleWalls(), rooms = listOf(largeRoom()))
         )
-
         assertTrue(report.ready)
         assertTrue(report.unresolvedOpenings.isEmpty())
         assertTrue(report.unsupportedVerticalVoids.isEmpty())
@@ -31,12 +27,8 @@ class ReconstructionReadinessGateTest {
     @Test
     fun `strong measured gap without semantic class blocks 3d`() {
         val report = ReconstructionReadinessGate.evaluate(
-            plan(
-                walls = gapWalls(),
-                rooms = listOf(largeRoom()),
-            )
+            plan(walls = gapWalls(), rooms = listOf(largeRoom()))
         )
-
         assertFalse(report.ready)
         assertTrue(report.unresolvedOpenings.isNotEmpty())
     }
@@ -58,7 +50,6 @@ class ReconstructionReadinessGateTest {
                 rooms = listOf(largeRoom()),
             )
         )
-
         assertFalse(report.ready)
         assertTrue(report.unresolvedOpenings.isNotEmpty())
     }
@@ -80,7 +71,6 @@ class ReconstructionReadinessGateTest {
                 rooms = listOf(largeRoom()),
             )
         )
-
         assertTrue(report.ready)
         assertTrue(report.unresolvedOpenings.isEmpty())
     }
@@ -101,80 +91,51 @@ class ReconstructionReadinessGateTest {
                 rooms = listOf(largeRoom()),
             )
         )
-
         assertTrue(report.ready)
         assertTrue(report.unresolvedOpenings.isEmpty())
     }
 
     @Test
     fun `sparse room topology blocks fake rectangular floor`() {
-        val smallRoom = RoomRegion(
-            id = "small",
-            polygon = listOf(
-                Vec2(-1f, -1f),
-                Vec2(1f, -1f),
-                Vec2(1f, 1f),
-                Vec2(-1f, 1f),
-            ),
-            confidence = 0.96f,
-        )
+        val smallRoom = room("small", -1f, -1f, 1f, 1f)
         val report = ReconstructionReadinessGate.evaluate(
-            plan(
-                walls = rectangleWalls(),
-                rooms = listOf(smallRoom),
-            )
+            plan(walls = rectangleWalls(), rooms = listOf(smallRoom))
         )
-
         assertFalse(report.ready)
         assertTrue(report.trustedRoomCoverage < 0.32f)
     }
 
     @Test
     fun `room coverage below renderer threshold cannot slip through readiness gate`() {
-        val mediumRoom = RoomRegion(
-            id = "medium",
-            polygon = listOf(
-                Vec2(-2.5f, -2f),
-                Vec2(2.5f, -2f),
-                Vec2(2.5f, 2f),
-                Vec2(-2.5f, 2f),
-            ),
-            confidence = 0.96f,
-        )
+        val mediumRoom = room("medium", -2.5f, -2f, 2.5f, 2f)
         val report = ReconstructionReadinessGate.evaluate(
-            plan(
-                walls = rectangleWalls(),
-                rooms = listOf(mediumRoom),
-            )
+            plan(walls = rectangleWalls(), rooms = listOf(mediumRoom))
         )
-
-        // 20m² inside an 80m² plan is intentionally below the 32% production floor threshold.
         assertFalse(report.ready)
         assertTrue(report.trustedRoomCoverage in 0.20f..0.30f)
     }
 
     @Test
-    fun `verified shaft room blocks 3d until polygon hole meshing exists`() {
-        val shaft = RoomRegion(
-            id = "shaft",
-            polygon = listOf(
-                Vec2(-1f, -1f),
-                Vec2(1f, -1f),
-                Vec2(1f, 1f),
-                Vec2(-1f, 1f),
-            ),
-            label = "shaft",
-            confidence = 0.94f,
-        )
+    fun `nested shaft inside another surface room is blocked until polygon subtraction exists`() {
+        val shaft = room("shaft", -1f, -1f, 1f, 1f, label = "shaft")
         val report = ReconstructionReadinessGate.evaluate(
-            plan(
-                walls = rectangleWalls(),
-                rooms = listOf(largeRoom(), shaft),
-            )
+            plan(walls = rectangleWalls(), rooms = listOf(largeRoom(), shaft))
         )
-
         assertFalse(report.ready)
         assertTrue(report.unsupportedVerticalVoids.any { it.id == "shaft" })
+    }
+
+    @Test
+    fun `independent closed shaft face is allowed because renderer can omit that face`() {
+        val left = room("left", -4f, -3f, -1f, 3f)
+        val right = room("right", 1f, -3f, 4f, 3f)
+        val shaft = room("shaft", -0.7f, -1f, 0.7f, 1f, label = "shaft")
+        val report = ReconstructionReadinessGate.evaluate(
+            plan(walls = rectangleWalls(), rooms = listOf(left, right, shaft))
+        )
+        assertTrue(report.unsupportedVerticalVoids.isEmpty())
+        assertTrue(report.trustedRoomCoverage >= 0.32f)
+        assertTrue(report.ready)
     }
 
     private fun rectangleWalls(): List<WallSegment> = listOf(
@@ -192,14 +153,24 @@ class ReconstructionReadinessGateTest {
         WallSegment(Vec2(-4f, 3f), Vec2(-4f, -3f), thicknessMeters = 0.18f, confidence = 0.95f),
     )
 
-    private fun largeRoom() = RoomRegion(
-        id = "main",
+    private fun largeRoom() = room("main", -4f, -3f, 4f, 3f)
+
+    private fun room(
+        id: String,
+        minX: Float,
+        minZ: Float,
+        maxX: Float,
+        maxZ: Float,
+        label: String? = null,
+    ) = RoomRegion(
+        id = id,
         polygon = listOf(
-            Vec2(-4f, -3f),
-            Vec2(4f, -3f),
-            Vec2(4f, 3f),
-            Vec2(-4f, 3f),
+            Vec2(minX, minZ),
+            Vec2(maxX, minZ),
+            Vec2(maxX, maxZ),
+            Vec2(minX, maxZ),
         ),
+        label = label,
         confidence = 0.95f,
     )
 
