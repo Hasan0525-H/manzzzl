@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Bootstrap Manzl's heavy floor-plan teacher ensemble into a local ignored cache.
 
-This script intentionally downloads only source repositories. Checkpoints are fetched by each upstream
-project's documented tooling into the ignored cache after their exact terms are reviewed. Nothing here
-uploads data, calls a paid API, or modifies Android runtime behavior.
+This script intentionally downloads only source repositories. When ``teachers.json`` supplies a
+``repositoryRevision`` the checkout is detached at that exact commit so a future upstream push cannot
+silently change pseudo-label generation. Checkpoints are fetched by the corresponding pinned fetcher
+and are never copied into the public repository or Android APK.
 """
 
 from __future__ import annotations
@@ -25,15 +26,47 @@ def run(*args: str, cwd: pathlib.Path | None = None) -> None:
     subprocess.run(args, cwd=cwd, check=True)
 
 
-def clone_or_update(repo_url: str, destination: pathlib.Path) -> None:
+def clone_or_update(
+    repo_url: str,
+    destination: pathlib.Path,
+    revision: str | None,
+) -> None:
     if destination.exists():
         if not (destination / ".git").exists():
             raise RuntimeError(f"Refusing to overwrite non-git directory: {destination}")
         run("git", "fetch", "--all", "--tags", "--prune", cwd=destination)
+    else:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        run("git", "clone", "--filter=blob:none", repo_url, str(destination))
+
+    if revision:
+        # Fetching the exact object makes this work even with a filtered/shallow-ish local cache.
+        run("git", "fetch", "origin", revision, cwd=destination)
+        run("git", "checkout", "--detach", revision, cwd=destination)
+        actual = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=destination,
+            text=True,
+        ).strip()
+        if actual != revision:
+            raise RuntimeError(
+                f"Pinned revision mismatch for {destination}: {actual} != {revision}"
+            )
+    else:
+        # Unpinned references remain development references only. Runtime-critical teachers should
+        # gain repositoryRevision before they become release-training evidence.
+        run("git", "checkout", "-", cwd=destination) if _is_detached(destination) else None
         run("git", "pull", "--ff-only", cwd=destination)
-        return
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    run("git", "clone", "--filter=blob:none", repo_url, str(destination))
+
+
+def _is_detached(destination: pathlib.Path) -> bool:
+    result = subprocess.run(
+        ["git", "symbolic-ref", "-q", "HEAD"],
+        cwd=destination,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return result.returncode != 0
 
 
 def main() -> int:
@@ -54,13 +87,13 @@ def main() -> int:
         if not repo:
             continue
         destination = args.cache / teacher["id"]
-        clone_or_update(repo, destination)
+        clone_or_update(repo, destination, teacher.get("repositoryRevision"))
 
     print("\nTeacher source bootstrap complete.")
     print("Cache:", args.cache)
     print("No checkpoint is copied into the public repository or APK by this script.")
-    print("Next pipeline stage: run teacher inference in a free GPU environment, generate consensus labels,")
-    print("then train/export the standard-operator Manzl ONNX student for Android.")
+    print("Next pipeline stage: fetch/verify pinned checkpoints, run teacher inference, build strict")
+    print("consensus labels, then train/export the standard-operator Manzl ONNX student.")
     return 0
 
 
