@@ -4,24 +4,12 @@ import com.manzl.app.model.DoorEvidenceKind
 import com.manzl.app.model.FloorPlan
 import com.manzl.app.model.RoomRegion
 import com.manzl.app.model.Vec2
-import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.ceil
-import kotlin.math.cos
 import kotlin.math.max
-import kotlin.math.min
-import kotlin.math.sin
 import kotlin.math.sqrt
 
-/**
- * Verifies that every trusted room polygon is actually backed by measured wall/opening geometry.
- *
- * A room polygon can look plausible and still create a visibly wrong house when one of its sides was
- * inferred through open space. This evaluator samples every polygon edge in metric coordinates and
- * requires support from a parallel measured wall face or a classified door/window opening. It never
- * changes topology; it only identifies room boundaries that are unsafe to extrude into floors or
- * ceilings.
- */
+/** Validates that room polygons are backed by measured geometry before extrusion. */
 internal object RoomBoundarySupportEvaluator {
 
     data class RoomIssue(
@@ -31,183 +19,91 @@ internal object RoomBoundarySupportEvaluator {
         val weakestEdgeIndex: Int,
     )
 
-    fun findUnsupportedRooms(
-        plan: FloorPlan,
-        rooms: List<RoomRegion>,
-    ): List<RoomIssue> = rooms.mapNotNull { room -> evaluateRoom(plan, room) }
+    fun findUnsupportedRooms(plan: FloorPlan, rooms: List<RoomRegion>): List<RoomIssue> =
+        rooms.mapNotNull { evaluateRoom(plan, it) }
 
     private fun evaluateRoom(plan: FloorPlan, room: RoomRegion): RoomIssue? {
-        if (room.polygon.size < 3) {
-            return RoomIssue(room.id, 0f, 0f, 0)
-        }
-
-        var weightedSupport = 0f
-        var totalLength = 0f
-        var weakestSupport = 1f
+        if (room.polygon.size < 3) return RoomIssue(room.id, 0f, 0f, 0)
+        var total = 0f
+        var supported = 0f
+        var weakest = 1f
         var weakestIndex = -1
 
-        for (edgeIndex in room.polygon.indices) {
-            val a = room.polygon[edgeIndex]
-            val b = room.polygon[(edgeIndex + 1) % room.polygon.size]
+        room.polygon.indices.forEach { i ->
+            val a = room.polygon[i]
+            val b = room.polygon[(i + 1) % room.polygon.size]
             val length = distance(a, b)
-            if (length < MIN_EDGE_METERS) continue
-
-            val support = edgeSupport(plan, a, b, length)
-            weightedSupport += support * length
-            totalLength += length
-            if (support < weakestSupport) {
-                weakestSupport = support
-                weakestIndex = edgeIndex
+            if (length < MIN_EDGE) return@forEach
+            val value = edgeSupport(plan, a, b, length)
+            total += length
+            supported += value * length
+            if (value < weakest) {
+                weakest = value
+                weakestIndex = i
             }
         }
 
-        if (totalLength <= EPSILON || weakestIndex < 0) {
-            return RoomIssue(room.id, 0f, 0f, 0)
-        }
-
-        val boundarySupport = (weightedSupport / totalLength).coerceIn(0f, 1f)
-        return if (
-            boundarySupport >= MIN_ROOM_BOUNDARY_SUPPORT &&
-            weakestSupport >= MIN_SINGLE_EDGE_SUPPORT
-        ) {
-            null
-        } else {
-            RoomIssue(
-                roomId = room.id,
-                boundarySupport = boundarySupport,
-                weakestEdgeSupport = weakestSupport,
-                weakestEdgeIndex = weakestIndex,
-            )
-        }
+        if (total == 0f) return RoomIssue(room.id, 0f, 0f, 0)
+        val score = supported / total
+        return if (score >= ROOM_THRESHOLD && weakest >= EDGE_THRESHOLD) null
+        else RoomIssue(room.id, score, weakest, weakestIndex)
     }
 
-    private fun edgeSupport(
-        plan: FloorPlan,
-        a: Vec2,
-        b: Vec2,
-        length: Float,
-    ): Float {
+    private fun edgeSupport(plan: FloorPlan, a: Vec2, b: Vec2, length: Float): Float {
         val ux = (b.x - a.x) / length
         val uz = (b.z - a.z) / length
-        val sampleCount = max(
-            MIN_SAMPLES_PER_EDGE,
-            ceil(length / SAMPLE_SPACING_METERS).toInt() + 1,
-        )
-        var supported = 0
-        for (index in 0 until sampleCount) {
-            // Keep probes slightly away from polygon vertices. Junction snapping errors should not
-            // make an otherwise measured edge fail, while a missing mid-edge wall remains obvious.
-            val rawT = if (sampleCount == 1) 0.5f else index / (sampleCount - 1f)
-            val t = EDGE_SAMPLE_INSET_FRACTION + rawT * (1f - EDGE_SAMPLE_INSET_FRACTION * 2f)
-            val point = Vec2(
-                x = a.x + (b.x - a.x) * t,
-                z = a.z + (b.z - a.z) * t,
-            )
-            if (supportedByWall(plan, point, ux, uz) || supportedByOpening(plan, point, ux, uz)) {
-                supported++
-            }
+        val count = max(5, ceil(length / 0.22f).toInt() + 1)
+        var ok = 0
+        repeat(count) { index ->
+            val t = if (count == 1) 0.5f else index / (count - 1f)
+            val p = Vec2(a.x + (b.x - a.x) * t, a.z + (b.z - a.z) * t)
+            if (wallSupports(plan, p, ux, uz) || openingSupports(plan, p, ux, uz)) ok++
         }
-        return supported / sampleCount.toFloat()
+        return ok / count.toFloat()
     }
 
-    private fun supportedByWall(
-        plan: FloorPlan,
-        point: Vec2,
-        edgeUx: Float,
-        edgeUz: Float,
-    ): Boolean = plan.walls.any { wall ->
-        if (wall.confidence < MIN_WALL_CONFIDENCE) return@any false
-        val dx = wall.end.x - wall.start.x
-        val dz = wall.end.z - wall.start.z
-        val length = sqrt(dx * dx + dz * dz)
-        if (length < MIN_EDGE_METERS) return@any false
-        val alignment = abs(edgeUx * (dx / length) + edgeUz * (dz / length))
-        if (alignment < MIN_AXIS_ALIGNMENT) return@any false
-        val tolerance = wall.thicknessMeters.coerceIn(MIN_WALL_THICKNESS_METERS, MAX_WALL_THICKNESS_METERS) * 0.5f +
-            WALL_CENTERLINE_TOLERANCE_METERS
-        pointSegmentDistance(point, wall.start, wall.end) <= tolerance
-    }
-
-    private fun supportedByOpening(
-        plan: FloorPlan,
-        point: Vec2,
-        edgeUx: Float,
-        edgeUz: Float,
-    ): Boolean {
-        val door = plan.doors.any { opening ->
-            opening.evidenceKind != DoorEvidenceKind.MEASURED_GAP &&
-                opening.confidence >= MIN_OPENING_CONFIDENCE &&
-                openingSupports(
-                    point = point,
-                    edgeUx = edgeUx,
-                    edgeUz = edgeUz,
-                    center = opening.center,
-                    widthMeters = opening.widthMeters,
-                    rotationDegrees = opening.rotationDegrees,
-                )
+    private fun wallSupports(plan: FloorPlan, p: Vec2, ux: Float, uz: Float): Boolean =
+        plan.walls.any { wall ->
+            if (wall.confidence < 0.62f) return@any false
+            val dx = wall.end.x - wall.start.x
+            val dz = wall.end.z - wall.start.z
+            val len = sqrt(dx * dx + dz * dz)
+            if (len < MIN_EDGE) return@any false
+            val parallel = abs(ux * dx / len + uz * dz / len)
+            parallel >= 0.92f && pointDistance(p, wall.start, wall.end) <= wallTolerance(wall.thicknessMeters)
         }
-        if (door) return true
-        return plan.windows.any { opening ->
-            opening.confidence >= MIN_OPENING_CONFIDENCE &&
-                openingSupports(
-                    point = point,
-                    edgeUx = edgeUx,
-                    edgeUz = edgeUz,
-                    center = opening.center,
-                    widthMeters = opening.widthMeters,
-                    rotationDegrees = opening.rotationDegrees,
-                )
+
+    private fun openingSupports(plan: FloorPlan, p: Vec2, ux: Float, uz: Float): Boolean {
+        val openings = plan.doors + plan.windows
+        return openings.any { opening ->
+            if (opening.confidence < 0.66f) return@any false
+            if (opening is com.manzl.app.model.DoorOpening && opening.evidenceKind == DoorEvidenceKind.MEASURED_GAP) return@any false
+            val r = Math.toRadians(opening.rotationDegrees.toDouble())
+            val ox = kotlin.math.cos(r).toFloat()
+            val oz = kotlin.math.sin(r).toFloat()
+            abs(ux * ox + uz * oz) >= 0.85f &&
+                pointDistance(p, Vec2(opening.center.x - ox * opening.widthMeters / 2f, opening.center.z - oz * opening.widthMeters / 2f), Vec2(opening.center.x + ox * opening.widthMeters / 2f, opening.center.z + oz * opening.widthMeters / 2f)) <= 0.16f
         }
     }
 
-    private fun openingSupports(
-        point: Vec2,
-        edgeUx: Float,
-        edgeUz: Float,
-        center: Vec2,
-        widthMeters: Float,
-        rotationDegrees: Float,
-    ): Boolean {
-        if (widthMeters <= 0f) return false
-        val radians = rotationDegrees * PI.toFloat() / 180f
-        val ux = cos(radians)
-        val uz = sin(radians)
-        if (abs(edgeUx * ux + edgeUz * uz) < MIN_AXIS_ALIGNMENT) return false
-        val half = widthMeters * 0.5f
-        val start = Vec2(center.x - ux * half, center.z - uz * half)
-        val end = Vec2(center.x + ux * half, center.z + uz * half)
-        return pointSegmentDistance(point, start, end) <= OPENING_AXIS_TOLERANCE_METERS
-    }
+    private fun wallTolerance(thickness: Float): Float = thickness.coerceIn(0.06f, 0.60f) / 2f + 0.11f
 
-    private fun pointSegmentDistance(point: Vec2, a: Vec2, b: Vec2): Float {
+    private fun pointDistance(p: Vec2, a: Vec2, b: Vec2): Float {
         val vx = b.x - a.x
         val vz = b.z - a.z
-        val lengthSq = vx * vx + vz * vz
-        if (lengthSq <= EPSILON) return distance(point, a)
-        val t = (((point.x - a.x) * vx + (point.z - a.z) * vz) / lengthSq).coerceIn(0f, 1f)
-        val dx = point.x - (a.x + vx * t)
-        val dz = point.z - (a.z + vz * t)
-        return sqrt(dx * dx + dz * dz)
+        val d = vx * vx + vz * vz
+        if (d == 0f) return distance(p, a)
+        val t = (((p.x - a.x) * vx + (p.z - a.z) * vz) / d).coerceIn(0f, 1f)
+        return distance(p, Vec2(a.x + vx * t, a.z + vz * t))
     }
 
     private fun distance(a: Vec2, b: Vec2): Float {
-        val dx = b.x - a.x
-        val dz = b.z - a.z
-        return sqrt(dx * dx + dz * dz)
+        val x = a.x - b.x
+        val z = a.z - b.z
+        return sqrt(x * x + z * z)
     }
 
-    private const val MIN_EDGE_METERS = 0.18f
-    private const val SAMPLE_SPACING_METERS = 0.22f
-    private const val MIN_SAMPLES_PER_EDGE = 5
-    private const val EDGE_SAMPLE_INSET_FRACTION = 0.035f
-    private const val MIN_WALL_CONFIDENCE = 0.62f
-    private const val MIN_OPENING_CONFIDENCE = 0.66f
-    private const val MIN_WALL_THICKNESS_METERS = 0.06f
-    private const val MAX_WALL_THICKNESS_METERS = 0.60f
-    private const val WALL_CENTERLINE_TOLERANCE_METERS = 0.11f
-    private const val OPENING_AXIS_TOLERANCE_METERS = 0.13f
-    private const val MIN_ROOM_BOUNDARY_SUPPORT = 0.86f
-    private const val MIN_SINGLE_EDGE_SUPPORT = 0.68f
-    private val MIN_AXIS_ALIGNMENT = cos(12.0 * PI / 180.0).toFloat()
-    private const val EPSILON = 0.000001f
+    private const val MIN_EDGE = 0.18f
+    private const val ROOM_THRESHOLD = 0.86f
+    private const val EDGE_THRESHOLD = 0.68f
 }
