@@ -58,6 +58,10 @@ class PackageRealStudentReleaseTest(unittest.TestCase):
             "heldOutCorpusIdentityMatchedAcrossEvidence": True,
             "semanticAcceptancePolicyLocked": True,
             "semanticAcceptancePolicyEvaluated": True,
+            "relativeSemanticAcceptancePassed": True,
+            "absoluteSemanticQualityPassed": True,
+            "absoluteSemanticQualityFloorVersion": 1,
+            "semanticEvidenceRecomputedAtFinalize": True,
             "semanticAcceptancePassed": True,
             "semanticHeldOutMeasurementCompleted": True,
             "geometryReleaseEvidencePassed": True,
@@ -98,10 +102,15 @@ class PackageRealStudentReleaseTest(unittest.TestCase):
             candidate, release_path, assets, _ = self.make_fixture(pathlib.Path(tmp))
             report = packager.package_release(candidate, release_path, assets)
             self.assertTrue(report["releaseReady"])
+            self.assertTrue(report["absoluteSemanticQualityPassed"])
+            self.assertTrue(report["semanticEvidenceRecomputedAtFinalize"])
             self.assertFalse((assets / packager.STALE_QUALITY_NAME).exists())
             self.assertTrue((assets / packager.MODEL_NAME).is_file())
             self.assertTrue((assets / packager.TRAINING_NAME).is_file())
             self.assertTrue((assets / packager.RELEASE_NAME).is_file())
+            packaged_manifest = json.loads((assets / packager.MANIFEST_NAME).read_text(encoding="utf-8"))
+            student = packaged_manifest["required"][0]
+            self.assertEqual(student["semanticQualityFloorVersion"], 1)
             self.assertTrue(verifier.verify(assets)["releaseReady"])
 
     def test_nonrelease_bundle_is_rejected_before_asset_mutation(self):
@@ -114,6 +123,17 @@ class PackageRealStudentReleaseTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "releaseReady"):
                 packager.package_release(candidate, release_path, assets)
             self.assertEqual((assets / packager.MANIFEST_NAME).read_bytes(), manifest_before)
+            self.assertFalse((assets / packager.MODEL_NAME).exists())
+
+    def test_legacy_release_without_absolute_semantic_proof_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            candidate, release_path, assets, release = self.make_fixture(pathlib.Path(tmp))
+            release.pop("absoluteSemanticQualityPassed")
+            release.pop("absoluteSemanticQualityFloorVersion")
+            release.pop("semanticEvidenceRecomputedAtFinalize")
+            release_path.write_text(json.dumps(release), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "absoluteSemanticQualityPassed"):
+                packager.package_release(candidate, release_path, assets)
             self.assertFalse((assets / packager.MODEL_NAME).exists())
 
     def test_release_for_different_model_is_rejected_before_asset_mutation(self):
