@@ -150,7 +150,7 @@ class CubiCasaTeacherContractTest(unittest.TestCase):
         icons[cubicasa.ICON_WINDOW] = 0.01
         icons[cubicasa.ICON_DOOR] = 0.01
 
-        # Wall-only pixel.
+        # Wall-only pixel. With no room interior on either side it must stay a wall, not a boundary.
         rooms[0, 0, 1] = 0.02
         rooms[cubicasa.ROOM_WALL, 0, 1] = 0.98
 
@@ -197,54 +197,82 @@ class CubiCasaTeacherContractTest(unittest.TestCase):
                 consensus.SEMANTIC_CLASSES[index]
                 for index in np.flatnonzero(loaded.class_known)
             }
-            self.assertEqual(known_names, {"background", "wall_face", "door", "window"})
-            for class_name in ("stair", "column", "room_boundary", "courtyard", "shaft"):
+            self.assertEqual(
+                known_names,
+                {"background", "wall_face", "door", "window", "room_boundary"},
+            )
+            for class_name in ("stair", "column", "courtyard", "shaft"):
                 self.assertFalse(loaded.class_known[consensus.CLASS_TO_INDEX[class_name]])
+
+    def test_room_segmentation_transition_exports_boundary_vote(self) -> None:
+        height = width = 9
+        rooms = np.zeros((cubicasa.ROOM_CHANNELS, height, width), dtype=np.float32)
+        icons = np.zeros((cubicasa.ICON_CHANNELS, height, width), dtype=np.float32)
+        rooms[cubicasa.ROOM_BACKGROUND] = 0.99
+        icons[0] = 1.0
+
+        room_class = 11  # CubiCasa generic Room class.
+        rooms[cubicasa.ROOM_BACKGROUND, 2:7, 2:5] = 0.01
+        rooms[room_class, 2:7, 2:5] = 0.99
+        rooms[cubicasa.ROOM_BACKGROUND, 2:7, 5] = 0.01
+        rooms[cubicasa.ROOM_WALL, 2:7, 5] = 0.99
+
+        boundary = cubicasa.derive_room_boundary_probability(rooms)
+        self.assertGreater(float(boundary[4, 4]), 0.95)
+        self.assertGreater(float(boundary[4, 5]), 0.95)
+        self.assertEqual(float(boundary[4, 2]), 0.0)
+
+        probabilities, _, _ = cubicasa.encode_floortrans_probabilities(rooms, icons)
+        winners = np.argmax(probabilities, axis=0)
+        self.assertEqual(int(winners[4, 4]), cubicasa.LOCAL_CLASS["room_boundary"])
+        self.assertEqual(int(winners[4, 5]), cubicasa.LOCAL_CLASS["room_boundary"])
+        self.assertEqual(int(winners[4, 2]), cubicasa.LOCAL_CLASS["background"])
 
 
 class ConsensusQuorumContractTest(unittest.TestCase):
-    def test_single_high_probability_class_cannot_veto_two_teacher_quorum(self) -> None:
+    @staticmethod
+    def prediction(
+        teacher_id: str,
+        known_names: set[str],
+        probabilities_by_name: dict[str, float],
+    ) -> consensus.TeacherPrediction:
         class_count = len(consensus.SEMANTIC_CLASSES)
+        probs = np.zeros((class_count, 1, 1), dtype=np.float32)
+        known = np.zeros(class_count, dtype=bool)
+        for name in known_names:
+            known[consensus.CLASS_TO_INDEX[name]] = True
+        for name, probability in probabilities_by_name.items():
+            probs[consensus.CLASS_TO_INDEX[name], 0, 0] = probability
+        return consensus.TeacherPrediction(
+            teacher_id=teacher_id,
+            weight=1.0,
+            probs=probs,
+            class_known=known,
+            confidence=np.ones((1, 1), dtype=np.float32),
+            valid=np.ones((1, 1), dtype=bool),
+            image=None,
+            corners=None,
+            corner_confidence=None,
+            orientation=None,
+        )
+
+    def test_single_high_probability_class_cannot_veto_two_teacher_quorum(self) -> None:
         wall_index = consensus.CLASS_TO_INDEX["wall_face"]
         background_index = consensus.CLASS_TO_INDEX["background"]
         room_boundary_index = consensus.CLASS_TO_INDEX["room_boundary"]
 
-        def prediction(
-            teacher_id: str,
-            known_names: set[str],
-            probabilities_by_name: dict[str, float],
-        ) -> consensus.TeacherPrediction:
-            probs = np.zeros((class_count, 1, 1), dtype=np.float32)
-            known = np.zeros(class_count, dtype=bool)
-            for name in known_names:
-                known[consensus.CLASS_TO_INDEX[name]] = True
-            for name, probability in probabilities_by_name.items():
-                probs[consensus.CLASS_TO_INDEX[name], 0, 0] = probability
-            return consensus.TeacherPrediction(
-                teacher_id=teacher_id,
-                weight=1.0,
-                probs=probs,
-                class_known=known,
-                confidence=np.ones((1, 1), dtype=np.float32),
-                valid=np.ones((1, 1), dtype=bool),
-                image=None,
-                corners=None,
-                corner_confidence=None,
-                orientation=None,
-            )
-
         predictions = [
-            prediction(
+            self.prediction(
                 "mitunet",
                 {"background", "wall_face"},
                 {"background": 0.10, "wall_face": 0.90},
             ),
-            prediction(
+            self.prediction(
                 "cubicasa",
-                {"background", "wall_face", "door", "window"},
-                {"background": 0.12, "wall_face": 0.88, "door": 0.0, "window": 0.0},
+                {"background", "wall_face", "door", "window", "room_boundary"},
+                {"background": 0.12, "wall_face": 0.88, "door": 0.0, "window": 0.0, "room_boundary": 0.0},
             ),
-            prediction(
+            self.prediction(
                 "raster2seq",
                 {"door", "window", "room_boundary"},
                 {"door": 0.0, "window": 0.0, "room_boundary": 1.0},
@@ -267,6 +295,39 @@ class ConsensusQuorumContractTest(unittest.TestCase):
         self.assertGreaterEqual(float(probability[0, 0]), 0.88)
         self.assertNotEqual(int(semantic[0, 0]), room_boundary_index)
         self.assertNotEqual(int(semantic[0, 0]), background_index)
+
+    def test_raster2seq_and_cubicasa_form_independent_room_boundary_quorum(self) -> None:
+        room_boundary_index = consensus.CLASS_TO_INDEX["room_boundary"]
+        predictions = [
+            self.prediction(
+                "mitunet",
+                {"background", "wall_face"},
+                {"background": 0.05, "wall_face": 0.95},
+            ),
+            self.prediction(
+                "cubicasa",
+                {"background", "wall_face", "door", "window", "room_boundary"},
+                {"background": 0.02, "wall_face": 0.03, "door": 0.0, "window": 0.0, "room_boundary": 0.95},
+            ),
+            self.prediction(
+                "raster2seq",
+                {"door", "window", "room_boundary"},
+                {"door": 0.0, "window": 0.0, "room_boundary": 0.92},
+            ),
+        ]
+
+        semantic, probability, supervision, votes = consensus.semantic_consensus(
+            predictions=predictions,
+            min_votes=2,
+            critical_min_votes=2,
+            min_probability=0.72,
+            min_margin=0.18,
+        )
+
+        self.assertEqual(int(semantic[0, 0]), room_boundary_index)
+        self.assertEqual(float(supervision[0, 0]), 1.0)
+        self.assertEqual(int(votes[0, 0]), 2)
+        self.assertGreater(float(probability[0, 0]), 0.90)
 
 
 if __name__ == "__main__":
