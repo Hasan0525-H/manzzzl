@@ -10,4 +10,8 @@ class LocalProjectStore {
     }
 
     fun get(): HouseProject? = currentProject
+
+    fun clear() {
+        currentProject = null
+    }
 }
