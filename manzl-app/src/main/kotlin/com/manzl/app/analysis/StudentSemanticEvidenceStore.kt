@@ -40,9 +40,9 @@ internal object StudentSemanticEvidenceStore {
  * contributes an independent arbitrary-angle OpenCV stair opinion in the same semantic phase.
  *
  * Neural stair labels are deliberately stricter than other semantics: they survive only when a
- * raster-derived stair candidate agrees in center, orientation and approximate footprint. A student
- * cannot create a staircase merely because a textured room patch resembles treads. The deterministic
- * OpenCV stair observation remains available on its own even when the student asset is absent.
+ * raster-derived stair candidate agrees in center, orientation and approximate footprint. Raster
+ * stair candidates themselves must also occupy plausible measured free space: room polygons and wall
+ * centre-lines can veto drafting hatches/cabinetry that only look like repeated treads.
  */
 internal object StudentSemanticEvidenceProvider : SemanticEvidenceProvider {
     private val arbitraryAngleStairExpert = OpenCvStairEvidenceProvider()
@@ -64,6 +64,7 @@ internal object StudentSemanticEvidenceProvider : SemanticEvidenceProvider {
 
         val rasterStairs = arbitraryAngleStairExpert.analyze(bitmap, structuralPlan)
             .filter { it.kind == SemanticKind.STAIR }
+            .filter { StairEvidenceGeometryGuard.isPlausible(structuralPlan, it) }
         val studentEvidence = rawStudent.filter { evidence ->
             if (evidence.kind != SemanticKind.STAIR) return@filter true
             rasterStairs.any { raster -> compatibleStair(evidence, raster) }
