@@ -30,6 +30,8 @@ internal data class SemanticEvidence(
     val rotationDegrees: Float? = null,
     val polygon: List<Vec2> = emptyList(),
     val label: String? = null,
+    /** Optional directly observed repetition count, currently used for measured stair treads. */
+    val countHint: Int? = null,
     val confidence: Float,
     val source: EvidenceSource,
 )
