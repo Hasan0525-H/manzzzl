@@ -10,8 +10,9 @@ three independent partitions:
 * ``test``: reserved and untouched until final held-out evaluation.
 
 The materialization report is treated as a provenance contract, not as evidence of model quality. This
-script re-measures sample/family counts and pairwise leakage from the NPZ files themselves, requires
-opaque output filenames, and fails closed if the report or directory layout is inconsistent.
+script re-measures sample/family counts, within-family variant density and pairwise leakage from the NPZ
+files themselves, requires opaque output filenames, and fails closed if the report or directory layout
+is inconsistent.
 """
 
 from __future__ import annotations
@@ -81,11 +82,6 @@ def discover_split(root: pathlib.Path, name: str) -> list[pathlib.Path]:
 
 
 def opaque_set_fingerprint(files: list[pathlib.Path]) -> str:
-    """Privacy-safe identity for an exact split membership set.
-
-    The fingerprint hashes only already-opaque sample ids, never raw image bytes, raw raster hashes,
-    source paths, original filenames, user labels, or source_group provenance.
-    """
     sample_ids = sorted(path.stem for path in files)
     if not sample_ids:
         raise RuntimeError("cannot fingerprint an empty release split")
@@ -93,11 +89,25 @@ def opaque_set_fingerprint(files: list[pathlib.Path]) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def measured_group_count(root: pathlib.Path) -> int:
+def measured_group_index(root: pathlib.Path) -> dict[str, list[pathlib.Path]]:
     _, _, groups = verify_dataset_split.index_split(root)
     if not groups:
         raise RuntimeError(f"real-plan split has no source_group provenance: {root.name}")
-    return len(groups)
+    return groups
+
+
+def variant_density(groups: dict[str, list[pathlib.Path]]) -> dict:
+    sizes = sorted(len(paths) for paths in groups.values())
+    if not sizes:
+        raise RuntimeError("cannot measure variant density without source groups")
+    return {
+        "sourceGroups": len(sizes),
+        "samples": sum(sizes),
+        "minimumSamplesPerSourceGroup": min(sizes),
+        "maximumSamplesPerSourceGroup": max(sizes),
+        "meanSamplesPerSourceGroup": sum(sizes) / len(sizes),
+        "groupsWithMultipleVariants": sum(1 for size in sizes if size > 1),
+    }
 
 
 def verify(split_root: pathlib.Path) -> dict:
@@ -115,16 +125,18 @@ def verify(split_root: pathlib.Path) -> dict:
     if int(report.get("samples", -1)) != sum(measured_samples.values()):
         raise RuntimeError("materialization report total sample count is inconsistent")
 
-    measured_groups = {
-        name: measured_group_count(split_root / name)
+    group_indexes = {
+        name: measured_group_index(split_root / name)
         for name in SPLITS
     }
+    measured_groups = {name: len(groups) for name, groups in group_indexes.items()}
     expected_groups = report.get("sourceGroupsBySplit")
     if measured_groups != expected_groups:
         raise RuntimeError(
             f"real-plan source-group counts disagree with materialization report: "
             f"{measured_groups} != {expected_groups}"
         )
+    density = {name: variant_density(group_indexes[name]) for name in SPLITS}
 
     pairwise = {}
     for left_index, left in enumerate(SPLITS):
@@ -149,6 +161,7 @@ def verify(split_root: pathlib.Path) -> dict:
         "trainSourceGroups": measured_groups["train"],
         "validationSourceGroups": measured_groups["validation"],
         "testSourceGroups": measured_groups["test"],
+        "variantDensityBySplit": density,
         "opaqueSplitSetFingerprints": fingerprints,
         "fingerprintContainsOnlyOpaqueSampleIds": True,
         "pairwiseLeakageChecks": pairwise,
