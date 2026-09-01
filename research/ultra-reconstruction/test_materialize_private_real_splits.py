@@ -77,6 +77,9 @@ class MaterializePrivateRealSplitsTest(unittest.TestCase):
             self.assertEqual(report["samples"], 1)
             self.assertEqual(report["samplesBySplit"], safe_manifest["samplesBySplit"])
             self.assertTrue(report["opaqueOutputFilenames"])
+            self.assertTrue(report["transactionalMaterialization"])
+            self.assertFalse(report["existingOutputOverwritten"])
+            self.assertTrue(report["splitAssignmentsReverifiedFromSaltAndPolicy"])
             self.assertTrue(report["testReservedForFinalEvaluation"])
             report_text = (output / "materialization_report.json").read_text(encoding="utf-8")
             self.assertNotIn("riyadh", report_text)
@@ -91,24 +94,61 @@ class MaterializePrivateRealSplitsTest(unittest.TestCase):
             payload["source_group"] = np.asarray("private:wrong-family")
             np.savez_compressed(consensus_path, **payload)
 
+            output = base / "splits"
             with self.assertRaisesRegex(RuntimeError, "disagrees with local provenance"):
                 materializer.materialize(
                     consensus,
                     source_groups,
                     manifest,
                     "stable-private-salt",
-                    base / "splits",
+                    output,
                 )
+            self.assertFalse(output.exists())
 
     def test_wrong_salt_cannot_silently_reassign_samples(self):
         with tempfile.TemporaryDirectory() as tmp:
             base, consensus, _, source_groups, manifest, _ = self.make_fixture(tmp)
-            with self.assertRaisesRegex(RuntimeError, "absent from safe split manifest"):
+            with self.assertRaisesRegex(RuntimeError, "salt/policy"):
                 materializer.materialize(
                     consensus,
                     source_groups,
                     manifest,
                     "different-private-salt",
+                    base / "splits",
+                )
+
+    def test_existing_output_is_never_deleted_or_overwritten(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base, consensus, _, source_groups, manifest, _ = self.make_fixture(tmp)
+            output = base / "splits"
+            output.mkdir()
+            marker = output / "do-not-delete.txt"
+            marker.write_text("existing private result", encoding="utf-8")
+
+            with self.assertRaisesRegex(FileExistsError, "refusing to delete or overwrite"):
+                materializer.materialize(
+                    consensus,
+                    source_groups,
+                    manifest,
+                    "stable-private-salt",
+                    output,
+                )
+            self.assertEqual(marker.read_text(encoding="utf-8"), "existing private result")
+
+    def test_manifest_split_cannot_disagree_with_salt_policy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base, consensus, _, source_groups, manifest_path, manifest = self.make_fixture(tmp)
+            manifest["records"][0]["split"] = "validation"
+            manifest["samplesBySplit"] = {"train": 0, "validation": 1, "test": 0}
+            manifest["sourceGroupsBySplit"] = {"train": 0, "validation": 1, "test": 0}
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+            with self.assertRaisesRegex(RuntimeError, "salt/policy"):
+                materializer.materialize(
+                    consensus,
+                    source_groups,
+                    manifest_path,
+                    "stable-private-salt",
                     base / "splits",
                 )
 
