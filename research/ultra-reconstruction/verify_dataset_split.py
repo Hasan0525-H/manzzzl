@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""Fail closed when Manzl train/validation corpora share source rasters.
+"""Fail closed when Manzl train/validation corpora are not independent.
 
-A validation score is only meaningful when the held-out split is independent. File names and
-container encodings are not reliable identity signals, so this tool canonicalizes every NPZ `image`
-to uint8 RGB and hashes its shape + pixels. An identical source plan therefore collides even when one
-sample stores floats in [0,1] and another stores uint8 values, or when the files have different names.
+Two complementary identities are checked:
+1. Exact source-raster identity. Every NPZ ``image`` is canonicalized to uint8 RGB and hashed, so a
+   renamed copy still collides across integer/float container encodings.
+2. Optional floor-plan family identity. Samples can carry a scalar string ``source_group`` (for
+   example ``resplan:1234`` or a private corpus UUID). Different scans, screenshots, crops or renders
+   of the same underlying plan must use the same group and are forbidden from crossing train/validation.
 
-This is intentionally exact rather than perceptual. Near-duplicate plan detection belongs in the
-real-corpus curation pipeline; this guard prevents the unambiguous leakage case without risking false
-positives that could silently remove legitimate distinct plans.
+Exact duplicate rasters inside a split are also rejected because they silently re-weight examples.
+Multiple distinct variants from one ``source_group`` inside the *same* split are allowed and useful.
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ import numpy as np
 class SampleIdentity:
     path: pathlib.Path
     digest: str
+    source_group: str | None
 
 
 def discover_npz(root: pathlib.Path) -> list[pathlib.Path]:
@@ -37,12 +39,7 @@ def discover_npz(root: pathlib.Path) -> list[pathlib.Path]:
     return files
 
 
-def canonical_source_image(path: pathlib.Path) -> np.ndarray:
-    with np.load(path, allow_pickle=False) as sample:
-        if "image" not in sample.files:
-            raise ValueError(f"sample is missing required image key: {path}")
-        image = np.asarray(sample["image"])
-
+def _canonicalize_image(image: np.ndarray, path: pathlib.Path) -> np.ndarray:
     if image.ndim != 3 or image.shape[-1] != 3:
         raise ValueError(f"image must be [H,W,3] in {path}, got {image.shape}")
     if not np.isfinite(image).all():
@@ -58,23 +55,64 @@ def canonical_source_image(path: pathlib.Path) -> np.ndarray:
     return np.ascontiguousarray(image)
 
 
-def source_digest(path: pathlib.Path) -> str:
-    image = canonical_source_image(path)
+def _read_source_group(sample, path: pathlib.Path) -> str | None:
+    if "source_group" not in sample.files:
+        return None
+    raw = np.asarray(sample["source_group"])
+    if raw.size != 1:
+        raise ValueError(f"source_group must be a scalar string in {path}, got shape {raw.shape}")
+    value = raw.reshape(()).item()
+    if isinstance(value, bytes):
+        value = value.decode("utf-8")
+    if not isinstance(value, str):
+        raise ValueError(f"source_group must be a scalar string in {path}, got {type(value).__name__}")
+    value = value.strip()
+    if not value:
+        raise ValueError(f"source_group must not be empty in {path}")
+    if len(value) > 256:
+        raise ValueError(f"source_group is unreasonably long in {path}")
+    return value
+
+
+def read_identity(path: pathlib.Path) -> SampleIdentity:
+    with np.load(path, allow_pickle=False) as sample:
+        if "image" not in sample.files:
+            raise ValueError(f"sample is missing required image key: {path}")
+        image = _canonicalize_image(np.asarray(sample["image"]), path)
+        source_group = _read_source_group(sample, path)
+
     digest = hashlib.sha256()
     digest.update(b"manzl-source-raster-v1\0")
     digest.update(np.asarray(image.shape, dtype="<i8").tobytes())
     digest.update(image.tobytes(order="C"))
-    return digest.hexdigest()
+    return SampleIdentity(path=path, digest=digest.hexdigest(), source_group=source_group)
 
 
-def index_split(root: pathlib.Path) -> tuple[list[SampleIdentity], dict[str, list[pathlib.Path]]]:
+def canonical_source_image(path: pathlib.Path) -> np.ndarray:
+    """Compatibility helper used by external corpus tooling/tests."""
+    with np.load(path, allow_pickle=False) as sample:
+        if "image" not in sample.files:
+            raise ValueError(f"sample is missing required image key: {path}")
+        return _canonicalize_image(np.asarray(sample["image"]), path)
+
+
+def source_digest(path: pathlib.Path) -> str:
+    return read_identity(path).digest
+
+
+def index_split(
+    root: pathlib.Path,
+) -> tuple[list[SampleIdentity], dict[str, list[pathlib.Path]], dict[str, list[pathlib.Path]]]:
     identities: list[SampleIdentity] = []
     by_digest: dict[str, list[pathlib.Path]] = {}
+    by_group: dict[str, list[pathlib.Path]] = {}
     for path in discover_npz(root):
-        identity = SampleIdentity(path=path, digest=source_digest(path))
+        identity = read_identity(path)
         identities.append(identity)
         by_digest.setdefault(identity.digest, []).append(path)
-    return identities, by_digest
+        if identity.source_group is not None:
+            by_group.setdefault(identity.source_group, []).append(path)
+    return identities, by_digest, by_group
 
 
 def duplicate_groups(index: dict[str, list[pathlib.Path]]) -> dict[str, list[pathlib.Path]]:
@@ -94,8 +132,8 @@ def verify_split_independence(train_root: pathlib.Path, validation_root: pathlib
     if train_root == validation_root:
         raise RuntimeError("train and validation roots resolve to the same directory")
 
-    train_samples, train_index = index_split(train_root)
-    validation_samples, validation_index = index_split(validation_root)
+    train_samples, train_index, train_groups = index_split(train_root)
+    validation_samples, validation_index, validation_groups = index_split(validation_root)
 
     train_duplicates = duplicate_groups(train_index)
     validation_duplicates = duplicate_groups(validation_index)
@@ -113,10 +151,10 @@ def verify_split_independence(train_root: pathlib.Path, validation_root: pathlib
             "training/evaluation weighting: " + "; ".join(details)
         )
 
-    overlap = sorted(set(train_index) & set(validation_index))
-    if overlap:
+    exact_overlap = sorted(set(train_index) & set(validation_index))
+    if exact_overlap:
         details = []
-        for digest in overlap[:12]:
+        for digest in exact_overlap[:12]:
             train_name = display_path(train_index[digest][0], train_root)
             val_name = display_path(validation_index[digest][0], validation_root)
             details.append(f"{digest[:12]} train={train_name} validation={val_name}")
@@ -125,15 +163,33 @@ def verify_split_independence(train_root: pathlib.Path, validation_root: pathlib
             + "; ".join(details)
         )
 
+    group_overlap = sorted(set(train_groups) & set(validation_groups))
+    if group_overlap:
+        details = []
+        for group in group_overlap[:12]:
+            train_name = display_path(train_groups[group][0], train_root)
+            val_name = display_path(validation_groups[group][0], validation_root)
+            details.append(f"{group!r} train={train_name} validation={val_name}")
+        raise RuntimeError(
+            "held-out floor-plan family leakage detected: source_group appears in both train and "
+            "validation; keep all scans/renders/variants of one underlying plan in one split only; "
+            + "; ".join(details)
+        )
+
     return {
-        "schema": 1,
-        "identity": "sha256(canonical-uint8-source-raster-shape+pixels)",
+        "schema": 2,
+        "exactIdentity": "sha256(canonical-uint8-source-raster-shape+pixels)",
+        "familyIdentity": "optional NPZ source_group scalar string",
         "trainSamples": len(train_samples),
         "validationSamples": len(validation_samples),
-        "trainUniqueSources": len(train_index),
-        "validationUniqueSources": len(validation_index),
-        "crossSplitOverlap": 0,
+        "trainUniqueRasters": len(train_index),
+        "validationUniqueRasters": len(validation_index),
+        "trainSourceGroups": len(train_groups),
+        "validationSourceGroups": len(validation_groups),
+        "crossSplitExactOverlap": 0,
+        "crossSplitGroupOverlap": 0,
         "exactSourceLeakage": False,
+        "floorPlanFamilyLeakage": False,
     }
 
 
