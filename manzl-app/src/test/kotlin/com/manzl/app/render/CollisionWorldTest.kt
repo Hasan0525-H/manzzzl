@@ -42,7 +42,7 @@ class CollisionWorldTest {
                         center = Vec2(0f, 0f),
                         widthMeters = 0.60f,
                         depthMeters = 0.50f,
-                        rotationDegrees = 28f,
+                        rotationDegrees = 0f,
                         confidence = 0.95f,
                     )
                 ),
@@ -57,8 +57,30 @@ class CollisionWorldTest {
             radius = CollisionWorld.DEFAULT_PLAYER_RADIUS,
         )
 
-        assertTrue("player crossed a structural column: $result", result.x < 0.05f)
+        assertTrue("player tunneled through a structural column: $result", result.x < -0.50f)
         assertTrue("resolved position still overlaps the structural column: $result", world.isClear(result))
+    }
+
+    @Test
+    fun `rotated column has rounded collision corner instead of oversized square blocker`() {
+        val world = CollisionWorld(
+            plan(
+                walls = emptyList(),
+                columns = listOf(
+                    StructuralColumn(
+                        center = Vec2(0f, 0f),
+                        widthMeters = 0.60f,
+                        depthMeters = 0.50f,
+                        rotationDegrees = 30f,
+                        confidence = 0.95f,
+                    )
+                ),
+            )
+        )
+
+        // This point is outside the exact circle-vs-OBB rounded corner but would be rejected by the
+        // old axis-expanded rectangle approximation.
+        assertTrue("rounded structural-column corner lost walkable space", world.isClear(Vec2(0.60f, 0.55f), 0.10f))
     }
 
     @Test
@@ -211,7 +233,6 @@ class CollisionWorldTest {
         )
 
         val spawn = world.findSpawn()
-
         assertTrue("spawn is colliding at $spawn", world.isClear(spawn))
     }
 
@@ -233,7 +254,6 @@ class CollisionWorldTest {
         )
 
         val spawn = world.findSpawn()
-
         assertTrue("spawn ignored trusted room geometry: $spawn", spawn.x in 2.2f..5.2f)
         assertTrue("room-derived spawn is not clear: $spawn", world.isClear(spawn))
     }
@@ -262,15 +282,11 @@ class CollisionWorldTest {
         )
 
         val spawn = world.findSpawn()
-
         assertTrue("tour started in service room instead of entrance: $spawn", spawn.x > 1.4f)
     }
 
     private fun rectangle(minX: Float, minZ: Float, maxX: Float, maxZ: Float): List<Vec2> = listOf(
-        Vec2(minX, minZ),
-        Vec2(maxX, minZ),
-        Vec2(maxX, maxZ),
-        Vec2(minX, maxZ),
+        Vec2(minX, minZ), Vec2(maxX, minZ), Vec2(maxX, maxZ), Vec2(minX, maxZ)
     )
 
     private fun plan(
