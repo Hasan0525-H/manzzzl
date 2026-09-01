@@ -47,6 +47,27 @@ class PreparePrivateRealCorpusTest(unittest.TestCase):
             self.assertFalse(manifest["privacy"]["sourceImagesCopied"])
             self.assertFalse(manifest["privacy"]["rawFamilyLabelsStored"])
 
+    def test_safe_manifest_contains_no_paths_or_raw_raster_hashes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp) / "images"
+            root.mkdir()
+            self.write_image(root, "riyadh/private-villa-name.png", 240)
+            families = pathlib.Path(tmp) / "families.json"
+            self.write_families(families, {"riyadh/private-villa-name.png": "family-secret"})
+
+            source_groups, manifest = module.build_manifests(root, families, "stable-salt", 0.0, 0.0)
+            safe_text = json.dumps(manifest)
+            local_text = json.dumps(source_groups)
+            self.assertNotIn("riyadh", safe_text)
+            self.assertNotIn("private-villa-name", safe_text)
+            self.assertNotIn("family-secret", safe_text)
+            self.assertTrue(manifest["privacy"]["safeToCommit"])
+            self.assertFalse(manifest["privacy"]["sourcePathsStored"])
+            self.assertFalse(manifest["privacy"]["rawRasterHashesStored"])
+            self.assertIn("riyadh/private-villa-name.npz", local_text)
+            self.assertFalse(source_groups["privacy"]["safeToCommit"])
+            self.assertTrue(source_groups["privacy"]["localOnly"])
+
     def test_all_variants_of_one_family_stay_in_one_split(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp) / "images"
@@ -111,8 +132,20 @@ class PreparePrivateRealCorpusTest(unittest.TestCase):
             families = pathlib.Path(tmp) / "families.json"
             self.write_families(families, {"riyadh/villa.png": "house-a"})
 
-            source_groups, _ = module.build_manifests(root, families, "stable-salt", 0.15, 0.15)
+            source_groups, _ = module.build_manifests(root, families, "stable-salt", 0.0, 0.0)
             self.assertEqual(set(source_groups["groups"]), {"riyadh/villa.npz"})
+
+    def test_holdout_coverage_fails_closed_when_requested_partition_is_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp) / "images"
+            root.mkdir()
+            self.write_image(root, "only.png", 240)
+            families = pathlib.Path(tmp) / "families.json"
+            self.write_families(families, {"only.png": "only-family"})
+
+            _, manifest = module.build_manifests(root, families, "stable-salt", 0.15, 0.15)
+            with self.assertRaisesRegex(RuntimeError, "too small/unbalanced"):
+                module.validate_holdout_coverage(manifest)
 
 
 if __name__ == "__main__":
