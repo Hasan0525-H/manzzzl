@@ -21,6 +21,7 @@ class ReconstructionReadinessGateTest {
         assertTrue(report.ready)
         assertTrue(report.unresolvedOpenings.isEmpty())
         assertTrue(report.unsupportedVerticalVoids.isEmpty())
+        assertTrue(report.unsupportedRoomBoundaries.isEmpty())
         assertTrue(report.trustedRoomCoverage >= 0.90f)
     }
 
@@ -73,6 +74,7 @@ class ReconstructionReadinessGateTest {
         )
         assertTrue(report.ready)
         assertTrue(report.unresolvedOpenings.isEmpty())
+        assertTrue(report.unsupportedRoomBoundaries.isEmpty())
     }
 
     @Test
@@ -93,6 +95,7 @@ class ReconstructionReadinessGateTest {
         )
         assertTrue(report.ready)
         assertTrue(report.unresolvedOpenings.isEmpty())
+        assertTrue(report.unsupportedRoomBoundaries.isEmpty())
     }
 
     @Test
@@ -116,6 +119,18 @@ class ReconstructionReadinessGateTest {
     }
 
     @Test
+    fun `high coverage room with an invented boundary is still blocked`() {
+        val walls = rectangleWalls().filterIndexed { index, _ -> index != 1 }
+        val report = ReconstructionReadinessGate.evaluate(
+            plan(walls = walls, rooms = listOf(largeRoom()))
+        )
+
+        assertFalse(report.ready)
+        assertTrue(report.trustedRoomCoverage >= 0.90f)
+        assertTrue(report.unsupportedRoomBoundaries.any { it.roomId == "main" })
+    }
+
+    @Test
     fun `coverage ignores conservative empty padding outside measured wall envelope`() {
         val report = ReconstructionReadinessGate.evaluate(
             FloorPlan(
@@ -133,12 +148,16 @@ class ReconstructionReadinessGateTest {
     }
 
     @Test
-    fun `strictly nested shaft is supported by polygon hole subtraction`() {
+    fun `strictly nested shaft is supported only when its boundary is measured`() {
         val shaft = room("shaft", -1f, -1f, 1f, 1f, label = "shaft")
         val report = ReconstructionReadinessGate.evaluate(
-            plan(walls = rectangleWalls(), rooms = listOf(largeRoom(), shaft))
+            plan(
+                walls = rectangleWalls() + roomBoundaryWalls(shaft),
+                rooms = listOf(largeRoom(), shaft),
+            )
         )
         assertTrue(report.unsupportedVerticalVoids.isEmpty())
+        assertTrue(report.unsupportedRoomBoundaries.isEmpty())
         assertTrue(report.ready)
     }
 
@@ -146,21 +165,29 @@ class ReconstructionReadinessGateTest {
     fun `partially overlapping shaft remains blocked`() {
         val shaft = room("shaft", 3.4f, -1f, 4.6f, 1f, label = "shaft")
         val report = ReconstructionReadinessGate.evaluate(
-            plan(walls = rectangleWalls(), rooms = listOf(largeRoom(), shaft))
+            plan(
+                walls = rectangleWalls() + roomBoundaryWalls(shaft),
+                rooms = listOf(largeRoom(), shaft),
+            )
         )
         assertFalse(report.ready)
         assertTrue(report.unsupportedVerticalVoids.any { it.id == "shaft" })
     }
 
     @Test
-    fun `independent closed shaft face is allowed because renderer can omit that face`() {
+    fun `independent closed shaft face is allowed when every face boundary is measured`() {
         val left = room("left", -4f, -3f, -1f, 3f)
         val right = room("right", 1f, -3f, 4f, 3f)
         val shaft = room("shaft", -0.7f, -1f, 0.7f, 1f, label = "shaft")
+        val walls = rectangleWalls() +
+            roomBoundaryWalls(left) +
+            roomBoundaryWalls(right) +
+            roomBoundaryWalls(shaft)
         val report = ReconstructionReadinessGate.evaluate(
-            plan(walls = rectangleWalls(), rooms = listOf(left, right, shaft))
+            plan(walls = walls, rooms = listOf(left, right, shaft))
         )
         assertTrue(report.unsupportedVerticalVoids.isEmpty())
+        assertTrue(report.unsupportedRoomBoundaries.isEmpty())
         assertTrue(report.trustedRoomCoverage >= 0.68f)
         assertTrue(report.ready)
     }
@@ -179,6 +206,15 @@ class ReconstructionReadinessGateTest {
         WallSegment(Vec2(4f, 3f), Vec2(-4f, 3f), thicknessMeters = 0.18f, confidence = 0.95f),
         WallSegment(Vec2(-4f, 3f), Vec2(-4f, -3f), thicknessMeters = 0.18f, confidence = 0.95f),
     )
+
+    private fun roomBoundaryWalls(room: RoomRegion): List<WallSegment> = room.polygon.indices.map { index ->
+        WallSegment(
+            start = room.polygon[index],
+            end = room.polygon[(index + 1) % room.polygon.size],
+            thicknessMeters = 0.18f,
+            confidence = 0.95f,
+        )
+    }
 
     private fun largeRoom() = room("main", -4f, -3f, 4f, 3f)
 
