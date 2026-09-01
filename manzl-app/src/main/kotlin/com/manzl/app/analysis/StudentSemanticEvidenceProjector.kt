@@ -1,8 +1,10 @@
 package com.manzl.app.analysis
 
 import com.manzl.app.model.FloorPlan
+import com.manzl.app.model.RoomRegion
 import com.manzl.app.model.Vec2
 import kotlin.math.PI
+import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.min
@@ -15,6 +17,9 @@ import kotlin.math.sqrt
  * Door/window labels only *classify an existing measured wall gap*: centre, width and axis are taken
  * from [MeasuredOpeningGapDetector]. Stair dimensions may come from the semantic component because
  * GeometryEvidenceFusion still applies residential bounds and source-plan containment checks.
+ * Courtyard/shaft classes may only label an already reconstructed closed room polygon; they can never
+ * create a void polygon by themselves. Column components are retained by the student cache for a
+ * dedicated raster-verified structural primitive pass and are deliberately ignored here.
  */
 internal object StudentSemanticEvidenceProjector {
 
@@ -69,6 +74,29 @@ internal object StudentSemanticEvidenceProjector {
                 StudentSemanticComponentDecoder.STAIR_CLASS_ID -> {
                     stairEvidence(component, planCenter, sourceTransform, modelToSource)?.let(result::add)
                 }
+
+                StudentSemanticComponentDecoder.COURTYARD_CLASS_ID -> {
+                    roomLabelEvidence(
+                        plan = seed,
+                        center = planCenter,
+                        componentConfidence = component.confidence,
+                        label = COURTYARD_LABEL,
+                    )?.let(result::add)
+                }
+
+                StudentSemanticComponentDecoder.SHAFT_CLASS_ID -> {
+                    roomLabelEvidence(
+                        plan = seed,
+                        center = planCenter,
+                        componentConfidence = component.confidence,
+                        label = SHAFT_LABEL,
+                    )?.let(result::add)
+                }
+
+                StudentSemanticComponentDecoder.COLUMN_CLASS_ID -> {
+                    // Structural mass, not a semantic label. A later source-raster adjudicator must
+                    // verify its footprint before it can become canonical 3D geometry.
+                }
             }
         }
 
@@ -76,7 +104,9 @@ internal object StudentSemanticEvidenceProjector {
             .sortedByDescending { it.confidence }
             .fold(ArrayList<SemanticEvidence>()) { accepted, candidate ->
                 val duplicate = accepted.any { existing ->
-                    existing.kind == candidate.kind && distance(existing.center, candidate.center) <= duplicateDistance(candidate.kind)
+                    existing.kind == candidate.kind &&
+                        existing.label == candidate.label &&
+                        distance(existing.center, candidate.center) <= duplicateDistance(candidate.kind)
                 }
                 if (!duplicate) accepted += candidate
                 accepted
@@ -103,6 +133,35 @@ internal object StudentSemanticEvidenceProjector {
             }
         }
         return best
+    }
+
+    private fun roomLabelEvidence(
+        plan: FloorPlan,
+        center: Vec2,
+        componentConfidence: Float,
+        label: String,
+    ): SemanticEvidence? {
+        if (componentConfidence < MIN_ROOM_LABEL_COMPONENT_CONFIDENCE) return null
+        val room = plan.rooms
+            .asSequence()
+            .filter { it.confidence >= MIN_ROOM_HOST_CONFIDENCE && it.polygon.size >= 3 }
+            .filter { pointInsidePolygon(center, it.polygon) }
+            .minByOrNull { polygonArea(it) }
+            ?: return null
+
+        // The student's class is allowed to add a label only; the room polygon remains exactly the
+        // polygon already reconstructed from measured walls/openings.
+        return SemanticEvidence(
+            kind = SemanticKind.ROOM,
+            center = polygonCentroid(room),
+            polygon = room.polygon,
+            label = label,
+            confidence = (
+                componentConfidence.coerceIn(0f, 1f) * 0.72f +
+                    room.confidence.coerceIn(0f, 1f) * 0.28f
+                ).coerceIn(0f, MAX_ROOM_LABEL_CONFIDENCE),
+            source = EvidenceSource.LOCAL_AI,
+        )
     }
 
     private fun stairEvidence(
@@ -155,6 +214,44 @@ internal object StudentSemanticEvidenceProjector {
         )
     }
 
+    private fun pointInsidePolygon(point: Vec2, polygon: List<Vec2>): Boolean {
+        if (polygon.size < 3) return false
+        var inside = false
+        var previous = polygon.last()
+        for (current in polygon) {
+            val crosses = (current.z > point.z) != (previous.z > point.z)
+            if (crosses) {
+                val denominator = previous.z - current.z
+                val safe = if (abs(denominator) < EPSILON) EPSILON else denominator
+                val boundaryX = (previous.x - current.x) * (point.z - current.z) / safe + current.x
+                if (point.x < boundaryX) inside = !inside
+            }
+            previous = current
+        }
+        return inside
+    }
+
+    private fun polygonArea(room: RoomRegion): Float = polygonArea(room.polygon)
+
+    private fun polygonArea(points: List<Vec2>): Float {
+        if (points.size < 3) return 0f
+        var sum = 0f
+        for (index in points.indices) {
+            val a = points[index]
+            val b = points[(index + 1) % points.size]
+            sum += a.x * b.z - b.x * a.z
+        }
+        return abs(sum) * 0.5f
+    }
+
+    private fun polygonCentroid(room: RoomRegion): Vec2 {
+        if (room.polygon.isEmpty()) return Vec2(0f, 0f)
+        return Vec2(
+            room.polygon.sumOf { it.x.toDouble() }.toFloat() / room.polygon.size,
+            room.polygon.sumOf { it.z.toDouble() }.toFloat() / room.polygon.size,
+        )
+    }
+
     private fun fusedClassificationConfidence(semantic: Float, structural: Float): Float =
         (semantic.coerceIn(0f, 1f) * 0.82f + structural.coerceIn(0f, 1f) * 0.18f)
             .coerceIn(0f, 0.97f)
@@ -184,4 +281,10 @@ internal object StudentSemanticEvidenceProjector {
     private const val SUPPORT_PENALTY_METERS = 0.22f
     private const val MIN_STAIR_RAW_RUN_METERS = 1.20f
     private const val MIN_STAIR_RAW_WIDTH_METERS = 0.55f
+    private const val MIN_ROOM_LABEL_COMPONENT_CONFIDENCE = 0.68f
+    private const val MIN_ROOM_HOST_CONFIDENCE = 0.66f
+    private const val MAX_ROOM_LABEL_CONFIDENCE = 0.96f
+    private const val COURTYARD_LABEL = "courtyard"
+    private const val SHAFT_LABEL = "shaft"
+    private const val EPSILON = 0.000001f
 }
