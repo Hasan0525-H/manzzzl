@@ -24,7 +24,9 @@ concurrency:
 jobs:
   bootstrap-student:
     runs-on: ubuntu-latest
-    timeout-minutes: 55
+    # Public-repository standard runner: spend time, not money, on a materially stronger bootstrap.
+    # This is still not a release-quality substitute for the real teacher-consensus benchmark.
+    timeout-minutes: 240
 
     steps:
       - name: Checkout
@@ -53,6 +55,8 @@ jobs:
           python - <<'PY'
           import hashlib
           import pathlib
+          import time
+          import urllib.error
           import urllib.request
 
           commit = 'e2b78fe069aee1ab1e1828a612743f308e3c32a7'
@@ -60,15 +64,30 @@ jobs:
           split_url = f'https://raw.githubusercontent.com/m-agour/ResPlan/{commit}/split.json'
           archive = pathlib.Path('/tmp/ResPlan.zip')
           split = pathlib.Path('/tmp/ResPlan-split.json')
-          request = urllib.request.Request(archive_url, headers={'User-Agent': 'Manzl-ResPlan-Training/1'})
-          with urllib.request.urlopen(request, timeout=180) as response, archive.open('wb') as output:
-              while True:
-                  chunk = response.read(1024 * 1024)
-                  if not chunk:
-                      break
-                  output.write(chunk)
-          with urllib.request.urlopen(split_url, timeout=60) as response:
-              split.write_bytes(response.read())
+
+          def fetch(url, destination, timeout):
+              last = None
+              for attempt in range(1, 7):
+                  try:
+                      request = urllib.request.Request(url, headers={'User-Agent': 'Manzl-ResPlan-Training/2'})
+                      with urllib.request.urlopen(request, timeout=timeout) as response, destination.open('wb') as output:
+                          while True:
+                              chunk = response.read(1024 * 1024)
+                              if not chunk:
+                                  break
+                              output.write(chunk)
+                      return
+                  except (urllib.error.URLError, TimeoutError, ConnectionError) as error:
+                      last = error
+                      if attempt == 6:
+                          raise
+                      delay = min(30, 2 ** attempt)
+                      print(f'transient ResPlan fetch failure: {error}; retrying in {delay}s')
+                      time.sleep(delay)
+              raise last
+
+          fetch(archive_url, archive, 180)
+          fetch(split_url, split, 60)
 
           expected_size = 100106537
           expected_git_blob = '24d12b8739bdb55e0accc60ddd4cb460bcc9886c'
@@ -81,28 +100,28 @@ jobs:
           print(f'verified ResPlan CC-BY geometry blob: {digest} ({len(data)} bytes)')
           PY
 
-      - name: Generate mixed rights-safe train corpus
+      - name: Generate larger mixed rights-safe train corpus
         run: |
           rm -rf /tmp/manzl-train /tmp/manzl-val /tmp/manzl-student
           mkdir -p /tmp/manzl-train /tmp/manzl-val
 
           python research/ultra-reconstruction/generate_rights_safe_synthetic.py \
-            --output /tmp/manzl-train --count 80 --size 512 --seed 43926
+            --output /tmp/manzl-train --count 160 --size 512 --seed 43926
           python research/ultra-reconstruction/generate_rights_safe_synthetic.py \
-            --output /tmp/manzl-val --count 24 --size 512 --seed 90439
+            --output /tmp/manzl-val --count 48 --size 512 --seed 90439
 
           python research/ultra-reconstruction/generate_synthetic_corpus.py \
-            --output /tmp/manzl-train --count 80 --size 512 --seed 260901
+            --output /tmp/manzl-train --count 160 --size 512 --seed 260901
           python research/ultra-reconstruction/generate_synthetic_corpus.py \
-            --output /tmp/manzl-val --count 24 --size 512 --seed 260902
+            --output /tmp/manzl-val --count 48 --size 512 --seed 260902
 
           python research/ultra-reconstruction/render_resplan_training.py \
             --archive /tmp/ResPlan.zip \
             --split-json /tmp/ResPlan-split.json \
             --train-output /tmp/manzl-train \
             --val-output /tmp/manzl-val \
-            --train-count 80 \
-            --val-count 16 \
+            --train-count 160 \
+            --val-count 32 \
             --size 512 \
             --seed 20260901
 
@@ -110,12 +129,12 @@ jobs:
           import pathlib
           train = list(pathlib.Path('/tmp/manzl-train').glob('*.npz'))
           val = list(pathlib.Path('/tmp/manzl-val').glob('*.npz'))
-          assert len(train) == 240, len(train)
-          assert len(val) == 64, len(val)
+          assert len(train) == 480, len(train)
+          assert len(val) == 128, len(val)
           print(f'train samples: {len(train)}; val samples: {len(val)}')
           PY
 
-      - name: Train proposal-only bootstrap student
+      - name: Train stronger proposal-only student
         run: |
           mkdir -p /tmp/manzl-student
           python research/ultra-reconstruction/train_student.py \
@@ -124,12 +143,12 @@ jobs:
             --output /tmp/manzl-student/student.pt \
             --onnx /tmp/manzl-student/manzl_reconstruction_student.onnx \
             --size 512 \
-            --width 12 \
-            --epochs 4 \
+            --width 16 \
+            --epochs 8 \
             --batch 2 \
             --workers 2 \
             --lr 0.0003 \
-            --patience 2 \
+            --patience 3 \
             --cpu
 
       - name: Validate exported ONNX contract
@@ -176,20 +195,22 @@ jobs:
           evaluation = json.loads(evaluation_path.read_text(encoding='utf-8'))
           digest = hashlib.sha256(model_path.read_bytes()).hexdigest()
           attestation = {
-              'schema': 4,
+              'schema': 5,
               'model': model_path.name,
               'sha256': digest,
               'bytes': model_path.stat().st_size,
               'trainingSource': 'two original Manzl procedural corpora + CC BY 4.0 ResPlan geometry renderings',
-              'trainingSamples': 240,
-              'validationSamples': 64,
+              'trainingSamples': 480,
+              'validationSamples': 128,
+              'architectureWidth': 16,
+              'maxEpochs': 8,
               'resPlanAttribution': 'research/ultra-reconstruction/RESPLAN_ATTRIBUTION.md',
               'trainerValidation': training.get('validation'),
               'generatedValidation': evaluation,
               'proposalOnly': True,
               'realPlanBenchmarkPassed': False,
               'releaseReady': False,
-              'reason': 'The bootstrap student makes the complete offline Ultra runtime executable and measures each class, but generated raster validation is not evidence of Saudi/Arabic real-plan accuracy. Teacher-consensus + real-plan regression gates remain mandatory.'
+              'reason': 'This stronger bootstrap makes the complete offline Ultra runtime executable and measures each class. It is still proposal-only: generated/ResPlan raster validation is not evidence of Saudi/Arabic real-plan accuracy. Multi-teacher consensus + real-plan regression gates remain mandatory before release.'
           }
           pathlib.Path('/tmp/manzl-student/manzl_reconstruction_student.quality.json').write_text(
               json.dumps(attestation, indent=2), encoding='utf-8'
@@ -255,5 +276,5 @@ jobs:
             echo 'No student asset changes to commit.'
             exit 0
           fi
-          git commit -m 'chore: package proposal-only bootstrap reconstruction student'
+          git commit -m 'chore: package stronger proposal-only reconstruction student'
           git push origin HEAD:${GITHUB_REF_NAME}
