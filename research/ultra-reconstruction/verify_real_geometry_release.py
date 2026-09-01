@@ -1,14 +1,11 @@
 #!/usr/bin/env python3
-"""Verify held-out real-plan end-to-end geometry evidence without duplicating runtime thresholds.
+"""Verify held-out real-plan end-to-end geometry evidence against the exact bound test artifacts.
 
-The Android runtime remains the only authority for wall fidelity, local mismatch/topology integrity and
-reconstruction readiness thresholds. For every opaque sample in ``splits/test`` it exports one stable
-``*.geometry.json`` evidence file through ``EndToEndGeometryReleaseGate``. Every evidence file is bound
-to the exact ONNX candidate SHA256. This verifier checks the candidate's real-training attestation,
-recomputes the ONNX digest, requires exact held-out sample coverage, and requires every production gate
-to have passed.
-
-No source paths, original filenames, raw raster hashes or user labels are accepted as release evidence.
+Android production runtime remains the authority for wall fidelity, mismatch/topology integrity and
+reconstruction readiness. Each opaque test sample exports one ``*.geometry.json`` record bound to the
+exact ONNX SHA256. This verifier additionally requires the current train/validation/test membership and
+aggregate NPZ artifact fingerprints to match the candidate attestation created at training time, and
+rechecks them after reading geometry evidence so the benchmark cannot mutate during verification.
 """
 
 from __future__ import annotations
@@ -19,6 +16,7 @@ import pathlib
 import re
 
 import evaluate_real_student_test
+import release_corpus_scale
 import verify_real_training_inputs
 
 OPAQUE_SAMPLE_ID = re.compile(r"^sample-[0-9a-f]{32}$")
@@ -131,7 +129,6 @@ def load_sample(path: pathlib.Path, expected_id: str, expected_model_sha256: str
             )
     if payload.get("fidelityStatus") != "PASS":
         raise ValueError(f"geometry fidelity status is not PASS for {expected_id}")
-
     for key in RATIO_FIELDS:
         _ratio(payload, key)
     for key in COUNT_FIELDS:
@@ -143,29 +140,34 @@ def verify(split_root: pathlib.Path, evidence_root: pathlib.Path, candidate: pat
     split_root = split_root.resolve()
     candidate = candidate.resolve()
     preflight = verify_real_training_inputs.verify(split_root)
+    release_corpus_scale.require(preflight)
     expected = expected_test_ids(split_root)
-    test_set_fingerprint = preflight["opaqueSplitSetFingerprints"]["test"]
     model_path, training_attestation = evaluate_real_student_test.load_candidate(candidate)
+    evaluate_real_student_test.assert_candidate_split_binding(training_attestation, preflight)
     model_sha256 = training_attestation["sha256"]
+    test_set_fingerprint = preflight["opaqueSplitSetFingerprints"]["test"]
+    test_artifact_fingerprint = preflight["opaqueSplitArtifactFingerprints"]["test"]
+
     evidence = discover_evidence(evidence_root)
     actual = set(evidence)
     missing = sorted(expected - actual)
     unexpected = sorted(actual - expected)
     if missing or unexpected:
         raise RuntimeError(
-            f"geometry evidence set does not exactly match held-out test split; "
+            "geometry evidence set does not exactly match held-out test split; "
             f"missing={missing[:8]} unexpected={unexpected[:8]}"
         )
 
-    samples = [
-        load_sample(evidence[sample_id], sample_id, model_sha256)
-        for sample_id in sorted(expected)
-    ]
+    samples = [load_sample(evidence[sample_id], sample_id, model_sha256) for sample_id in sorted(expected)]
+
+    # Re-measure the private split after consuming geometry evidence. Any mutation invalidates the run.
+    postflight = verify_real_training_inputs.verify(split_root)
+    evaluate_real_student_test.assert_candidate_split_binding(training_attestation, postflight)
+    if postflight["opaqueSplitArtifactFingerprints"] != preflight["opaqueSplitArtifactFingerprints"]:
+        raise RuntimeError("real-plan split artifacts changed while geometry evidence was being verified")
+
     mins = {key: min(float(sample[key]) for sample in samples) for key in RATIO_FIELDS}
-    means = {
-        key: sum(float(sample[key]) for sample in samples) / len(samples)
-        for key in RATIO_FIELDS
-    }
+    means = {key: sum(float(sample[key]) for sample in samples) / len(samples) for key in RATIO_FIELDS}
 
     return {
         "schema": 3,
@@ -174,9 +176,14 @@ def verify(split_root: pathlib.Path, evidence_root: pathlib.Path, candidate: pat
         "modelSha256": model_sha256,
         "modelBytes": model_path.stat().st_size,
         "candidateTrainingAttestationVerified": True,
+        "candidateSplitBindingsVerified": True,
+        "splitArtifactsStableAcrossGeometryVerification": True,
+        "releaseCorpusScaleVerifiedAtGeometryGate": True,
         "geometryEvidenceBoundToExactModelDigest": True,
         "testSetFingerprint": test_set_fingerprint,
+        "testArtifactFingerprint": test_artifact_fingerprint,
         "fingerprintContainsOnlyOpaqueSampleIds": True,
+        "artifactFingerprintIsAggregateOnly": True,
         "testSamples": len(samples),
         "evidenceSamples": len(samples),
         "exactHeldOutSampleCoverage": True,
@@ -190,10 +197,8 @@ def verify(split_root: pathlib.Path, evidence_root: pathlib.Path, candidate: pat
         "releaseGeometryEvidencePassed": True,
         "releaseReady": False,
         "reason": (
-            "Held-out geometry evidence passed using production runtime decisions, exact opaque test-set "
-            "membership, and the verified ONNX candidate digest. Final release still requires combining "
-            "this attestation with the matching semantic final-test attestation and a locked semantic "
-            "acceptance policy."
+            "Held-out geometry evidence passed production runtime decisions for the exact NPZ artifacts bound "
+            "to the candidate at training time, with exact opaque sample coverage and model digest identity."
         ),
     }
 
