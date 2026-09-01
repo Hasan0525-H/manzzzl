@@ -1,0 +1,50 @@
+name: Manzl Teacher Contracts
+
+on:
+  pull_request:
+    paths:
+      - 'research/ultra-reconstruction/**'
+      - '.github/workflows/manzl-teacher-contracts.yml'
+  push:
+    branches:
+      - 'feature/manzl-*'
+    paths:
+      - 'research/ultra-reconstruction/**'
+      - '.github/workflows/manzl-teacher-contracts.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: manzl-teacher-contracts-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  teacher-contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install contract-test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy==1.26.4 opencv-python-headless==4.10.0.84 shapely==2.0.6
+
+      - name: Compile all reconstruction research scripts
+        run: |
+          python -m compileall -q research/ultra-reconstruction
+
+      - name: Verify fail-closed teacher contracts
+        run: |
+          python -m unittest discover \
+            -s research/ultra-reconstruction \
+            -p 'test_*.py' \
+            -v

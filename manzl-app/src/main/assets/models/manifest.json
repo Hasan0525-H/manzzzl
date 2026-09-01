@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "runtime": "offline-only",
+  "required": [
+    {
+      "id": "manzl_reconstruction_student",
+      "path": "models/manzl_reconstruction_student.onnx",
+      "role": "multi-head floor-plan understanding distilled from the teacher ensemble",
+      "status": "mixed-rights-safe-bootstrap-proposal-only",
+      "sha256": "bc174438d47e0f3ff4c7d519443d0f9331fa2640ec693c010a697283a04ff43a",
+      "releaseReady": false,
+      "trainingSource": "two original Manzl procedural corpora + CC BY 4.0 ResPlan geometry renderings",
+      "attribution": "research/ultra-reconstruction/RESPLAN_ATTRIBUTION.md",
+      "generatedValidation": "models/manzl_reconstruction_student.bootstrap-eval.json"
+    },
+    {
+      "id": "mobile_sam_encoder",
+      "path": "models/mobile_sam_encoder.onnx",
+      "role": "high-resolution boundary refinement",
+      "status": "pinned-build-asset",
+      "sourceRevision": "0d3b403339b4674a82493d5e97964dd78089ddc8",
+      "sha256": "580f5fb648ea1062c0aabc26217aed56921985f03f0cbbd852bba81d760cc749"
+    },
+    {
+      "id": "mobile_sam_decoder",
+      "path": "models/mobile_sam_decoder.onnx",
+      "role": "prompted high-resolution boundary masks",
+      "status": "pinned-build-asset",
+      "sourceRevision": "0d3b403339b4674a82493d5e97964dd78089ddc8",
+      "sha256": "93915fc7c993ab9d59ab8c9ccd3bce37f7509c81ab4150a74abd4d2abbd8570d"
+    }
+  ],
+  "policy": {
+    "networkAtRuntime": false,
+    "paidApiFallback": false,
+    "silentQualityDowngrade": false,
+    "geometryAuthority": "source-raster-plus-deterministic-constraint-solver"
+  }
+}

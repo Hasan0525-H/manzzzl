@@ -1,0 +1,163 @@
+{
+  "schema": 12,
+  "checkedAt": "2026-09-01",
+  "costPolicy": "zero-paid-services",
+  "projectUse": "personal-non-commercial",
+  "realCorpusIntake": {
+    "tool": "prepare_private_real_corpus.py",
+    "sourceImagesStayOutsideGit": true,
+    "rawFamilyLabelsStayPrivate": true,
+    "safeManifestContainsSourcePaths": false,
+    "localOnlySourceGroupManifest": "source-groups.local.json",
+    "splitUnit": "underlying-floorplan-family",
+    "duplicateCanonicalRastersRejected": true,
+    "emptyRequestedHoldoutFailsClosed": true
+  },
+  "teachers": [
+    {
+      "id": "raster2seq",
+      "repository": "https://github.com/Cornell-VAILab/Raster2Seq.git",
+      "repositoryRevision": "a6c4e27a68d11d7a459f6e4a2601fd887227dd1a",
+      "modelHub": "https://huggingface.co/haopt/Raster2Seq",
+      "codeLicense": "MIT",
+      "officialModelRepositoryLicense": "MIT",
+      "inputDomain": "raster-floorplan",
+      "role": "primary global raster-to-vector room/polygon teacher",
+      "selectedCheckpoint": {
+        "key": "raster2graph-512",
+        "revision": "6be66814dcc2420f0a3ac87591ba4b6e1b0b44b8",
+        "path": "Raster2Graph-512/checkpoint.pth",
+        "sha256": "5736bf4fe1ebd8ef6cca63ea51c2c3f8971d6d1848dd9049fc5ca251bf565229",
+        "bytes": 1130134240,
+        "publishedRoomF1": 98.1,
+        "inputSize": 512
+      },
+      "runtimeSmoke": {
+        "testedAt": "2026-09-01",
+        "python": "3.10.21",
+        "torch": "2.3.1+cpu",
+        "torchvision": "0.18.1+cpu",
+        "device": "cpu",
+        "cpuReferenceAttention": true,
+        "inputShape": [512, 512, 3],
+        "rawRoomPolygons": 4,
+        "semanticClassesAfterAdaptation": ["room_boundary"],
+        "teacherFormatAfterAdaptation": "raster2seq-r2g512-json-v3-room-boundary-only",
+        "checkpointVerifiedBeforeLoad": true,
+        "sourceRevisionVerifiedBeforeLoad": true,
+        "runtimeCacheBuffersIgnoredOnlyByExactPattern": true,
+        "passed": true
+      },
+      "roomBoundaryEvidence": "predicted room-polygon outlines",
+      "shipInPublicApk": false,
+      "notes": "Official checkpoint repository is marked MIT. The 1.13 GB teacher stays development-time because it is far too large for Android. The pinned source/checkpoint passed a real CPU reference-attention inference and produced four room polygons on a rights-safe smoke floorplan; adaptation emitted room_boundary only. Persisted KV/V cache buffers are ignored only by exact runtime-cache key patterns because upstream regenerates them from each inference sequence. Any other checkpoint/model mismatch remains fail-closed."
+    },
+    {
+      "id": "cubicasa-floortrans",
+      "repository": "https://github.com/CubiCasa/CubiCasa5k.git",
+      "repositoryRevision": "c34440266665a11f4484eb06cd2e4b7d72ad76c1",
+      "checkpointUrl": "https://drive.google.com/file/d/1gRB7ez1e4H7a9Y09lLqRuna0luZO5VRK/view?usp=sharing",
+      "codeAndDataLicense": "CC-BY-NC-4.0",
+      "inputDomain": "raster-floorplan",
+      "role": "independent direct-raster wall/opening/room-segmentation teacher and second room-boundary vote",
+      "selectedCheckpoint": {
+        "fileId": "1gRB7ez1e4H7a9Y09lLqRuna0luZO5VRK",
+        "path": "model_best_val_loss_var.pkl",
+        "sha256": "dd20b4e1bf1d670f2125107b079df06958b1ccd36e49a464ab739aeb00b8e7a2",
+        "bytes": 208651193,
+        "fingerprintedAt": "2026-09-01",
+        "fingerprintMethod": "official Google Drive file downloaded on clean GitHub Actions runner and SHA-256 hashed before pinning"
+      },
+      "runtimeSmoke": {
+        "testedAt": "2026-09-01",
+        "python": "3.11.16",
+        "torch": "2.8.0+cpu",
+        "device": "cpu",
+        "inputShape": [256, 256, 3],
+        "outputProbabilityShape": [5, 256, 256],
+        "teacherFormat": "cubicasa-floortrans-room-icon-v3-pinned",
+        "roomBoundaryMaxProbability": 0.9756348133087158,
+        "checkpointVerifiedBeforeLoad": true,
+        "sourceRevisionVerifiedBeforeLoad": true,
+        "passed": true
+      },
+      "roomBoundaryEvidence": "high-confidence room segmentation transitions supported by wall/railing or a different room class; direct room-to-background transitions abstain",
+      "roomBoundaryQuorumWith": "raster2seq",
+      "shipInPublicApk": false,
+      "notes": "Directly matches the application's raster input domain and provides wall, windows, doors and an independent room-boundary opinion derived from its own room segmentation. The boundary adapter is fail-closed: a crop/background edge alone is not architectural evidence. Because CubiCasa5K is CC-BY-NC-4.0, this teacher is development-time only for the current personal/non-commercial project and is never bundled in the public APK."
+    },
+    {
+      "id": "mitunet-wall",
+      "repository": "https://github.com/aliasstudio/mitunet.git",
+      "repositoryRevision": "ade0aa6ba01c72f02a32a33a605c36b54b264a7a",
+      "codeLicense": "MIT",
+      "pretrainedWeightLicense": "CC-BY-NC-4.0",
+      "inputDomain": "raster-floorplan",
+      "role": "independent high-precision wall segmentation teacher",
+      "selectedCheckpoint": {
+        "revision": "ade0aa6ba01c72f02a32a33a605c36b54b264a7a",
+        "path": "experiments/models/mitunet_finetune_a6_mit_b4_tversky_8864_28E.pth",
+        "sha256": "9c56c86723b0b5099ea63c82b5cac2f9c98c1816536003a78e422b7fcfadfbaf",
+        "bytes": 257383307,
+        "publishedPrecisionPercent": 94.82,
+        "publishedBoundaryIoUPercent": 85.01,
+        "inputSize": 512
+      },
+      "runtimeSmoke": {
+        "testedAt": "2026-09-01",
+        "python": "3.11.16",
+        "torch": "2.8.0+cpu",
+        "segmentationModelsPytorch": "0.5.0",
+        "device": "cpu",
+        "inputShape": [256, 256, 3],
+        "outputProbabilityShape": [2, 256, 256],
+        "teacherFormat": "mitunet-wall-probability-v2-pinned",
+        "wallMaxProbability": 1.0,
+        "checkpointVerifiedBeforeLoad": true,
+        "weightsOnlyLoad": true,
+        "passed": true
+      },
+      "shipInPublicApk": false,
+      "notes": "Allowed only as a personal/non-commercial development-time teacher. It is never bundled in the APK. The pinned checkpoint has passed real CPU inference on the hardened SHA-verifying adapter using the current official modern runtime. If project use becomes commercial, exclude it or retrain equivalent wall supervision from commercial-compatible data."
+    },
+    {
+      "id": "roomformer",
+      "repository": "https://github.com/ywyue/RoomFormer.git",
+      "codeLicense": "MIT",
+      "inputDomain": "topdown-density-map",
+      "role": "polygon/topology architecture reference; not a direct raster evidence source",
+      "shipInPublicApk": false,
+      "notes": "Upstream pretrained models target top-down density maps from 3D scans, not arbitrary raster drawings. Off-the-shelf RoomFormer output is never counted as an independent raster vote. Use only after an explicit raster adaptation/retraining step with compatible data and a separate validation contract."
+    },
+    {
+      "id": "cage",
+      "repository": "https://github.com/ee-Liu/CAGE.git",
+      "codeLicense": "MIT-with-Commons-Clause",
+      "inputDomain": "topdown-density-map",
+      "role": "continuity-aware edge/topology architecture reference and optional raster-adapted teacher",
+      "shipInPublicApk": false,
+      "notes": "Upstream license adds a Commons Clause and requires a separate commercial license for paid/commercial use. Upstream input is not the same as a raster floorplan screenshot, so no off-the-shelf CAGE output is accepted as direct evidence. It may be used only as a personal/non-commercial development-time teacher after explicit raster adaptation."
+    },
+    {
+      "id": "mobilesam",
+      "repository": "https://github.com/ChaoningZhang/MobileSAM.git",
+      "codeLicense": "Apache-2.0",
+      "inputDomain": "general-raster-image",
+      "role": "high-resolution boundary refiner around already measured geometry",
+      "shipInPublicApk": true,
+      "notes": "Use the verified universal ONNX export and retain license/attribution with packaged assets. It cannot create topology on its own."
+    }
+  ],
+  "runtimeLibraries": [
+    {
+      "id": "onnxruntime-android",
+      "coordinate": "com.microsoft.onnxruntime:onnxruntime-android:1.29.0",
+      "license": "MIT"
+    },
+    {
+      "id": "opencv-android",
+      "coordinate": "org.opencv:opencv:5.0.0.1",
+      "license": "Apache-2.0"
+    }
+  ]
+}

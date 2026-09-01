@@ -1,0 +1,216 @@
+#!/usr/bin/env python3
+"""Verify Manzl's private real-plan splits before release-candidate student training.
+
+This gate is intentionally stricter than the generic dataset split checker. A release-candidate training
+run must consume the exact transactional output of ``materialize_private_real_splits.py`` and keep three
+independent partitions: train, validation, and untouched test.
+
+Two aggregate fingerprints are emitted per split:
+* ``opaqueSplitSetFingerprints`` binds membership using opaque sample IDs only.
+* ``opaqueSplitArtifactFingerprints`` binds the exact NPZ bytes behind those opaque IDs.
+
+The artifact fingerprint is one domain-separated digest for the whole split; no per-image/raster hash,
+path, filename from the private source corpus, or raw family label is exposed. This lets later release
+stages detect post-training sample replacement while preserving the privacy model.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import pathlib
+import re
+
+import verify_dataset_split
+
+SPLITS = ("train", "validation", "test")
+OPAQUE_SAMPLE = re.compile(r"^sample-[0-9a-f]{32}\.npz$")
+ARTIFACT_FINGERPRINT_DOMAIN = b"manzl-private-real-split-artifacts-v1\0"
+
+
+def load_report(split_root: pathlib.Path) -> dict:
+    report_path = split_root / "materialization_report.json"
+    if not report_path.is_file():
+        raise FileNotFoundError(f"materialization report is missing: {report_path}")
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("materialization report must be a JSON object")
+    required = {
+        "schema": 2,
+        "pipeline": "private-real-consensus-to-held-out-splits",
+        "splitAssignmentsReverifiedFromSaltAndPolicy": True,
+        "privatePathsStored": False,
+        "rawRasterHashesStored": False,
+        "opaqueOutputFilenames": True,
+        "transactionalMaterialization": True,
+        "existingOutputOverwritten": False,
+        "testReservedForFinalEvaluation": True,
+        "releaseReady": False,
+    }
+    for key, expected in required.items():
+        if payload.get(key) != expected:
+            raise ValueError(
+                f"materialization report contract failed for {key}: "
+                f"{payload.get(key)!r} != {expected!r}"
+            )
+    if not isinstance(payload.get("splitPolicy"), dict):
+        raise ValueError("materialization report is missing splitPolicy")
+    return payload
+
+
+def discover_split(root: pathlib.Path, name: str) -> list[pathlib.Path]:
+    split = root / name
+    if not split.is_dir():
+        raise FileNotFoundError(f"required real-plan split directory is missing: {split}")
+    nested = [path for path in split.rglob("*.npz") if path.parent != split]
+    if nested:
+        raise RuntimeError(
+            f"release real-plan split must contain only opaque flat NPZ files; nested sample found in {name}"
+        )
+    files = sorted(split.glob("*.npz"))
+    if not files:
+        raise RuntimeError(f"release real-plan split contains no samples: {name}")
+    invalid = [path.name for path in files if OPAQUE_SAMPLE.fullmatch(path.name) is None]
+    if invalid:
+        raise RuntimeError(
+            f"release real-plan split contains non-opaque filenames in {name}: {invalid[:8]}"
+        )
+    if len({path.name for path in files}) != len(files):
+        raise RuntimeError(f"duplicate opaque filenames detected in {name}")
+    return files
+
+
+def opaque_set_fingerprint(files: list[pathlib.Path]) -> str:
+    sample_ids = sorted(path.stem for path in files)
+    if not sample_ids:
+        raise RuntimeError("cannot fingerprint an empty release split")
+    payload = ("\n".join(sample_ids) + "\n").encode("ascii")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def opaque_artifact_fingerprint(files: list[pathlib.Path]) -> str:
+    """Bind the exact opaque NPZ artifacts without publishing per-sample content hashes."""
+    if not files:
+        raise RuntimeError("cannot artifact-fingerprint an empty release split")
+    digest = hashlib.sha256()
+    digest.update(ARTIFACT_FINGERPRINT_DOMAIN)
+    for path in sorted(files, key=lambda item: item.name):
+        if OPAQUE_SAMPLE.fullmatch(path.name) is None:
+            raise RuntimeError(f"artifact fingerprint received a non-opaque sample: {path.name}")
+        raw = path.read_bytes()
+        if not raw:
+            raise RuntimeError(f"release sample is empty while artifact-fingerprinting: {path.name}")
+        digest.update(path.name.encode("ascii"))
+        digest.update(b"\0")
+        digest.update(len(raw).to_bytes(8, "big"))
+        digest.update(raw)
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def measured_group_index(root: pathlib.Path) -> dict[str, list[pathlib.Path]]:
+    _, _, groups = verify_dataset_split.index_split(root)
+    if not groups:
+        raise RuntimeError(f"real-plan split has no source_group provenance: {root.name}")
+    return groups
+
+
+def variant_density(groups: dict[str, list[pathlib.Path]]) -> dict:
+    sizes = sorted(len(paths) for paths in groups.values())
+    if not sizes:
+        raise RuntimeError("cannot measure variant density without source groups")
+    return {
+        "sourceGroups": len(sizes),
+        "samples": sum(sizes),
+        "minimumSamplesPerSourceGroup": min(sizes),
+        "maximumSamplesPerSourceGroup": max(sizes),
+        "meanSamplesPerSourceGroup": sum(sizes) / len(sizes),
+        "groupsWithMultipleVariants": sum(1 for size in sizes if size > 1),
+    }
+
+
+def verify(split_root: pathlib.Path) -> dict:
+    split_root = split_root.resolve()
+    report = load_report(split_root)
+    files = {name: discover_split(split_root, name) for name in SPLITS}
+
+    measured_samples = {name: len(files[name]) for name in SPLITS}
+    expected_samples = report.get("samplesBySplit")
+    if measured_samples != expected_samples:
+        raise RuntimeError(
+            f"real-plan split sample counts disagree with materialization report: "
+            f"{measured_samples} != {expected_samples}"
+        )
+    if int(report.get("samples", -1)) != sum(measured_samples.values()):
+        raise RuntimeError("materialization report total sample count is inconsistent")
+
+    group_indexes = {name: measured_group_index(split_root / name) for name in SPLITS}
+    measured_groups = {name: len(groups) for name, groups in group_indexes.items()}
+    expected_groups = report.get("sourceGroupsBySplit")
+    if measured_groups != expected_groups:
+        raise RuntimeError(
+            f"real-plan source-group counts disagree with materialization report: "
+            f"{measured_groups} != {expected_groups}"
+        )
+    density = {name: variant_density(group_indexes[name]) for name in SPLITS}
+
+    pairwise = {}
+    for left_index, left in enumerate(SPLITS):
+        for right in SPLITS[left_index + 1:]:
+            pairwise[f"{left}_vs_{right}"] = verify_dataset_split.verify_split_independence(
+                split_root / left,
+                split_root / right,
+            )
+
+    all_names = [path.name for name in SPLITS for path in files[name]]
+    if len(all_names) != len(set(all_names)):
+        raise RuntimeError("one opaque sampleId/filename appears in more than one held-out split")
+
+    membership_fingerprints = {name: opaque_set_fingerprint(files[name]) for name in SPLITS}
+    artifact_fingerprints = {name: opaque_artifact_fingerprint(files[name]) for name in SPLITS}
+    return {
+        "schema": 2,
+        "pipeline": "private-real-release-training-input-gate",
+        "splitRoot": split_root.name,
+        "trainSamples": measured_samples["train"],
+        "validationSamples": measured_samples["validation"],
+        "testSamples": measured_samples["test"],
+        "trainSourceGroups": measured_groups["train"],
+        "validationSourceGroups": measured_groups["validation"],
+        "testSourceGroups": measured_groups["test"],
+        "variantDensityBySplit": density,
+        "opaqueSplitSetFingerprints": membership_fingerprints,
+        "opaqueSplitArtifactFingerprints": artifact_fingerprints,
+        "fingerprintContainsOnlyOpaqueSampleIds": True,
+        "artifactFingerprintIsAggregateOnly": True,
+        "perSampleContentHashesStored": False,
+        "pairwiseLeakageChecks": pairwise,
+        "trainerMayRead": ["train", "validation"],
+        "trainerMustNotRead": ["test"],
+        "testReservedForFinalEvaluation": True,
+        "materializationContractVerified": True,
+        "passed": True,
+    }
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--splits", type=pathlib.Path, required=True)
+    parser.add_argument("--output", type=pathlib.Path)
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    report = verify(args.splits)
+    text = json.dumps(report, indent=2, sort_keys=True)
+    if args.output is not None:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(text, encoding="utf-8")
+    print(text)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

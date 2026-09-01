@@ -1,0 +1,272 @@
+{
+  "schema": 5,
+  "model": "manzl_reconstruction_student.onnx",
+  "sha256": "bc174438d47e0f3ff4c7d519443d0f9331fa2640ec693c010a697283a04ff43a",
+  "bytes": 6217979,
+  "trainingSource": "two original Manzl procedural corpora + CC BY 4.0 ResPlan geometry renderings",
+  "trainingSamples": 480,
+  "validationSamples": 128,
+  "architectureWidth": 16,
+  "maxEpochs": 8,
+  "resPlanAttribution": "research/ultra-reconstruction/RESPLAN_ATTRIBUTION.md",
+  "trainerValidation": {
+    "loss": 1.006628040340729,
+    "mean_iou": 0.44074419140815735,
+    "foreground_mean_iou": 0.37438151240348816,
+    "critical_mean_iou": 0.29746511578559875
+  },
+  "generatedValidation": {
+    "corners": {
+      "evaluatedPixels": 25165824,
+      "f1": 0.4052990766760337,
+      "fn": 25680,
+      "fp": 3948,
+      "meanAbsoluteError": 0.0030707744699611794,
+      "precision": 0.7188835089718029,
+      "recall": 0.2822003577817531,
+      "runtimeThreshold": 0.56,
+      "supportPixels": 35776,
+      "thresholdMatchesAndroidCornerSnap": true,
+      "tp": 10096
+    },
+    "domain": "generated-validation-not-real-plan-benchmark",
+    "inputSize": 512,
+    "meanIoU": 0.44074424342124685,
+    "orientation": {
+      "meanAbsCosine": 0.9358750622544971,
+      "meanAngularErrorDegrees": 12.67572245186311,
+      "signInvariant": true,
+      "supportPixels": 1848802
+    },
+    "perClass": {
+      "background": {
+        "fn": 2728385,
+        "fp": 168541,
+        "intersection": 27688273,
+        "iou": 0.9052834019487661,
+        "precision": 0.9939497388323015,
+        "present": true,
+        "recall": 0.9102996456744196,
+        "supportPixels": 30416658,
+        "tp": 27688273,
+        "union": 30585199
+      },
+      "column": {
+        "fn": 7995,
+        "fp": 1807,
+        "intersection": 25528,
+        "iou": 0.7225587319558449,
+        "precision": 0.9338942747393452,
+        "present": true,
+        "recall": 0.761507025027593,
+        "supportPixels": 33523,
+        "tp": 25528,
+        "union": 35330
+      },
+      "courtyard": {
+        "fn": 78281,
+        "fp": 2854732,
+        "intersection": 56461,
+        "iou": 0.018886600117612663,
+        "precision": 0.019394454438438125,
+        "present": true,
+        "recall": 0.4190304433658399,
+        "supportPixels": 134742,
+        "tp": 56461,
+        "union": 2989474
+      },
+      "door": {
+        "fn": 79898,
+        "fp": 5269,
+        "intersection": 33356,
+        "iou": 0.2814306084051197,
+        "precision": 0.8635857605177993,
+        "present": true,
+        "recall": 0.29452381372843345,
+        "supportPixels": 113254,
+        "tp": 33356,
+        "union": 118523
+      },
+      "room_boundary": {
+        "fn": 0,
+        "fp": 0,
+        "intersection": 0,
+        "iou": null,
+        "precision": 0.0,
+        "present": false,
+        "recall": 0.0,
+        "supportPixels": 0,
+        "tp": 0,
+        "union": 0
+      },
+      "shaft": {
+        "fn": 103981,
+        "fp": 118379,
+        "intersection": 12852,
+        "iou": 0.05464006938421509,
+        "precision": 0.09793417713802378,
+        "present": true,
+        "recall": 0.11000316691345767,
+        "supportPixels": 116833,
+        "tp": 12852,
+        "union": 235212
+      },
+      "stair": {
+        "fn": 68872,
+        "fp": 39109,
+        "intersection": 117486,
+        "iou": 0.5210784726811463,
+        "precision": 0.7502538395223347,
+        "present": true,
+        "recall": 0.63043174964316,
+        "supportPixels": 186358,
+        "tp": 117486,
+        "union": 225467
+      },
+      "wall_face": {
+        "fn": 222716,
+        "fp": 206303,
+        "intersection": 2185037,
+        "iou": 0.8358799505442882,
+        "precision": 0.9137291225839905,
+        "present": true,
+        "recall": 0.9075004786620554,
+        "supportPixels": 2407753,
+        "tp": 2185037,
+        "union": 2614056
+      },
+      "window": {
+        "fn": 116019,
+        "fp": 12007,
+        "intersection": 29292,
+        "iou": 0.1861961123329816,
+        "precision": 0.7092665681977772,
+        "present": true,
+        "recall": 0.20158143567933604,
+        "supportPixels": 145311,
+        "tp": 29292,
+        "union": 157318
+      }
+    },
+    "releaseReady": false,
+    "samples": 128,
+    "schema": 2,
+    "semantic": {
+      "meanIoU": 0.44074424342124685,
+      "perClass": {
+        "background": {
+          "fn": 2728385,
+          "fp": 168541,
+          "intersection": 27688273,
+          "iou": 0.9052834019487661,
+          "precision": 0.9939497388323015,
+          "present": true,
+          "recall": 0.9102996456744196,
+          "supportPixels": 30416658,
+          "tp": 27688273,
+          "union": 30585199
+        },
+        "column": {
+          "fn": 7995,
+          "fp": 1807,
+          "intersection": 25528,
+          "iou": 0.7225587319558449,
+          "precision": 0.9338942747393452,
+          "present": true,
+          "recall": 0.761507025027593,
+          "supportPixels": 33523,
+          "tp": 25528,
+          "union": 35330
+        },
+        "courtyard": {
+          "fn": 78281,
+          "fp": 2854732,
+          "intersection": 56461,
+          "iou": 0.018886600117612663,
+          "precision": 0.019394454438438125,
+          "present": true,
+          "recall": 0.4190304433658399,
+          "supportPixels": 134742,
+          "tp": 56461,
+          "union": 2989474
+        },
+        "door": {
+          "fn": 79898,
+          "fp": 5269,
+          "intersection": 33356,
+          "iou": 0.2814306084051197,
+          "precision": 0.8635857605177993,
+          "present": true,
+          "recall": 0.29452381372843345,
+          "supportPixels": 113254,
+          "tp": 33356,
+          "union": 118523
+        },
+        "room_boundary": {
+          "fn": 0,
+          "fp": 0,
+          "intersection": 0,
+          "iou": null,
+          "precision": 0.0,
+          "present": false,
+          "recall": 0.0,
+          "supportPixels": 0,
+          "tp": 0,
+          "union": 0
+        },
+        "shaft": {
+          "fn": 103981,
+          "fp": 118379,
+          "intersection": 12852,
+          "iou": 0.05464006938421509,
+          "precision": 0.09793417713802378,
+          "present": true,
+          "recall": 0.11000316691345767,
+          "supportPixels": 116833,
+          "tp": 12852,
+          "union": 235212
+        },
+        "stair": {
+          "fn": 68872,
+          "fp": 39109,
+          "intersection": 117486,
+          "iou": 0.5210784726811463,
+          "precision": 0.7502538395223347,
+          "present": true,
+          "recall": 0.63043174964316,
+          "supportPixels": 186358,
+          "tp": 117486,
+          "union": 225467
+        },
+        "wall_face": {
+          "fn": 222716,
+          "fp": 206303,
+          "intersection": 2185037,
+          "iou": 0.8358799505442882,
+          "precision": 0.9137291225839905,
+          "present": true,
+          "recall": 0.9075004786620554,
+          "supportPixels": 2407753,
+          "tp": 2185037,
+          "union": 2614056
+        },
+        "window": {
+          "fn": 116019,
+          "fp": 12007,
+          "intersection": 29292,
+          "iou": 0.1861961123329816,
+          "precision": 0.7092665681977772,
+          "present": true,
+          "recall": 0.20158143567933604,
+          "supportPixels": 145311,
+          "tp": 29292,
+          "union": 157318
+        }
+      }
+    }
+  },
+  "proposalOnly": true,
+  "realPlanBenchmarkPassed": false,
+  "releaseReady": false,
+  "reason": "This stronger bootstrap makes the complete offline Ultra runtime executable and measures each class. It is still proposal-only: generated/ResPlan raster validation is not evidence of Saudi/Arabic real-plan accuracy. Multi-teacher consensus + real-plan regression gates remain mandatory before release."
+}

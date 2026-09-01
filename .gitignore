@@ -34,3 +34,17 @@ app/build/**
 .idea/copilot.data.migration.ask2agent.xml
 /.kotlin
 /tmp_log
+
+# Ultra reconstruction teacher/model development caches. Heavy or redistribution-restricted
+# checkpoints stay local and must never be committed to this public repository.
+/.cache/manzl-teachers/
+/research/ultra-reconstruction/.cache/
+/research/ultra-reconstruction/cache/
+/research/ultra-reconstruction/checkpoints/
+
+# Runtime ONNX binaries are normally generated/downloaded with verified hashes during the build
+# pipeline. MobileSAM and any teacher-derived/restricted model remain ignored. The one explicit
+# exception is Manzl's own rights-safe student, trained only from original procedural supervision in
+# the public bootstrap workflow; keeping that model tracked makes the offline APK actually usable.
+/manzl-app/src/main/assets/models/*.onnx
+!/manzl-app/src/main/assets/models/manzl_reconstruction_student.onnx

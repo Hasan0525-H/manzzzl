@@ -1,0 +1,61 @@
+{
+  "version": 1,
+  "purpose": "Development-only reference catalog. URLs and extracted factual design signals are not runtime dependencies.",
+  "rights_policy": "Do not bundle or redistribute third-party photos/plans unless a verified redistributable license explicitly allows it. Extract only factual/design priors and attribution metadata.",
+  "references": [
+    {
+      "id": "adc_identity_modernity",
+      "source": "Saudi Architecture and Design Commission",
+      "url": "https://archdesign.moc.gov.sa/en/faq",
+      "signals": [
+        "reflect Saudi architectural culture",
+        "keep pace with contemporary architecture and design",
+        "innovation and research",
+        "environmental sustainability"
+      ]
+    },
+    {
+      "id": "king_salman_charter",
+      "source": "Saudi Ministry of Culture - King Salman Charter material",
+      "url": "https://engage.moc.gov.sa/kscau-ambassadors/",
+      "signals": [
+        "authenticity as a basis for creativity",
+        "flexibility toward the new",
+        "respond to time, place and materials"
+      ]
+    },
+    {
+      "id": "riyadh_assila_hq",
+      "source": "ArchDaily - Assila HQ / Peter Ruge Architekten",
+      "url": "https://www.archdaily.com/1012216/assila-hq-peter-ruge-architekten",
+      "signals": [
+        "majlis/reception and dining as important public-facing spaces",
+        "local sandstone palette",
+        "sun-oriented vertical louvers",
+        "desert planting and stone landscape"
+      ]
+    },
+    {
+      "id": "dammam_marissa_villas",
+      "source": "ArchDaily - Marissa Villas open call, Dammam",
+      "url": "https://www.archdaily.com/946670/open-call-marissa-villas-town-houses-dammam-city-ashati-district",
+      "signals": [
+        "contemporary Saudi villa language",
+        "efficient smart living",
+        "comfort and high-quality living experience",
+        "flexible contemporary interior expression"
+      ]
+    },
+    {
+      "id": "alula_desert_dwelling",
+      "source": "ArchDaily - Lina Ghotmeh Architecture, AlUla dwelling concept",
+      "url": "https://www.archdaily.com/1034106/lina-ghotmeh-architecture-envisions-a-landscape-inspired-desert-dwelling-in-alula-saudi-arabia",
+      "signals": [
+        "public-to-private spatial sequence",
+        "majlis integrated into dwelling narrative",
+        "earth/mineral material language",
+        "strong relationship to desert landscape"
+      ]
+    }
+  ]
+}
