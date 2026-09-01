@@ -9,6 +9,11 @@ The output deliberately declares only ``background`` and ``wall_face``. Every ot
 class is absent from ``semantic_classes`` and therefore becomes an abstention in
 ``build_teacher_consensus.py``.
 
+The exact checkpoint size/SHA-256 is verified before PyTorch deserialization. The architecture package
+is also pinned to segmentation-models-pytorch 0.5.0, matching the official MitUNet requirements at the
+pinned source revision. A clean GitHub Actions smoke test has exercised the real 257 MB checkpoint on
+PyTorch 2.8.0+cpu and produced consensus-ready output.
+
 Recommended pairing with Raster2Seq:
 
   1. Run Raster2Seq on a source corpus with ``--save_pred``.
@@ -29,7 +34,10 @@ from typing import Iterable
 import cv2
 import numpy as np
 
+from fetch_mitunet_teacher import verify as verify_checkpoint
+
 LOCAL_CLASSES = ["background", "wall_face"]
+PINNED_SMP_VERSION = "0.5.0"
 DEFAULT_CHECKPOINT = pathlib.Path(
     "research/ultra-reconstruction/.cache/mitunet/mitunet_wall_teacher.pth"
 )
@@ -88,6 +96,12 @@ def load_model(checkpoint: pathlib.Path, device_name: str):
             f"MitUNet checkpoint is missing: {checkpoint}. "
             "Run fetch_mitunet_teacher.py first."
         )
+    verify_checkpoint(checkpoint)
+    if str(getattr(smp, "__version__", "")) != PINNED_SMP_VERSION:
+        raise RuntimeError(
+            "MitUNet requires segmentation-models-pytorch=="
+            f"{PINNED_SMP_VERSION}; got {getattr(smp, '__version__', 'unknown')}"
+        )
 
     if device_name == "auto":
         device_name = "cuda" if torch.cuda.is_available() else "cpu"
@@ -106,7 +120,13 @@ def load_model(checkpoint: pathlib.Path, device_name: str):
     )
     model.encoder = auxiliary_segformer.encoder
 
-    state = torch.load(checkpoint, map_location=device)
+    # The bytes are pinned and verified above. The published file is a tensor state_dict; explicit
+    # weights_only=True keeps deserialization fail-closed on modern PyTorch.
+    try:
+        state = torch.load(checkpoint, map_location=device, weights_only=True)
+    except TypeError:
+        # Compatibility for older PyTorch APIs; byte verification still happens before load.
+        state = torch.load(checkpoint, map_location=device)
     if isinstance(state, dict) and "state_dict" in state and isinstance(state["state_dict"], dict):
         state = state["state_dict"]
     if not isinstance(state, dict):
@@ -174,7 +194,7 @@ def save_prediction(
         semantic_classes=np.asarray(LOCAL_CLASSES, dtype="U32"),
         confidence=confidence,
         valid_mask=valid_mask,
-        teacher_format=np.asarray(["mitunet-wall-probability-v1"], dtype="U48"),
+        teacher_format=np.asarray(["mitunet-wall-probability-v2-pinned"], dtype="U48"),
     )
 
 
