@@ -13,9 +13,10 @@ import kotlin.math.sqrt
  * Final reconstruction gate after semantic opening classification and room topology.
  *
  * Geometry fidelity alone can be high while the resulting house is still visibly wrong: an
- * opening-sized gap can remain unclassified and become a floor-to-ceiling hole, or room topology can
- * be too sparse and force a fake rectangular floor slab. This gate blocks those cases before any 3D
- * mesh is exposed to the user.
+ * opening-sized gap can remain unclassified and become a floor-to-ceiling hole, room topology can be
+ * too sparse and force a fake rectangular floor slab, or a detected vertical service/elevator shaft
+ * can be silently filled because the current mesh path does not yet support polygon holes through a
+ * floor slab. This gate blocks those cases before any 3D mesh is exposed to the user.
  *
  * It never invents geometry. It only asks whether the measured geometry has enough evidence to be
  * represented faithfully. Ambiguous cases go back to the 2D review surface.
@@ -24,11 +25,13 @@ internal object ReconstructionReadinessGate {
 
     data class Report(
         val unresolvedOpenings: List<MeasuredOpeningGapDetector.Gap>,
+        val unsupportedVerticalVoids: List<RoomRegion>,
         val trustedRoomCoverage: Float,
         val trustedRoomCount: Int,
     ) {
         val ready: Boolean
             get() = unresolvedOpenings.isEmpty() &&
+                unsupportedVerticalVoids.isEmpty() &&
                 trustedRoomCount > 0 &&
                 trustedRoomCoverage >= MIN_TRUSTED_ROOM_COVERAGE
     }
@@ -46,9 +49,11 @@ internal object ReconstructionReadinessGate {
         }
 
         val trustedRooms = plan.rooms.filter(::isTrustedRoom)
+        val verticalVoids = trustedRooms.filter(::isUnsupportedVerticalVoid)
         val coverage = sampledRoomCoverage(plan, trustedRooms)
         return Report(
             unresolvedOpenings = unresolved,
+            unsupportedVerticalVoids = verticalVoids,
             trustedRoomCoverage = coverage,
             trustedRoomCount = trustedRooms.size,
         )
@@ -62,6 +67,12 @@ internal object ReconstructionReadinessGate {
             val strongest = report.unresolvedOpenings.maxByOrNull { it.supportConfidence }
             val widthCm = ((strongest?.widthMeters ?: 0f) * 100f).toInt().coerceAtLeast(1)
             return "أوقفت تحويل المخطط إلى 3D لأن هناك ${report.unresolvedOpenings.size} فتحة جدار مقاسة لم تُصنّف بثقة كباب أو نافذة. أقوى فتحة بعرض يقارب $widthCm سم. تركها سيُنتج فتحة كاملة في الجدار أو باباً مخترعاً، لذلك لن أعرض منزلاً خاطئاً؛ راجع الفتحات المعلّمة في المخطط."
+        }
+
+        if (report.unsupportedVerticalVoids.isNotEmpty()) {
+            val label = report.unsupportedVerticalVoids.first().label?.trim().orEmpty()
+            val suffix = if (label.isBlank()) "" else " ($label)"
+            return "أوقفت تحويل المخطط إلى 3D لأنني اكتشفت فراغاً رأسياً/شافتاً موثوقاً$suffix، ومحرك الأرضيات الحالي لا يملك بعد قصّ polygon hole مضموناً عبر البلاطة. ملء هذا الفراغ سيغيّر البيت الحقيقي، لذلك لن أتجاهله أو أغطيه بأرضية وهمية."
         }
 
         val coverage = (report.trustedRoomCoverage * 100f).toInt().coerceIn(0, 100)
@@ -133,6 +144,12 @@ internal object ReconstructionReadinessGate {
             room.polygon.size >= 3 &&
             polygonArea(room.polygon) >= MIN_TRUSTED_ROOM_AREA_SQ_METERS
 
+    private fun isUnsupportedVerticalVoid(room: RoomRegion): Boolean {
+        val label = room.label?.trim()?.lowercase().orEmpty()
+        if (label.isBlank()) return false
+        return VERTICAL_VOID_LABELS.any { token -> label.contains(token) }
+    }
+
     /**
      * Approximate polygon-union coverage on a fixed grid. This avoids double-counting overlapping
      * room hypotheses and is deterministic/cheap enough for every floor on-device.
@@ -193,6 +210,17 @@ internal object ReconstructionReadinessGate {
         if (result < 0f) result += 180f
         return result
     }
+
+    private val VERTICAL_VOID_LABELS = listOf(
+        "shaft",
+        "service shaft",
+        "duct shaft",
+        "elevator shaft",
+        "lift shaft",
+        "شافت",
+        "بئر مصعد",
+        "فتحة مصعد",
+    )
 
     private const val MIN_REVIEW_GAP_METERS = 0.42f
     private const val MAX_REVIEW_GAP_METERS = 4.20f
