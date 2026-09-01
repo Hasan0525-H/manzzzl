@@ -12,10 +12,10 @@ classes. Manzl consumes only evidence that maps cleanly into its mobile reconstr
 
 ``room_boundary`` is intentionally derived from FloorTrans's own room segmentation rather than from
 Raster2Seq geometry. It therefore provides a second independent raster-domain vote for room polygon
-edges. Only transitions that touch a confidently predicted room interior are eligible: background to
-wall, wall to wall and other purely structural transitions do not manufacture room boundaries. A
-small max-filter band aligns the segmentation edge with Raster2Seq's thin polygon-outline evidence;
-consensus still requires the two teachers to agree at the same pixels.
+edges. A transition is eligible only when a room meets a predicted wall/railing or when two different
+confident room classes meet. Room-to-background transitions alone are not architectural evidence and
+cannot manufacture a boundary. A small max-filter band aligns the segmentation edge with Raster2Seq's
+thin polygon-outline evidence; consensus still requires the two teachers to agree at the same pixels.
 
 The teacher deliberately does not claim stairs, columns, courtyards or shafts. Those classes remain
 abstentions until an independent teacher actually supports them.
@@ -61,6 +61,7 @@ ICON_DOOR = 2
 LOCAL_CLASSES = ["background", "wall_face", "door", "window", "room_boundary"]
 LOCAL_CLASS = {name: index for index, name in enumerate(LOCAL_CLASSES)}
 STRUCTURAL_ROOM_CLASSES = frozenset({ROOM_BACKGROUND, ROOM_WALL, ROOM_RAILING})
+BOUNDARY_BARRIER_CLASSES = frozenset({ROOM_WALL, ROOM_RAILING})
 
 
 def discover_images(root: pathlib.Path, recursive: bool) -> list[pathlib.Path]:
@@ -96,11 +97,12 @@ def normalize_distribution(values: np.ndarray, axis: int = 0) -> np.ndarray:
 def derive_room_boundary_probability(room_probs: np.ndarray) -> np.ndarray:
     """Return a narrow, confidence-calibrated boundary band from FloorTrans room segmentation.
 
-    FloorTrans predicts semantic room classes, not room instances. Room-vs-wall/background transitions
-    still expose the room polygon perimeter, while different confident room labels can expose an
-    interior room-to-room boundary. Same-label adjacent rooms remain separable through their wall
-    strip. Requiring at least one side of every transition to be a non-structural room class prevents
-    wall/background texture changes from being promoted to room geometry.
+    FloorTrans predicts semantic room classes, not room instances. A room-to-wall/railing transition
+    exposes an architecturally supported room perimeter, while two different confident room labels can
+    expose an interior room-to-room edge such as an opening between semantic spaces. Same-label rooms
+    remain separable through their intervening wall strip. Direct room-to-background transitions are
+    intentionally ignored: without a wall or another room they are segmentation/crop evidence, not a
+    trustworthy architectural boundary.
     """
     rooms = np.asarray(room_probs, dtype=np.float32)
     if rooms.ndim != 3 or rooms.shape[0] != ROOM_CHANNELS:
@@ -112,15 +114,24 @@ def derive_room_boundary_probability(room_probs: np.ndarray) -> np.ndarray:
     labels = np.argmax(rooms, axis=0).astype(np.int16)
     confidence = np.max(rooms, axis=0).astype(np.float32)
     interior = ~np.isin(labels, np.asarray(sorted(STRUCTURAL_ROOM_CLASSES), dtype=np.int16))
+    barrier = np.isin(labels, np.asarray(sorted(BOUNDARY_BARRIER_CLASSES), dtype=np.int16))
     boundary = np.zeros(labels.shape, dtype=np.float32)
 
     def accumulate(a_slice, b_slice) -> None:
         a_label = labels[a_slice]
         b_label = labels[b_slice]
+        a_room = interior[a_slice]
+        b_room = interior[b_slice]
+        a_barrier = barrier[a_slice]
+        b_barrier = barrier[b_slice]
         transition = a_label != b_label
-        touches_room = interior[a_slice] | interior[b_slice]
+        architecturally_supported = (
+            (a_room & b_barrier)
+            | (b_room & a_barrier)
+            | (a_room & b_room & transition)
+        )
         pair_confidence = np.minimum(confidence[a_slice], confidence[b_slice])
-        evidence = np.where(transition & touches_room, pair_confidence, 0.0).astype(np.float32)
+        evidence = np.where(transition & architecturally_supported, pair_confidence, 0.0).astype(np.float32)
         boundary[a_slice] = np.maximum(boundary[a_slice], evidence)
         boundary[b_slice] = np.maximum(boundary[b_slice], evidence)
 
@@ -130,7 +141,7 @@ def derive_room_boundary_probability(room_probs: np.ndarray) -> np.ndarray:
         accumulate((slice(None, -1), slice(None)), (slice(1, None), slice(None)))
 
     # Raster2Seq defaults to a three-pixel polygon outline. A 3x3 max filter makes the segmentation
-    # transition comparable without moving the inferred edge or inventing evidence away from it.
+    # transition comparable without moving the inferred edge or inventing evidence far from it.
     if boundary.size:
         boundary = cv2.dilate(boundary, np.ones((3, 3), dtype=np.uint8), iterations=1)
     return np.clip(boundary, 0.0, 1.0).astype(np.float32)
