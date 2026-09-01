@@ -1,21 +1,14 @@
 #!/usr/bin/env python3
-"""Build Manzl's real-plan consensus from the three complementary pinned teacher streams.
+"""Build Manzl's strict real-plan teacher consensus with source-family provenance.
 
-This is the strict local bridge used after teacher inference:
+Raster2Seq, MitUNet and CubiCasa must emit the exact same relative NPZ sample set over the exact same
+source raster. Real-corpus samples must also have a separate source-group manifest so all scans,
+screenshots, crops or exports derived from one underlying floor plan keep one stable family identity.
+That identity is copied into each consensus NPZ and can later be used to block train/validation family
+leakage.
 
-    Raster2Seq  -> doors, windows, room-boundary topology
-    MitUNet     -> wall/background probability
-    CubiCasa    -> wall/background + door/window probability
-
-The script intentionally requires the *same* relative NPZ sample set from all three teachers and
-verifies that every teacher stored the exact same source raster. A same-sized but different crop is a
-hard failure because spatially misregistered pseudo-labels would poison the mobile student.
-
-No quality gate is relaxed here. Semantic classes still require the quorum configured in
-``build_teacher_consensus.py`` (two independent votes by default), so Raster2Seq-only room-boundary
-labels remain unsupervised until a second independent polygon teacher is available. That is safer than
-promoting single-teacher topology into release training.
-
+No quality gate is relaxed here. Semantic classes still require independent quorum. Raster2Seq-only
+room-boundary labels remain unsupervised until another independent polygon/topology teacher exists.
 Everything runs locally; no cloud or paid API is used.
 """
 
@@ -108,6 +101,47 @@ def validate_exact_alignment(teachers: list[TeacherRoot]) -> list[pathlib.Path]:
     return ordered
 
 
+def load_source_groups(path: pathlib.Path, samples: list[pathlib.Path]) -> dict[pathlib.Path, str]:
+    """Load an exact relative-sample -> underlying-floor-plan-family mapping."""
+    if not path.is_file():
+        raise FileNotFoundError(f"source-group manifest does not exist: {path}")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(payload, dict) and "groups" in payload:
+        if payload.get("schema") not in (None, 1):
+            raise ValueError(f"unsupported source-group manifest schema: {payload.get('schema')}")
+        payload = payload["groups"]
+    if not isinstance(payload, dict):
+        raise ValueError("source-group manifest must be an object or {schema:1, groups:{...}}")
+
+    groups: dict[pathlib.Path, str] = {}
+    for raw_relative, raw_group in payload.items():
+        if not isinstance(raw_relative, str) or not raw_relative.strip():
+            raise ValueError("source-group manifest contains an invalid relative path")
+        relative = pathlib.PurePosixPath(raw_relative.strip())
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ValueError(f"source-group path must be safe and relative: {raw_relative!r}")
+        normalized = pathlib.Path(*relative.parts)
+        if not isinstance(raw_group, str) or not raw_group.strip():
+            raise ValueError(f"source group must be a non-empty string for {raw_relative!r}")
+        group = raw_group.strip()
+        if len(group) > 256:
+            raise ValueError(f"source group is unreasonably long for {raw_relative!r}")
+        if normalized in groups:
+            raise ValueError(f"duplicate normalized source-group path: {raw_relative!r}")
+        groups[normalized] = group
+
+    expected = set(samples)
+    actual = set(groups)
+    if actual != expected:
+        missing = sorted(expected - actual)[:10]
+        extra = sorted(actual - expected)[:10]
+        raise RuntimeError(
+            "source-group manifest must cover the exact teacher sample set; "
+            f"missing={missing} extra={extra}"
+        )
+    return groups
+
+
 def class_supervision_counts(semantic: np.ndarray, supervision: np.ndarray) -> dict[str, int]:
     active = supervision > 0.5
     return {
@@ -123,11 +157,9 @@ def build(args: argparse.Namespace) -> dict:
         TeacherRoot("cubicasa", args.cubicasa),
     ]
     samples = validate_exact_alignment(teachers)
+    source_groups = load_source_groups(args.source_groups, samples)
 
-    specs = [
-        consensus.TeacherSpec(teacher.teacher_id, teacher.root, 1.0)
-        for teacher in teachers
-    ]
+    specs = [consensus.TeacherSpec(teacher.teacher_id, teacher.root, 1.0) for teacher in teachers]
     build_args = argparse.Namespace(
         min_votes=args.min_votes,
         critical_min_votes=args.critical_min_votes,
@@ -154,6 +186,7 @@ def build(args: argparse.Namespace) -> dict:
         output = consensus.build_sample(predictions, build_args)
         if "image" not in output:
             raise RuntimeError(f"Consensus sample unexpectedly lost source image: {relative}")
+        output["source_group"] = np.asarray(source_groups[relative])
 
         destination = args.output / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -168,10 +201,13 @@ def build(args: argparse.Namespace) -> dict:
 
     coverage = supervised_pixels / max(total_pixels, 1)
     manifest = {
-        "schema": 1,
+        "schema": 2,
         "pipeline": "raster2seq+mitunet+cubicasa-fail-closed",
         "teacherIds": list(TEACHER_ORDER),
         "samples": len(samples),
+        "sourceGroupManifest": str(args.source_groups),
+        "sourceGroupCoverage": 1.0,
+        "uniqueSourceGroups": len(set(source_groups.values())),
         "supervisedPixels": supervised_pixels,
         "totalPixels": total_pixels,
         "supervisionCoverage": coverage,
@@ -185,11 +221,11 @@ def build(args: argparse.Namespace) -> dict:
             "maxCornerSpread": args.max_corner_spread,
             "orientationMinVotes": args.orientation_min_votes,
         },
-        "alignment": "exact-relative-set + exact-source-raster",
+        "alignment": "exact-relative-set + exact-source-raster + exact-source-group-manifest",
         "releaseReady": False,
         "reason": (
-            "Teacher consensus is training evidence only. Real Saudi/Arabic plan benchmark and runtime "
-            "reconstruction gates must pass before Ultra release readiness can be asserted."
+            "Teacher consensus is training evidence only. Real Saudi/Arabic held-out reconstruction "
+            "gates must pass before Ultra release readiness can be asserted."
         ),
     }
     manifest_path = args.output / "consensus_manifest.json"
@@ -202,6 +238,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--raster2seq", type=pathlib.Path, required=True)
     parser.add_argument("--mitunet", type=pathlib.Path, required=True)
     parser.add_argument("--cubicasa", type=pathlib.Path, required=True)
+    parser.add_argument(
+        "--source-groups",
+        type=pathlib.Path,
+        required=True,
+        help="JSON mapping every relative teacher NPZ path to one stable underlying floor-plan family id",
+    )
     parser.add_argument("--output", type=pathlib.Path, required=True)
     parser.add_argument("--min-votes", type=int, default=2)
     parser.add_argument("--critical-min-votes", type=int, default=2)
