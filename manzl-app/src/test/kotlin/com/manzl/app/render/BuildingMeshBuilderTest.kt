@@ -6,6 +6,7 @@ import com.manzl.app.model.DoorOpening
 import com.manzl.app.model.DoorSwingSide
 import com.manzl.app.model.FloorLevel
 import com.manzl.app.model.FloorPlan
+import com.manzl.app.model.RoomRegion
 import com.manzl.app.model.Vec2
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -62,11 +63,50 @@ class BuildingMeshBuilderTest {
         val staticBuilding = BuildingMeshBuilder.build(BuildingPlan.singleLevel(plan))
         val localWithFixedLeaf = HouseMeshBuilder.build(plan)
 
-        // Three boxes are the two jambs + lintel. The fourth local box is the fixed leaf that the
-        // building renderer intentionally removes so InteractiveDoorWorld can own it dynamically.
         assertEquals(3 * 6 * 4 * 6, staticBuilding.trimVertices.size)
         assertEquals(4 * 6 * 4 * 6, localWithFixedLeaf.trimVertices.size)
     }
+
+    @Test
+    fun `independent shaft face is omitted from floor and ceiling surfaces`() {
+        val left = room("left", -4f, -3f, -1f, 3f)
+        val right = room("right", 1f, -3f, 4f, 3f)
+        val shaft = room("shaft", -0.7f, -1f, 0.7f, 1f, label = "shaft")
+        val shaftPlan = FloorPlan(
+            widthMeters = 10f,
+            depthMeters = 8f,
+            walls = emptyList(),
+            rooms = listOf(left, right, shaft),
+            analysisConfidence = 1f,
+            sourceWidthPx = 1000,
+            sourceHeightPx = 800,
+        )
+
+        val mesh = BuildingMeshBuilder.build(BuildingPlan.singleLevel(shaftPlan))
+        val floorVertices = mesh.floorVertices.toList().chunked(6)
+
+        assertEquals(2 * 4 * 6, mesh.floorVertices.size)
+        assertTrue("shaft received floor geometry", floorVertices.none { it[0] > -1f && it[0] < 1f })
+    }
+
+    private fun room(
+        id: String,
+        minX: Float,
+        minZ: Float,
+        maxX: Float,
+        maxZ: Float,
+        label: String? = null,
+    ) = RoomRegion(
+        id = id,
+        polygon = listOf(
+            Vec2(minX, minZ),
+            Vec2(maxX, minZ),
+            Vec2(maxX, maxZ),
+            Vec2(minX, maxZ),
+        ),
+        label = label,
+        confidence = 0.95f,
+    )
 
     private fun level(id: String, index: Int, elevation: Float): FloorLevel = FloorLevel(
         id = id,
