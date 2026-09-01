@@ -7,10 +7,9 @@ that transformed raster becomes the exact source image shared by Raster2Seq, Mit
 Because sample IDs are raster-derived, they MUST be recomputed after this transform before strict
 consensus can be materialized into train/validation/test.
 
-This bridge preserves only the already-opaque ``sourceGroup -> split`` policy from the original safe
-manifest. It joins transformed ``*.png`` images to ``source-groups.local.json`` by the corresponding
-``*.npz`` relative path, computes new corpus-salted sample IDs from the transformed pixels, and emits a
-new privacy-safe schema-2 manifest. No private source path is written to the output.
+This bridge preserves the original privacy-safe group-level split policy, re-verifies every inherited
+sourceGroup assignment from the same private corpus salt, then computes new corpus-salted sample IDs
+from the aligned teacher pixels. No private source path or raw raster hash is written to the output.
 """
 
 from __future__ import annotations
@@ -24,6 +23,8 @@ import cv2
 import build_real_teacher_consensus as real_consensus
 import prepare_private_real_corpus as private_corpus
 
+SPLITS = ("train", "validation", "test")
+
 
 def load_json(path: pathlib.Path) -> dict:
     if not path.is_file():
@@ -34,7 +35,43 @@ def load_json(path: pathlib.Path) -> dict:
     return payload
 
 
-def load_group_splits(safe_manifest_path: pathlib.Path) -> dict[str, str]:
+def validate_split_policy(payload: dict) -> dict:
+    policy = payload.get("splitPolicy")
+    if not isinstance(policy, dict):
+        raise ValueError("original split manifest is missing splitPolicy")
+    if policy.get("unit") != "source_group":
+        raise ValueError("private real-corpus splitPolicy.unit must be source_group")
+    if policy.get("deterministic") is not True:
+        raise ValueError("private real-corpus splitPolicy must be deterministic")
+    if policy.get("sameFamilyCrossSplitAllowed") is not False:
+        raise ValueError("private real-corpus splitPolicy must forbid same-family cross-split assignment")
+
+    try:
+        validation_fraction = float(policy["validationFraction"])
+        test_fraction = float(policy["testFraction"])
+        train_fraction = float(policy["trainFraction"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("original split manifest must preserve train/validation/test fractions") from exc
+
+    if not (0.0 <= validation_fraction < 1.0 and 0.0 <= test_fraction < 1.0):
+        raise ValueError("validation/test split fractions must be in [0,1)")
+    if validation_fraction + test_fraction >= 1.0:
+        raise ValueError("validationFraction + testFraction must be < 1")
+    expected_train = 1.0 - validation_fraction - test_fraction
+    if abs(train_fraction - expected_train) > 1e-9:
+        raise ValueError("trainFraction is inconsistent with validation/test fractions")
+
+    return {
+        "unit": "source_group",
+        "deterministic": True,
+        "validationFraction": validation_fraction,
+        "testFraction": test_fraction,
+        "trainFraction": expected_train,
+        "sameFamilyCrossSplitAllowed": False,
+    }
+
+
+def load_original_contract(safe_manifest_path: pathlib.Path) -> tuple[dict[str, str], dict]:
     payload = load_json(safe_manifest_path)
     if payload.get("schema") != 2:
         raise ValueError("original private split manifest must use schema 2")
@@ -43,6 +80,8 @@ def load_group_splits(safe_manifest_path: pathlib.Path) -> dict[str, str]:
         raise ValueError("original split manifest must be privacy-safe")
     if privacy.get("sourcePathsStored") is not False or privacy.get("rawRasterHashesStored") is not False:
         raise ValueError("original split manifest leaks source paths or raw raster hashes")
+
+    split_policy = validate_split_policy(payload)
     records = payload.get("records")
     if not isinstance(records, list) or not records:
         raise ValueError("original split manifest contains no records")
@@ -55,12 +94,12 @@ def load_group_splits(safe_manifest_path: pathlib.Path) -> dict[str, str]:
         split = record.get("split")
         if not isinstance(group, str) or not group.startswith("private:"):
             raise ValueError("split manifest contains an invalid sourceGroup")
-        if split not in ("train", "validation", "test"):
+        if split not in SPLITS:
             raise ValueError(f"split manifest contains invalid split: {split!r}")
         previous = result.setdefault(group, split)
         if previous != split:
             raise RuntimeError(f"one sourceGroup crosses held-out splits: {group}")
-    return result
+    return result, split_policy
 
 
 def discover_teacher_images(root: pathlib.Path) -> dict[pathlib.Path, pathlib.Path]:
@@ -86,6 +125,21 @@ def read_rgb(path: pathlib.Path):
     return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
 
 
+def verify_group_assignments(group_splits: dict[str, str], split_policy: dict, salt: str) -> None:
+    for group, inherited_split in group_splits.items():
+        recomputed = private_corpus.group_split(
+            group,
+            salt,
+            validation_fraction=float(split_policy["validationFraction"]),
+            test_fraction=float(split_policy["testFraction"]),
+        )
+        if inherited_split != recomputed:
+            raise RuntimeError(
+                "original split manifest assignment does not match the private corpus salt/policy for "
+                f"{group}; inherited={inherited_split!r} recomputed={recomputed!r}"
+            )
+
+
 def rekey(
     teacher_image_root: pathlib.Path,
     source_groups_path: pathlib.Path,
@@ -97,16 +151,19 @@ def rekey(
     images = discover_teacher_images(teacher_image_root)
     ordered_samples = sorted(images)
     local_groups = real_consensus.load_source_groups(source_groups_path, ordered_samples)
-    group_splits = load_group_splits(original_split_manifest_path)
+    group_splits, split_policy = load_original_contract(original_split_manifest_path)
+    verify_group_assignments(group_splits, split_policy, salt)
 
     unknown_groups = sorted(set(local_groups.values()) - set(group_splits))
     if unknown_groups:
-        raise RuntimeError(f"teacher-aligned corpus contains source groups absent from split policy: {unknown_groups[:10]}")
+        raise RuntimeError(
+            f"teacher-aligned corpus contains source groups absent from split policy: {unknown_groups[:10]}"
+        )
 
     records = []
     seen_ids: set[str] = set()
-    counts = {name: 0 for name in ("train", "validation", "test")}
-    groups_by_split = {name: set() for name in ("train", "validation", "test")}
+    counts = {name: 0 for name in SPLITS}
+    groups_by_split = {name: set() for name in SPLITS}
     for relative in ordered_samples:
         image = read_rgb(images[relative])
         digest = private_corpus.raster_digest(image)
@@ -143,19 +200,17 @@ def rekey(
         "alignment": {
             "sampleIdentityRaster": "pinned-Raster2Seq-ResizeAndPad-output-shared-by-all-teachers",
             "sourceGroupAndSplitInheritedFromOriginalPrivateManifest": True,
+            "splitAssignmentsReverifiedFromSaltAndPolicy": True,
             "sampleIdsRecomputedAfterTeacherAlignment": True,
         },
-        "splitPolicy": {
-            "unit": "source_group",
-            "deterministic": True,
-            "sameFamilyCrossSplitAllowed": False,
-        },
+        "splitPolicy": split_policy,
         "samples": len(records),
         "uniqueSourceGroups": len(set(local_groups.values())),
         "samplesBySplit": counts,
         "sourceGroupsBySplit": {name: len(groups) for name, groups in groups_by_split.items()},
         "records": records,
     }
+    private_corpus.validate_holdout_coverage(manifest)
     return manifest
 
 
@@ -183,6 +238,7 @@ def main() -> int:
         "samples": manifest["samples"],
         "uniqueSourceGroups": manifest["uniqueSourceGroups"],
         "samplesBySplit": manifest["samplesBySplit"],
+        "splitAssignmentsReverifiedFromSaltAndPolicy": True,
         "sampleIdsRecomputedAfterTeacherAlignment": True,
         "safeToCommit": True,
     }, indent=2, sort_keys=True))
