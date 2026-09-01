@@ -90,18 +90,42 @@ class UltraRuntimeQualityGateTest {
     }
 
     @Test
-    fun `quality parser uses final root release decision`() {
+    fun `release evidence parser reads strict primitive fields`() {
         val json = """
             {
-              "generatedValidation": { "releaseReady": false },
-              "proposalOnly": false,
-              "realPlanBenchmarkPassed": true,
-              "releaseReady": true
+              "schema": 2,
+              "pipeline": "manzl-real-student-release-evidence-bundle",
+              "semanticAcceptancePassed": true,
+              "releaseReady": true,
+              "blockingReason": null
             }
         """.trimIndent()
 
-        assertTrue(OnnxAssetModelRepository.lastJsonBoolean(json, "releaseReady") == true)
-        assertTrue(OnnxAssetModelRepository.lastJsonBoolean(json, "proposalOnly") == false)
-        assertTrue(OnnxAssetModelRepository.lastJsonBoolean(json, "realPlanBenchmarkPassed") == true)
+        assertTrue(OnnxAssetModelRepository.jsonInt(json, "schema") == 2)
+        assertTrue(
+            OnnxAssetModelRepository.jsonString(json, "pipeline") ==
+                "manzl-real-student-release-evidence-bundle"
+        )
+        assertTrue(OnnxAssetModelRepository.jsonBoolean(json, "semanticAcceptancePassed") == true)
+        assertTrue(OnnxAssetModelRepository.jsonBoolean(json, "releaseReady") == true)
+        assertTrue(OnnxAssetModelRepository.jsonNull(json, "blockingReason"))
+    }
+
+    @Test
+    fun `proposal quality is not equivalent to final release evidence`() {
+        val proposal = """
+            {
+              "schema": 5,
+              "proposalOnly": true,
+              "realPlanBenchmarkPassed": false,
+              "releaseReady": false
+            }
+        """.trimIndent()
+
+        assertFalse(
+            OnnxAssetModelRepository.jsonString(proposal, "pipeline") ==
+                "manzl-real-student-release-evidence-bundle"
+        )
+        assertFalse(OnnxAssetModelRepository.jsonBoolean(proposal, "releaseReady") == true)
     }
 }
