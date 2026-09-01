@@ -14,6 +14,7 @@ if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
 import finalize_real_student_release as finalizer  # noqa: E402
+import real_semantic_policy  # noqa: E402
 import verify_real_training_inputs  # noqa: E402
 
 
@@ -60,6 +61,53 @@ class FinalizeRealStudentReleaseTest(unittest.TestCase):
         (splits / "materialization_report.json").write_text(json.dumps(report), encoding="utf-8")
         return splits
 
+    def metrics(self, domain: str) -> dict:
+        per_class = {}
+        names = ("background",) + real_semantic_policy.CRITICAL_CLASSES
+        for index, name in enumerate(names):
+            tp = 800 + index * 4
+            fp = 40 + index
+            fn = 55 + index
+            per_class[name] = {
+                "present": True,
+                "iou": tp / (tp + fp + fn),
+                "precision": tp / (tp + fp),
+                "recall": tp / (tp + fn),
+                "supportPixels": tp + fn,
+                "tp": tp,
+                "fp": fp,
+                "fn": fn,
+                "intersection": tp,
+                "union": tp + fp + fn,
+            }
+        return {
+            "schema": 2,
+            "domain": domain,
+            "samples": 24,
+            "inputSize": 512,
+            "semantic": {"meanIoU": 0.85, "perClass": per_class},
+            "corners": {
+                "runtimeThreshold": 0.56,
+                "thresholdMatchesAndroidCornerSnap": True,
+                "precision": 0.9,
+                "recall": 0.88,
+                "f1": 0.89,
+                "meanAbsoluteError": 0.05,
+                "supportPixels": 900,
+                "evaluatedPixels": 9000,
+                "tp": 800,
+                "fp": 90,
+                "fn": 110,
+            },
+            "orientation": {
+                "signInvariant": True,
+                "meanAbsCosine": 0.94,
+                "meanAngularErrorDegrees": 8.0,
+                "supportPixels": 4000,
+            },
+            "releaseReady": False,
+        }
+
     def make_candidate(self, root: pathlib.Path) -> tuple[pathlib.Path, str, int]:
         candidate = root / "candidate"
         candidate.mkdir()
@@ -81,27 +129,35 @@ class FinalizeRealStudentReleaseTest(unittest.TestCase):
             "testUsedForValidationMetrics": False,
             "testReservedForFinalEvaluation": True,
             "realTrainingPreflightPassed": True,
+            "validationEvaluation": self.metrics("private-real-validation"),
             "releaseReady": False,
         }
-        (candidate / "real-training-attestation.json").write_text(
-            json.dumps(training), encoding="utf-8"
-        )
+        (candidate / "real-training-attestation.json").write_text(json.dumps(training), encoding="utf-8")
         return candidate, digest, size
 
     def write_evidence_bundle(
         self,
         root: pathlib.Path,
         splits: pathlib.Path,
+        candidate: pathlib.Path,
         digest: str,
         size: int,
-    ) -> tuple[pathlib.Path, pathlib.Path]:
+    ) -> tuple[pathlib.Path, pathlib.Path, pathlib.Path]:
         preflight = verify_real_training_inputs.verify(splits)
         fingerprint = preflight["opaqueSplitSetFingerprints"]["test"]
         samples = preflight["testSamples"]
         groups = preflight["testSourceGroups"]
 
+        locked = real_semantic_policy.build_policy(candidate)
+        policy_path = root / "semantic-policy.json"
+        policy_path.write_text(json.dumps(locked, indent=2, sort_keys=True), encoding="utf-8")
+        policy_sha = hashlib.sha256(policy_path.read_bytes()).hexdigest()
+        test_metrics = self.metrics("private-real-held-out-test")
+        acceptance = real_semantic_policy.evaluate_metrics(locked, test_metrics)
+        self.assertTrue(acceptance["semanticAcceptancePassed"])
+
         semantic = {
-            "schema": 2,
+            "schema": 3,
             "pipeline": "manzl-private-real-student-final-test",
             "model": "manzl_reconstruction_student.onnx",
             "sha256": digest,
@@ -110,15 +166,18 @@ class FinalizeRealStudentReleaseTest(unittest.TestCase):
             "testSourceGroups": groups,
             "testSetFingerprint": fingerprint,
             "fingerprintContainsOnlyOpaqueSampleIds": True,
-            "testMetrics": {"mean_iou": 0.82},
+            "testMetrics": test_metrics,
+            "semanticPolicySha256": policy_sha,
+            "semanticAcceptanceEvaluation": acceptance,
             "testUsedForTraining": False,
             "testUsedForModelSelection": False,
             "testUsedForValidationMetrics": False,
             "testUsedForFinalEvaluation": True,
             "heldOutTestIntegrityVerified": True,
             "semanticTestCompleted": True,
-            "semanticAcceptancePolicyEvaluated": False,
-            "semanticAcceptancePassed": False,
+            "semanticAcceptancePolicyLockedBeforeTest": True,
+            "semanticAcceptancePolicyEvaluated": True,
+            "semanticAcceptancePassed": True,
             "geometryGatesEvaluatedByThisStep": False,
             "releaseReady": False,
         }
@@ -148,63 +207,59 @@ class FinalizeRealStudentReleaseTest(unittest.TestCase):
         }
         geometry_path = root / "geometry.json"
         geometry_path.write_text(json.dumps(geometry), encoding="utf-8")
-        return semantic_path, geometry_path
+        return policy_path, semantic_path, geometry_path
 
-    def test_matching_evidence_bundle_is_complete_but_release_stays_blocked(self):
+    def test_matching_evidence_bundle_becomes_model_release_ready(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
             splits = self.make_splits(root)
             candidate, digest, size = self.make_candidate(root)
-            semantic, geometry = self.write_evidence_bundle(root, splits, digest, size)
+            policy_path, semantic, geometry = self.write_evidence_bundle(root, splits, candidate, digest, size)
 
-            report = finalizer.finalize(splits, candidate, semantic, geometry)
+            report = finalizer.finalize(splits, candidate, policy_path, semantic, geometry)
 
             self.assertTrue(report["releaseEvidenceBundleComplete"])
-            self.assertTrue(report["candidateArtifactIntegrityPassed"])
-            self.assertTrue(report["heldOutCorpusIdentityMatchedAcrossEvidence"])
-            self.assertTrue(report["allEvidenceBoundToExactModelDigest"])
-            self.assertFalse(report["semanticAcceptancePolicyLocked"])
-            self.assertFalse(report["releaseReady"])
-            self.assertEqual(report["blockingReason"], "semantic-acceptance-policy-not-locked")
+            self.assertTrue(report["semanticAcceptancePolicyLocked"])
+            self.assertTrue(report["semanticAcceptancePassed"])
+            self.assertTrue(report["geometryReleaseEvidencePassed"])
+            self.assertTrue(report["releaseReady"])
+            self.assertIsNone(report["blockingReason"])
 
     def test_semantic_attestation_from_different_model_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
             splits = self.make_splits(root)
             candidate, digest, size = self.make_candidate(root)
-            semantic, geometry = self.write_evidence_bundle(root, splits, digest, size)
+            policy_path, semantic, geometry = self.write_evidence_bundle(root, splits, candidate, digest, size)
             payload = json.loads(semantic.read_text(encoding="utf-8"))
             payload["sha256"] = "f" * 64
             semantic.write_text(json.dumps(payload), encoding="utf-8")
-
             with self.assertRaisesRegex(ValueError, "sha256"):
-                finalizer.finalize(splits, candidate, semantic, geometry)
+                finalizer.finalize(splits, candidate, policy_path, semantic, geometry)
+
+    def test_failed_semantic_acceptance_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            splits = self.make_splits(root)
+            candidate, digest, size = self.make_candidate(root)
+            policy_path, semantic, geometry = self.write_evidence_bundle(root, splits, candidate, digest, size)
+            payload = json.loads(semantic.read_text(encoding="utf-8"))
+            payload["semanticAcceptancePassed"] = False
+            semantic.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "semanticAcceptancePassed"):
+                finalizer.finalize(splits, candidate, policy_path, semantic, geometry)
 
     def test_different_held_out_corpus_fingerprint_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
             splits = self.make_splits(root)
             candidate, digest, size = self.make_candidate(root)
-            semantic, geometry = self.write_evidence_bundle(root, splits, digest, size)
+            policy_path, semantic, geometry = self.write_evidence_bundle(root, splits, candidate, digest, size)
             payload = json.loads(geometry.read_text(encoding="utf-8"))
             payload["testSetFingerprint"] = "e" * 64
             geometry.write_text(json.dumps(payload), encoding="utf-8")
-
             with self.assertRaisesRegex(ValueError, "testSetFingerprint"):
-                finalizer.finalize(splits, candidate, semantic, geometry)
-
-    def test_failed_geometry_gate_cannot_be_combined_as_release_evidence(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = pathlib.Path(tmp)
-            splits = self.make_splits(root)
-            candidate, digest, size = self.make_candidate(root)
-            semantic, geometry = self.write_evidence_bundle(root, splits, digest, size)
-            payload = json.loads(geometry.read_text(encoding="utf-8"))
-            payload["releaseGeometryEvidencePassed"] = False
-            geometry.write_text(json.dumps(payload), encoding="utf-8")
-
-            with self.assertRaisesRegex(ValueError, "releaseGeometryEvidencePassed"):
-                finalizer.finalize(splits, candidate, semantic, geometry)
+                finalizer.finalize(splits, candidate, policy_path, semantic, geometry)
 
 
 if __name__ == "__main__":

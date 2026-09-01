@@ -1,12 +1,9 @@
 #!/usr/bin/env python3
 """Evaluate a trained Manzl real-plan candidate on the untouched final test split.
 
-This is intentionally separate from ``train_real_student.py``. The candidate attestation must prove that
-test data was not used for training, model selection, or validation metrics. Only then is the ONNX model
-evaluated against ``splits/test``.
-
-Passing this semantic measurement still does not make the model release-ready: Manzl's end-to-end
-2D->3D geometry gates and a separately locked semantic acceptance policy remain mandatory.
+A pre-registered semantic policy is mandatory and must have been locked from private real validation
+before any held-out test artifact exists. The final semantic attestation records policy PASS/FAIL but
+still cannot make the model release-ready until the independent end-to-end geometry evidence passes.
 """
 
 from __future__ import annotations
@@ -18,6 +15,7 @@ import pathlib
 import subprocess
 import sys
 
+import real_semantic_policy
 import verify_real_training_inputs
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -101,6 +99,12 @@ def evaluate(args: argparse.Namespace) -> dict:
     if result_path.exists() or attestation_path.exists():
         raise FileExistsError("final test evaluation already exists; refusing to overwrite held-out evidence")
 
+    locked_policy, policy_sha = real_semantic_policy.load_locked_policy(
+        args.policy,
+        candidate,
+        require_pre_test=True,
+    )
+
     command = build_test_command(model_path, splits, result_path, args.size)
     assert_final_command_uses_only_test(command, splits)
     subprocess.run(command, check=True)
@@ -112,9 +116,11 @@ def evaluate(args: argparse.Namespace) -> dict:
     if metrics.get("releaseReady") is not False:
         raise RuntimeError("semantic evaluator must never declare a release model")
 
+    acceptance = real_semantic_policy.evaluate_metrics(locked_policy, metrics)
+    semantic_pass = acceptance.get("semanticAcceptancePassed") is True
     test_fingerprint = preflight["opaqueSplitSetFingerprints"]["test"]
     final = {
-        "schema": 2,
+        "schema": 3,
         "pipeline": "manzl-private-real-student-final-test",
         "model": model_path.name,
         "sha256": training_attestation["sha256"],
@@ -124,20 +130,23 @@ def evaluate(args: argparse.Namespace) -> dict:
         "testSetFingerprint": test_fingerprint,
         "fingerprintContainsOnlyOpaqueSampleIds": True,
         "testMetrics": metrics,
+        "semanticPolicySha256": policy_sha,
+        "semanticAcceptanceEvaluation": acceptance,
         "testUsedForTraining": False,
         "testUsedForModelSelection": False,
         "testUsedForValidationMetrics": False,
         "testUsedForFinalEvaluation": True,
         "heldOutTestIntegrityVerified": True,
         "semanticTestCompleted": True,
-        "semanticAcceptancePolicyEvaluated": False,
-        "semanticAcceptancePassed": False,
+        "semanticAcceptancePolicyLockedBeforeTest": True,
+        "semanticAcceptancePolicyEvaluated": True,
+        "semanticAcceptancePassed": semantic_pass,
         "geometryGatesEvaluatedByThisStep": False,
         "releaseReady": False,
         "reason": (
-            "The untouched real-plan semantic test has been measured across all three student heads and "
-            "bound to the exact opaque test set and ONNX digest. Release still requires a locked semantic "
-            "acceptance policy plus the separate measured end-to-end 2D-to-3D geometry gates."
+            "Semantic held-out acceptance passed; release still requires independent end-to-end geometry evidence."
+            if semantic_pass
+            else "Semantic held-out acceptance failed the pre-registered validation-derived policy."
         ),
     }
     attestation_path.write_text(json.dumps(final, indent=2, sort_keys=True), encoding="utf-8")
@@ -148,6 +157,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--splits", type=pathlib.Path, required=True)
     parser.add_argument("--candidate", type=pathlib.Path, required=True)
+    parser.add_argument("--policy", type=pathlib.Path, required=True)
     parser.add_argument("--size", type=int, default=512)
     return parser.parse_args()
 

@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import pathlib
 
 import cv2
@@ -176,7 +175,12 @@ def prepare_sample(path: pathlib.Path, size: int) -> dict[str, np.ndarray]:
         _resize_scalar(orientation[1], size, cv2.INTER_LINEAR),
     ]).astype(np.float32)
     orientation_norm = np.linalg.norm(orientation, axis=0, keepdims=True)
-    orientation = np.divide(orientation, np.maximum(orientation_norm, 1e-6), out=np.zeros_like(orientation), where=orientation_norm > 1e-6)
+    orientation = np.divide(
+        orientation,
+        np.maximum(orientation_norm, 1e-6),
+        out=np.zeros_like(orientation),
+        where=orientation_norm > 1e-6,
+    )
     image = ((image - 0.5) / 0.5).transpose(2, 0, 1)[None, ...].astype(np.float32)
     return {
         "image": image,
@@ -196,10 +200,11 @@ def evaluate(
     max_samples: int | None = None,
     domain: str = DEFAULT_DOMAIN,
 ) -> dict:
-    import onnxruntime as ort
-
     if domain not in ALLOWED_DOMAINS:
         raise ValueError(f"unsupported evaluation domain: {domain}")
+
+    import onnxruntime as ort
+
     files = sorted(data.rglob("*.npz"))
     if max_samples is not None:
         files = files[:max_samples]
@@ -252,28 +257,42 @@ def evaluate(
     present = union > 0
     per_class = {}
     for class_id, name in enumerate(SEMANTIC_CLASSES):
-        precision = semantic_totals["tp"][class_id] / max(1, semantic_totals["tp"][class_id] + semantic_totals["fp"][class_id])
-        recall = semantic_totals["tp"][class_id] / max(1, semantic_totals["tp"][class_id] + semantic_totals["fn"][class_id])
+        tp = int(semantic_totals["tp"][class_id])
+        fp = int(semantic_totals["fp"][class_id])
+        fn = int(semantic_totals["fn"][class_id])
+        precision = tp / max(1, tp + fp)
+        recall = tp / max(1, tp + fn)
         per_class[name] = {
             "present": bool(present[class_id]),
             "iou": float(iou[class_id]) if present[class_id] else None,
             "precision": float(precision),
             "recall": float(recall),
-            "supportPixels": int(semantic_totals["tp"][class_id] + semantic_totals["fn"][class_id]),
+            "supportPixels": int(tp + fn),
+            "tp": tp,
+            "fp": fp,
+            "fn": fn,
+            "intersection": int(semantic_totals["intersection"][class_id]),
+            "union": int(semantic_totals["union"][class_id]),
         }
 
-    corner_precision = corner_totals["tp"] / max(1, corner_totals["tp"] + corner_totals["fp"])
-    corner_recall = corner_totals["tp"] / max(1, corner_totals["tp"] + corner_totals["fn"])
+    corner_tp = int(corner_totals["tp"])
+    corner_fp = int(corner_totals["fp"])
+    corner_fn = int(corner_totals["fn"])
+    corner_precision = corner_tp / max(1, corner_tp + corner_fp)
+    corner_recall = corner_tp / max(1, corner_tp + corner_fn)
     corner_f1 = 2.0 * corner_precision * corner_recall / max(corner_precision + corner_recall, 1e-12)
     orientation_support = int(orientation_totals["supportPixels"])
+    mean_iou = float(iou[present].mean()) if np.any(present) else 0.0
 
     return {
         "schema": 2,
         "domain": domain,
         "samples": len(files),
         "inputSize": size,
+        "meanIoU": mean_iou,
+        "perClass": per_class,
         "semantic": {
-            "meanIoU": float(iou[present].mean()) if np.any(present) else 0.0,
+            "meanIoU": mean_iou,
             "perClass": per_class,
         },
         "corners": {
@@ -285,6 +304,9 @@ def evaluate(
             "meanAbsoluteError": float(corner_totals["absoluteErrorSum"] / max(1, corner_totals["evaluatedPixels"])),
             "supportPixels": int(corner_totals["supportPixels"]),
             "evaluatedPixels": int(corner_totals["evaluatedPixels"]),
+            "tp": corner_tp,
+            "fp": corner_fp,
+            "fn": corner_fn,
         },
         "orientation": {
             "signInvariant": True,

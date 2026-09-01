@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Combine Manzl real-student release evidence without silently inventing acceptance criteria.
+"""Combine Manzl real-student release evidence for one exact ONNX candidate.
 
-This is a fail-closed evidence combiner, not a release switch. It proves that the training attestation,
-semantic held-out measurement and runtime end-to-end geometry evidence all refer to the exact same ONNX
-candidate and the exact same privacy-safe held-out test-set membership. The repository does not yet have
-a locked semantic acceptance policy for the real student, so this combiner must keep ``releaseReady``
-false until that policy is added and independently enforced.
+Release succeeds only when the same model digest and opaque held-out corpus are covered by:
+1) verified real training provenance,
+2) a semantic policy locked from validation before test,
+3) held-out semantic PASS against that policy, and
+4) production runtime end-to-end geometry PASS.
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ import json
 import pathlib
 
 import evaluate_real_student_test
+import real_semantic_policy
 import verify_real_training_inputs
 
 
@@ -39,6 +40,7 @@ def require_contract(payload: dict, required: dict, label: str) -> None:
 def finalize(
     splits: pathlib.Path,
     candidate: pathlib.Path,
+    semantic_policy_path: pathlib.Path,
     semantic_attestation_path: pathlib.Path,
     geometry_attestation_path: pathlib.Path,
 ) -> dict:
@@ -52,11 +54,17 @@ def finalize(
     test_samples = preflight["testSamples"]
     test_groups = preflight["testSourceGroups"]
 
+    policy, policy_sha = real_semantic_policy.load_locked_policy(
+        semantic_policy_path,
+        candidate,
+        require_pre_test=False,
+    )
+
     semantic = load_json_object(semantic_attestation_path, "semantic final-test attestation")
     require_contract(
         semantic,
         {
-            "schema": 2,
+            "schema": 3,
             "pipeline": "manzl-private-real-student-final-test",
             "model": model_path.name,
             "sha256": model_sha256,
@@ -65,21 +73,31 @@ def finalize(
             "testSourceGroups": test_groups,
             "testSetFingerprint": test_fingerprint,
             "fingerprintContainsOnlyOpaqueSampleIds": True,
+            "semanticPolicySha256": policy_sha,
             "testUsedForTraining": False,
             "testUsedForModelSelection": False,
             "testUsedForValidationMetrics": False,
             "testUsedForFinalEvaluation": True,
             "heldOutTestIntegrityVerified": True,
             "semanticTestCompleted": True,
-            "semanticAcceptancePolicyEvaluated": False,
-            "semanticAcceptancePassed": False,
+            "semanticAcceptancePolicyLockedBeforeTest": True,
+            "semanticAcceptancePolicyEvaluated": True,
+            "semanticAcceptancePassed": True,
             "geometryGatesEvaluatedByThisStep": False,
             "releaseReady": False,
         },
         "semantic final-test attestation",
     )
-    if not isinstance(semantic.get("testMetrics"), dict) or not semantic["testMetrics"]:
-        raise ValueError("semantic final-test attestation contains no measured testMetrics")
+    metrics = semantic.get("testMetrics")
+    if not isinstance(metrics, dict) or metrics.get("schema") != 2 or metrics.get("domain") != "private-real-held-out-test":
+        raise ValueError("semantic final-test attestation contains invalid held-out testMetrics")
+    acceptance = semantic.get("semanticAcceptanceEvaluation")
+    if not isinstance(acceptance, dict) or acceptance.get("semanticAcceptancePassed") is not True:
+        raise ValueError("semantic acceptance evaluation is missing or failed")
+    if acceptance.get("policyModelSha256") != model_sha256:
+        raise ValueError("semantic acceptance evaluation is bound to a different model")
+    if acceptance.get("validationEvaluationSha256") != policy.get("validationEvaluationSha256"):
+        raise ValueError("semantic acceptance evaluation is bound to different validation evidence")
 
     geometry = load_json_object(geometry_attestation_path, "geometry release attestation")
     require_contract(
@@ -109,7 +127,7 @@ def finalize(
     )
 
     return {
-        "schema": 1,
+        "schema": 2,
         "pipeline": "manzl-real-student-release-evidence-bundle",
         "model": model_path.name,
         "sha256": model_sha256,
@@ -117,22 +135,23 @@ def finalize(
         "testSamples": test_samples,
         "testSourceGroups": test_groups,
         "testSetFingerprint": test_fingerprint,
+        "semanticPolicySha256": policy_sha,
         "trainingAttestationVerified": True,
         "candidateArtifactIntegrityPassed": True,
         "heldOutCorpusIdentityMatchedAcrossEvidence": True,
+        "semanticAcceptancePolicyLocked": True,
+        "semanticAcceptancePolicyEvaluated": True,
+        "semanticAcceptancePassed": True,
         "semanticHeldOutMeasurementCompleted": True,
         "geometryReleaseEvidencePassed": True,
         "allEvidenceBoundToExactModelDigest": True,
-        "semanticAcceptancePolicyLocked": False,
-        "semanticAcceptancePolicyEvaluated": False,
-        "semanticAcceptancePassed": False,
         "releaseEvidenceBundleComplete": True,
-        "releaseReady": False,
-        "blockingReason": "semantic-acceptance-policy-not-locked",
+        "releaseReady": True,
+        "blockingReason": None,
         "reason": (
-            "Training, semantic held-out measurement and end-to-end geometry evidence are internally "
-            "consistent for the exact ONNX digest and exact opaque test set. Release remains blocked "
-            "because no repository-owned semantic acceptance policy has yet been locked and evaluated."
+            "The exact ONNX candidate passed the pre-registered semantic held-out policy and all production "
+            "end-to-end geometry gates on the exact opaque held-out corpus. The student model is release-ready; "
+            "APK packaging remains a separate build step."
         ),
     }
 
@@ -141,6 +160,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--splits", type=pathlib.Path, required=True)
     parser.add_argument("--candidate", type=pathlib.Path, required=True)
+    parser.add_argument("--semantic-policy", type=pathlib.Path, required=True)
     parser.add_argument("--semantic-attestation", type=pathlib.Path, required=True)
     parser.add_argument("--geometry-attestation", type=pathlib.Path, required=True)
     parser.add_argument("--output", type=pathlib.Path, required=True)
@@ -154,6 +174,7 @@ def main() -> int:
     report = finalize(
         args.splits,
         args.candidate,
+        args.semantic_policy,
         args.semantic_attestation,
         args.geometry_attestation,
     )
