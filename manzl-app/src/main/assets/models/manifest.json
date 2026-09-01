@@ -17,13 +17,17 @@
       "id": "mobile_sam_encoder",
       "path": "models/mobile_sam_encoder.onnx",
       "role": "high-resolution boundary refinement",
-      "status": "to-be-packaged"
+      "status": "pinned-build-asset",
+      "sourceRevision": "0d3b403339b4674a82493d5e97964dd78089ddc8",
+      "sha256": "580f5fb648ea1062c0aabc26217aed56921985f03f0cbbd852bba81d760cc749"
     },
     {
       "id": "mobile_sam_decoder",
       "path": "models/mobile_sam_decoder.onnx",
       "role": "prompted high-resolution boundary masks",
-      "status": "to-be-packaged"
+      "status": "pinned-build-asset",
+      "sourceRevision": "0d3b403339b4674a82493d5e97964dd78089ddc8",
+      "sha256": "93915fc7c993ab9d59ab8c9ccd3bce37f7509c81ab4150a74abd4d2abbd8570d"
     }
   ],
   "policy": {
