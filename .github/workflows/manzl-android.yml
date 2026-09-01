@@ -54,37 +54,10 @@ jobs:
       - name: Fetch verified MobileSAM runtime models
         run: python3 research/ultra-reconstruction/fetch_runtime_models.py
 
-      - name: Require real local Ultra student before APK
+      - name: Require measured real local Ultra student before APK
         run: |
-          python3 - <<'PY'
-          import hashlib
-          import json
-          import pathlib
-
-          root = pathlib.Path('manzl-app/src/main/assets/models')
-          model = root / 'manzl_reconstruction_student.onnx'
-          quality = root / 'manzl_reconstruction_student.quality.json'
-          training = root / 'manzl_reconstruction_student.training.json'
-          if not model.exists() or model.stat().st_size <= 100_000:
-              raise SystemExit(
-                  'Manzl Android intentionally refuses to publish a low-quality fallback APK: '
-                  'the local reconstruction student has not been trained/packaged yet.'
-              )
-          if not quality.exists() or not training.exists():
-              raise SystemExit('Student model is present without its quality/training provenance.')
-          attestation = json.loads(quality.read_text(encoding='utf-8'))
-          actual = hashlib.sha256(model.read_bytes()).hexdigest()
-          if actual != attestation.get('sha256'):
-              raise SystemExit(f'Student SHA-256 mismatch: {actual} != {attestation.get("sha256")}')
-          if not attestation.get('proposalOnly', False):
-              raise SystemExit('Student attestation must explicitly remain proposal-only.')
-          print(json.dumps({
-              'studentBytes': model.stat().st_size,
-              'studentSha256': actual,
-              'releaseReady': attestation.get('releaseReady', False),
-              'realPlanBenchmarkPassed': attestation.get('realPlanBenchmarkPassed', False),
-          }, indent=2))
-          PY
+          python3 research/ultra-reconstruction/verify_packaged_release_student.py \
+            --assets manzl-app/src/main/assets/models
 
       - name: Verify and build Manzl
         run: ./gradlew --no-daemon :manzl-app:testDebugUnitTest :manzl-app:lintDebug :manzl-app:assembleDebug --stacktrace
