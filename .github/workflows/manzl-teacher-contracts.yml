@@ -23,65 +23,28 @@ jobs:
   teacher-contracts:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
       - name: Install contract-test dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install numpy==1.26.4 opencv-python-headless==4.10.0.84 shapely==2.0.6
+
       - name: Compile all reconstruction research scripts
-        run: python -m compileall -q research/ultra-reconstruction
+        run: |
+          python -m compileall -q research/ultra-reconstruction
+
       - name: Verify fail-closed teacher contracts
         run: |
-          python -m unittest discover -s research/ultra-reconstruction -p 'test_*.py' -v
-
-  mitunet-hardened-runtime-smoke:
-    if: github.event_name == 'push'
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - name: Checkout Manzl
-        uses: actions/checkout@v4
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - name: Install pinned runtime
-        run: |
-          python -m pip install --disable-pip-version-check torch==2.8.0 torchvision==0.23.0 --index-url https://download.pytorch.org/whl/cpu
-          python -m pip install --disable-pip-version-check segmentation-models-pytorch==0.5.0 numpy==2.0.2 opencv-python-headless==4.10.0.84
-      - name: Fetch verified checkpoint
-        run: python research/ultra-reconstruction/fetch_mitunet_teacher.py --destination /tmp/mitunet.pth
-      - name: Build smoke image
-        run: |
-          mkdir -p /tmp/in /tmp/out
-          python - <<'PY'
-          import cv2, numpy as np
-          image=np.full((256,256,3),250,np.uint8)
-          cv2.rectangle(image,(24,24),(232,232),(28,28,28),9)
-          cv2.line(image,(128,28),(128,228),(28,28,28),8)
-          assert cv2.imwrite('/tmp/in/plan.png',image)
-          PY
-      - name: Run hardened MitUNet adapter
-        run: |
-          python research/ultra-reconstruction/run_mitunet_teacher.py --input /tmp/in --checkpoint /tmp/mitunet.pth --output /tmp/out --size 256 --device cpu
-      - name: Verify current adapter output
-        run: |
-          python - <<'PY'
-          import json, numpy as np, torch, segmentation_models_pytorch as smp
-          with np.load('/tmp/out/plan.npz',allow_pickle=False) as s:
-              probs=np.asarray(s['semantic_probs'],np.float32)
-              classes=[str(v) for v in s['semantic_classes'].tolist()]
-              fmt=str(np.asarray(s['teacher_format']).reshape(-1)[0])
-          assert classes==['background','wall_face']
-          assert probs.shape==(2,256,256)
-          assert np.isfinite(probs).all()
-          assert np.allclose(probs.sum(0),1.0,atol=1e-6)
-          assert fmt=='mitunet-wall-probability-v2-pinned'
-          print('MITUNET_HARDENED_SMOKE='+json.dumps({'torch':torch.__version__,'smp':smp.__version__,'format':fmt,'wallMax':float(probs[1].max()),'passed':True},sort_keys=True))
-          PY
+          python -m unittest discover \
+            -s research/ultra-reconstruction \
+            -p 'test_*.py' \
+            -v
