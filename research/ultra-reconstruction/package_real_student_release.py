@@ -81,6 +81,9 @@ def _release_contract(release_path: pathlib.Path, digest: str, size: int) -> dic
         "trainingAttestationVerified": True,
         "candidateArtifactIntegrityPassed": True,
         "heldOutCorpusIdentityMatchedAcrossEvidence": True,
+        "releaseCorpusScalePassed": True,
+        "releaseCorpusScalePolicyVersion": 1,
+        "releaseCorpusScaleRecomputedAtFinalize": True,
         "semanticAcceptancePolicyLocked": True,
         "semanticAcceptancePolicyEvaluated": True,
         "relativeSemanticAcceptancePassed": True,
@@ -137,6 +140,7 @@ def _release_manifest(manifest: dict, digest: str, size: int, replace: bool) -> 
             "releaseEvidence": f"models/{RELEASE_NAME}",
             "trainingProvenance": f"models/{TRAINING_NAME}",
             "semanticQualityFloorVersion": 1,
+            "releaseCorpusScalePolicyVersion": 1,
         }
     )
     for stale_key in ("generatedValidation", "proposalOnly", "trainingSource", "attribution"):
