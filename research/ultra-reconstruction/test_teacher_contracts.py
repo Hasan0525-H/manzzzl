@@ -202,5 +202,72 @@ class CubiCasaTeacherContractTest(unittest.TestCase):
                 self.assertFalse(loaded.class_known[consensus.CLASS_TO_INDEX[class_name]])
 
 
+class ConsensusQuorumContractTest(unittest.TestCase):
+    def test_single_high_probability_class_cannot_veto_two_teacher_quorum(self) -> None:
+        class_count = len(consensus.SEMANTIC_CLASSES)
+        wall_index = consensus.CLASS_TO_INDEX["wall_face"]
+        background_index = consensus.CLASS_TO_INDEX["background"]
+        room_boundary_index = consensus.CLASS_TO_INDEX["room_boundary"]
+
+        def prediction(
+            teacher_id: str,
+            known_names: set[str],
+            probabilities_by_name: dict[str, float],
+        ) -> consensus.TeacherPrediction:
+            probs = np.zeros((class_count, 1, 1), dtype=np.float32)
+            known = np.zeros(class_count, dtype=bool)
+            for name in known_names:
+                known[consensus.CLASS_TO_INDEX[name]] = True
+            for name, probability in probabilities_by_name.items():
+                probs[consensus.CLASS_TO_INDEX[name], 0, 0] = probability
+            return consensus.TeacherPrediction(
+                teacher_id=teacher_id,
+                weight=1.0,
+                probs=probs,
+                class_known=known,
+                confidence=np.ones((1, 1), dtype=np.float32),
+                valid=np.ones((1, 1), dtype=bool),
+                image=None,
+                corners=None,
+                corner_confidence=None,
+                orientation=None,
+            )
+
+        predictions = [
+            prediction(
+                "mitunet",
+                {"background", "wall_face"},
+                {"background": 0.10, "wall_face": 0.90},
+            ),
+            prediction(
+                "cubicasa",
+                {"background", "wall_face", "door", "window"},
+                {"background": 0.12, "wall_face": 0.88, "door": 0.0, "window": 0.0},
+            ),
+            prediction(
+                "raster2seq",
+                {"door", "window", "room_boundary"},
+                {"door": 0.0, "window": 0.0, "room_boundary": 1.0},
+            ),
+        ]
+
+        semantic, probability, supervision, votes = consensus.semantic_consensus(
+            predictions=predictions,
+            min_votes=2,
+            critical_min_votes=2,
+            min_probability=0.72,
+            min_margin=0.18,
+        )
+
+        # Raster2Seq has a numerically higher single vote for room_boundary, but it has no quorum.
+        # The two independent wall teachers do have quorum and must remain trainable supervision.
+        self.assertEqual(int(semantic[0, 0]), wall_index)
+        self.assertEqual(float(supervision[0, 0]), 1.0)
+        self.assertEqual(int(votes[0, 0]), 2)
+        self.assertGreaterEqual(float(probability[0, 0]), 0.88)
+        self.assertNotEqual(int(semantic[0, 0]), room_boundary_index)
+        self.assertNotEqual(int(semantic[0, 0]), background_index)
+
+
 if __name__ == "__main__":
     unittest.main()
