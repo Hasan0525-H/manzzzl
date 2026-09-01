@@ -2,6 +2,7 @@ package com.manzl.app.render
 
 import com.manzl.app.model.DoorOpening
 import com.manzl.app.model.FloorPlan
+import com.manzl.app.model.StructuralColumn
 import com.manzl.app.model.Vec2
 import com.manzl.app.model.WallSegment
 import com.manzl.app.model.WindowOpening
@@ -19,10 +20,11 @@ import kotlin.math.sqrt
  * Lightweight 2D collision world for the first-person camera.
  *
  * The player is represented by a circle on the X/Z floor plane. Movement is sub-stepped so a
- * low-frame-rate device cannot tunnel through thin walls, then any penetration is projected out
- * of nearby capsules. Window metadata adds a solid barrier across raster wall gaps, while only
- * verified door spans on the same measured wall axis may become traversable. This prevents a door
- * beside a corner/crossing wall from accidentally punching a passage through the wrong wall.
+ * low-frame-rate device cannot tunnel through thin walls or compact structural columns, then any
+ * penetration is projected out of nearby capsules/oriented column boxes. Window metadata adds a
+ * solid barrier across raster wall gaps, while only verified door spans on the same measured wall
+ * axis may become traversable. This prevents a door beside a corner/crossing wall from accidentally
+ * punching a passage through the wrong wall.
  */
 internal class CollisionWorld(private val plan: FloorPlan) {
 
@@ -33,6 +35,12 @@ internal class CollisionWorld(private val plan: FloorPlan) {
                 add(CollisionBarrier(wall, permitsDoorPassage = false))
             }
         }
+    }
+
+    private val columns: List<StructuralColumn> = plan.columns.filter { column ->
+        column.confidence >= MIN_COLUMN_COLLISION_CONFIDENCE &&
+            column.widthMeters >= MIN_COLUMN_COLLISION_DIMENSION_METERS &&
+            column.depthMeters >= MIN_COLUMN_COLLISION_DIMENSION_METERS
     }
 
     fun move(position: Vec2, deltaX: Float, deltaZ: Float, radius: Float): Vec2 {
@@ -88,7 +96,8 @@ internal class CollisionWorld(private val plan: FloorPlan) {
         if (point.x - radius < -halfWidth || point.x + radius > halfWidth) return false
         if (point.z - radius < -halfDepth || point.z + radius > halfDepth) return false
 
-        return barriers.none { barrier -> collidesWithBarrier(point, radius, barrier) }
+        if (barriers.any { barrier -> collidesWithBarrier(point, radius, barrier) }) return false
+        return columns.none { column -> collidesWithColumn(point, radius, column) }
     }
 
     private fun resolvePenetration(candidate: Vec2, radius: Float): Vec2 {
@@ -141,6 +150,14 @@ internal class CollisionWorld(private val plan: FloorPlan) {
                 z = z.coerceIn(-halfDepth, halfDepth)
                 changed = true
             }
+
+            for (column in columns) {
+                val correction = columnPenetrationCorrection(Vec2(x, z), radius, column) ?: continue
+                x = (x + correction.x).coerceIn(-halfWidth, halfWidth)
+                z = (z + correction.z).coerceIn(-halfDepth, halfDepth)
+                changed = true
+            }
+
             if (!changed) break
             pass++
         }
@@ -165,6 +182,56 @@ internal class CollisionWorld(private val plan: FloorPlan) {
         val dz = point.z - closestZ
         val minDistance = radius + wall.thicknessMeters / 2f + CONTACT_SKIN_METERS
         return dx * dx + dz * dz < minDistance * minDistance
+    }
+
+    /** Conservative circle-vs-oriented-box test used for verified structural columns. */
+    private fun collidesWithColumn(point: Vec2, radius: Float, column: StructuralColumn): Boolean {
+        val frame = columnFrame(column)
+        val dx = point.x - column.center.x
+        val dz = point.z - column.center.z
+        val along = dx * frame.ux + dz * frame.uz
+        val depth = dx * frame.nx + dz * frame.nz
+        val halfAlong = column.widthMeters * 0.5f + radius + CONTACT_SKIN_METERS
+        val halfDepth = column.depthMeters * 0.5f + radius + CONTACT_SKIN_METERS
+        return abs(along) < halfAlong && abs(depth) < halfDepth
+    }
+
+    private fun columnPenetrationCorrection(
+        point: Vec2,
+        radius: Float,
+        column: StructuralColumn,
+    ): Vec2? {
+        val frame = columnFrame(column)
+        val dx = point.x - column.center.x
+        val dz = point.z - column.center.z
+        val along = dx * frame.ux + dz * frame.uz
+        val depth = dx * frame.nx + dz * frame.nz
+        val halfAlong = column.widthMeters * 0.5f + radius + CONTACT_SKIN_METERS
+        val halfDepth = column.depthMeters * 0.5f + radius + CONTACT_SKIN_METERS
+        val alongPenetration = halfAlong - abs(along)
+        val depthPenetration = halfDepth - abs(depth)
+        if (alongPenetration <= 0f || depthPenetration <= 0f) return null
+
+        return if (alongPenetration <= depthPenetration) {
+            val sign = if (along < 0f) -1f else 1f
+            Vec2(
+                x = frame.ux * (alongPenetration + COLUMN_RESOLUTION_SKIN_METERS) * sign,
+                z = frame.uz * (alongPenetration + COLUMN_RESOLUTION_SKIN_METERS) * sign,
+            )
+        } else {
+            val sign = if (depth < 0f) -1f else 1f
+            Vec2(
+                x = frame.nx * (depthPenetration + COLUMN_RESOLUTION_SKIN_METERS) * sign,
+                z = frame.nz * (depthPenetration + COLUMN_RESOLUTION_SKIN_METERS) * sign,
+            )
+        }
+    }
+
+    private fun columnFrame(column: StructuralColumn): ColumnFrame {
+        val radians = column.rotationDegrees * PI.toFloat() / 180f
+        val ux = cos(radians)
+        val uz = sin(radians)
+        return ColumnFrame(ux = ux, uz = uz, nx = -uz, nz = ux)
     }
 
     private fun isDoorPassage(wall: WallSegment, wallProjection: Float, radius: Float): Boolean {
@@ -244,20 +311,30 @@ internal class CollisionWorld(private val plan: FloorPlan) {
         val permitsDoorPassage: Boolean,
     )
 
+    private data class ColumnFrame(
+        val ux: Float,
+        val uz: Float,
+        val nx: Float,
+        val nz: Float,
+    )
+
     companion object {
         const val DEFAULT_PLAYER_RADIUS = 0.27f
         private const val MAX_SUBSTEP_METERS = 0.055f
         private const val MAX_SUBSTEPS = 12
-        private const val RESOLUTION_PASSES = 4
+        private const val RESOLUTION_PASSES = 5
         private const val SPAWN_GRID_METERS = 0.45f
         private const val BOUNDARY_PADDING = 0.04f
         private const val CONTACT_SKIN_METERS = 0.012f
+        private const val COLUMN_RESOLUTION_SKIN_METERS = 0.002f
         private const val MIN_DOOR_CLEARANCE_METERS = 0.08f
         private const val DOOR_ASSOCIATION_TOLERANCE_METERS = 0.18f
         private const val MAX_DOOR_AXIS_ERROR_DEGREES = 14f
         private const val DOOR_EDGE_SAFETY_FACTOR = 0.62f
         private const val WINDOW_COLLISION_THICKNESS_METERS = 0.08f
         private const val MIN_WINDOW_COLLISION_WIDTH_METERS = 0.20f
+        private const val MIN_COLUMN_COLLISION_CONFIDENCE = 0.74f
+        private const val MIN_COLUMN_COLLISION_DIMENSION_METERS = 0.10f
         private const val EPSILON = 0.000001f
     }
 }
