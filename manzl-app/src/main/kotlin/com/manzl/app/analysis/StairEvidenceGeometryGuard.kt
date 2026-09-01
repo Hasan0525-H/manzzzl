@@ -17,8 +17,9 @@ import kotlin.math.sqrt
  *
  * Repeated raster strokes are not sufficient by themselves: dimension hatching, cabinetry and title
  * blocks can also form parallel bands. A stair candidate therefore has to occupy plausible measured
- * free space. When trusted room polygons exist its centre and most footprint probes must belong to a
- * single room. Strong wall centre-lines are not allowed to cut through the core of the proposed run.
+ * free space. When trusted room polygons exist its centre and a strong majority of footprint probes
+ * must belong to a single room. Strong wall centre-lines are not allowed to cut through the core of
+ * the proposed run.
  *
  * This guard never creates or moves a stair. It can only reject semantic evidence before fusion.
  */
@@ -48,6 +49,9 @@ internal object StairEvidenceGeometryGuard {
                 .filter { pointInsidePolygon(evidence.center, it.polygon) }
                 .maxByOrNull { roomProbeSupport(it, footprint) }
                 ?: return false
+            // A 3/9 escape used to pass the old 0.66 threshold and allowed a staircase footprint to
+            // visibly protrude through a measured room boundary. Ultra reconstruction is fail-closed:
+            // at least 8 of the 9 inset probes must remain in one trusted room.
             if (roomProbeSupport(host, footprint) < MIN_ROOM_PROBE_SUPPORT) return false
         }
 
@@ -197,7 +201,7 @@ internal object StairEvidenceGeometryGuard {
     private const val OUTER_MARGIN_METERS = 0.05f
     private const val PROBE_INSET_METERS = 0.08f
     private const val MIN_ROOM_CONFIDENCE = 0.66f
-    private const val MIN_ROOM_PROBE_SUPPORT = 0.66f
+    private const val MIN_ROOM_PROBE_SUPPORT = 8f / 9f
     private const val MIN_WALL_CONFIDENCE = 0.68f
     private const val CORE_RUN_FRACTION = 0.72f
     private const val CORE_WIDTH_FRACTION = 0.60f
