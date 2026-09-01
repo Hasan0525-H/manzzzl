@@ -4,12 +4,8 @@ package com.manzl.app.analysis
  * Fail-closed runtime policy for the high-quality 2D -> house path.
  *
  * The project explicitly forbids silent quality downgrade. If the distilled reconstruction student or
- * MobileSAM assets are absent, the app must not quietly fall back to the legacy line scanner and then
- * present that result as an Ultra reconstruction. The deterministic/CV pipeline remains useful as an
- * adjudicator and diagnostic fallback, but it is not sufficient on its own for user-visible 3D.
- *
- * Presence is also not approval. A bundled student remains blocked until its quality attestation says
- * that held-out real-plan validation passed and the attested SHA-256 matches the packaged ONNX bytes.
+ * MobileSAM assets are absent, unapproved, or fail integrity verification, the app must not quietly
+ * fall back to the legacy line scanner and present that result as an Ultra reconstruction.
  */
 internal object UltraRuntimeQualityGate {
 
@@ -60,12 +56,13 @@ internal object UltraRuntimeQualityGate {
             )
         }
         if (availability.integrityFailedAssets.isNotEmpty()) {
+            val friendly = availability.integrityFailedAssets.map(::friendlyAssetName)
             return Decision(
                 ready = false,
                 missingAssets = emptyList(),
                 unapprovedAssets = emptyList(),
                 integrityFailedAssets = availability.integrityFailedAssets,
-                messageArabic = "أوقفت التحويل لأن بصمة نموذج Manzl المرفق لا تطابق بصمة SHA-256 المعتمدة في تقرير الجودة. قد يكون الملف مختلفاً عن النموذج الذي تم اختباره، لذلك لن أستخدمه لبناء 3D.",
+                messageArabic = "أوقفت التحويل لأن بصمة SHA-256 لا تطابق النسخة المعتمدة لأحد نماذج Ultra: ${friendly.joinToString("، ")}. قد يكون الملف تالفاً أو مختلفاً عن النموذج الذي تم اختباره، لذلك لن أستخدمه لبناء 3D.",
             )
         }
         if (!availability.ultraRuntimeReady) {
