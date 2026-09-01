@@ -78,7 +78,7 @@ internal object ReconstructionReadinessGate {
         return if (report.trustedRoomCount == 0) {
             "أوقفت تحويل المخطط إلى 3D لأن حدود الغرف المغلقة لم تُستخرج بثقة كافية. إنشاء أرضية مستطيلة افتراضية سيغيّر شكل المنزل الحقيقي."
         } else {
-            "أوقفت تحويل المخطط إلى 3D لأن تغطية أسطح الغرف الموثوقة لا تتجاوز $coverage%. هذه التغطية غير كافية لبناء الأرضيات والأسقف بدون اختراع مساحات."
+            "أوقفت تحويل المخطط إلى 3D لأن الغرف الموثوقة تغطي $coverage% فقط من الغلاف المقاس للجدران. لن أبني أرضيات أو أسقف مع مناطق كبيرة مفقودة؛ يجب إغلاق topology أولاً."
         }
     }
 
@@ -127,21 +127,57 @@ internal object ReconstructionReadinessGate {
             room.polygon.size >= 3 &&
             polygonArea(room.polygon) >= MIN_TRUSTED_ROOM_AREA_SQ_METERS
 
+    /**
+     * Coverage is measured against the physical wall envelope, not FloorPlan.width×depth. The latter
+     * includes conservative content padding and can make a complete reconstruction look sparse (or a
+     * partial one look acceptable after a bad crop). Using measured wall faces makes the gate follow
+     * the actual building evidence. A deliberately high threshold then blocks houses with large
+     * missing floor/ceiling regions instead of relying on the renderer's old 32% fallback boundary.
+     */
     private fun sampledRoomCoverage(plan: FloorPlan, rooms: List<RoomRegion>): Float {
-        if (rooms.isEmpty() || plan.widthMeters <= 0f || plan.depthMeters <= 0f) return 0f
+        if (rooms.isEmpty()) return 0f
+        val envelope = structuralEnvelope(plan) ?: return 0f
+        if (envelope.width <= EPSILON || envelope.depth <= EPSILON) return 0f
+
         var inside = 0
         val total = COVERAGE_GRID * COVERAGE_GRID
-        val minX = -plan.widthMeters * 0.5f
-        val minZ = -plan.depthMeters * 0.5f
         for (zIndex in 0 until COVERAGE_GRID) {
-            val z = minZ + plan.depthMeters * ((zIndex + 0.5f) / COVERAGE_GRID.toFloat())
+            val z = envelope.minZ + envelope.depth * ((zIndex + 0.5f) / COVERAGE_GRID.toFloat())
             for (xIndex in 0 until COVERAGE_GRID) {
-                val x = minX + plan.widthMeters * ((xIndex + 0.5f) / COVERAGE_GRID.toFloat())
+                val x = envelope.minX + envelope.width * ((xIndex + 0.5f) / COVERAGE_GRID.toFloat())
                 val point = Vec2(x, z)
                 if (rooms.any { room -> pointInsidePolygon(point, room.polygon) }) inside++
             }
         }
         return inside / total.toFloat()
+    }
+
+    private fun structuralEnvelope(plan: FloorPlan): Envelope? {
+        if (plan.walls.isEmpty()) return null
+        var minX = Float.POSITIVE_INFINITY
+        var maxX = Float.NEGATIVE_INFINITY
+        var minZ = Float.POSITIVE_INFINITY
+        var maxZ = Float.NEGATIVE_INFINITY
+        for (wall in plan.walls) {
+            val half = wall.thicknessMeters.coerceIn(MIN_WALL_THICKNESS_METERS, MAX_WALL_THICKNESS_METERS) * 0.5f
+            minX = min(minX, min(wall.start.x, wall.end.x) - half)
+            maxX = max(maxX, max(wall.start.x, wall.end.x) + half)
+            minZ = min(minZ, min(wall.start.z, wall.end.z) - half)
+            maxZ = max(maxZ, max(wall.start.z, wall.end.z) + half)
+        }
+        if (!minX.isFinite() || !maxX.isFinite() || !minZ.isFinite() || !maxZ.isFinite()) return null
+
+        // Never let a rogue wall enlarge the denominator outside the already calibrated plan bounds.
+        val planMinX = -plan.widthMeters * 0.5f
+        val planMaxX = plan.widthMeters * 0.5f
+        val planMinZ = -plan.depthMeters * 0.5f
+        val planMaxZ = plan.depthMeters * 0.5f
+        val clampedMinX = minX.coerceIn(planMinX, planMaxX)
+        val clampedMaxX = maxX.coerceIn(planMinX, planMaxX)
+        val clampedMinZ = minZ.coerceIn(planMinZ, planMaxZ)
+        val clampedMaxZ = maxZ.coerceIn(planMinZ, planMaxZ)
+        if (clampedMaxX - clampedMinX <= EPSILON || clampedMaxZ - clampedMinZ <= EPSILON) return null
+        return Envelope(clampedMinX, clampedMaxX, clampedMinZ, clampedMaxZ)
     }
 
     private fun polygonCentroid(points: List<Vec2>): Vec2? {
@@ -192,6 +228,16 @@ internal object ReconstructionReadinessGate {
         return result
     }
 
+    private data class Envelope(
+        val minX: Float,
+        val maxX: Float,
+        val minZ: Float,
+        val maxZ: Float,
+    ) {
+        val width: Float get() = maxX - minX
+        val depth: Float get() = maxZ - minZ
+    }
+
     private const val MIN_REVIEW_GAP_METERS = 0.42f
     private const val MAX_REVIEW_GAP_METERS = 4.20f
     private const val MAX_GAP_RESULTS = 96
@@ -204,7 +250,9 @@ internal object ReconstructionReadinessGate {
     private const val MAX_OPENING_AXIS_DELTA_DEGREES = 12f
     private const val MIN_TRUSTED_ROOM_CONFIDENCE = 0.66f
     private const val MIN_TRUSTED_ROOM_AREA_SQ_METERS = 1.2f
-    private const val MIN_TRUSTED_ROOM_COVERAGE = 0.32f
-    private const val COVERAGE_GRID = 48
+    private const val MIN_TRUSTED_ROOM_COVERAGE = 0.68f
+    private const val MIN_WALL_THICKNESS_METERS = 0.06f
+    private const val MAX_WALL_THICKNESS_METERS = 0.60f
+    private const val COVERAGE_GRID = 64
     private const val EPSILON = 0.000001f
 }
