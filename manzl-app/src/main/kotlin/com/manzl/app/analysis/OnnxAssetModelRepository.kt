@@ -25,6 +25,7 @@ internal object UltraModelCatalog {
     const val MOBILE_SAM_DECODER_SHA256 =
         "93915fc7c993ab9d59ab8c9ccd3bce37f7509c81ab4150a74abd4d2abbd8570d"
     const val SEMANTIC_QUALITY_FLOOR_VERSION = 1
+    const val RELEASE_CORPUS_SCALE_POLICY_VERSION = 1
 
     val requiredForUltraRuntime = listOf(
         MANZL_RECONSTRUCTION_STUDENT,
@@ -130,8 +131,9 @@ internal class OnnxAssetModelRepository(context: Context) : Closeable {
 
     /**
      * Mirrors the Python APK boundary gate at runtime. A proposal/bootstrap quality file is never an
-     * approval source. Only the final held-out release bundle, bound to the exact ONNX digest, immutable
-     * semantic quality floor, and release-ready runtime manifest, may promote the student into Ultra.
+     * approval source. Only the final held-out release bundle, bound to the exact ONNX digest, a
+     * release-scale independent real corpus, immutable semantic quality floor, and release-ready
+     * runtime manifest, may promote the student into Ultra.
      */
     private fun studentFinalReleaseAttestation(): StudentReleaseAttestation {
         val model = readAssetBytes(UltraModelCatalog.MANZL_RECONSTRUCTION_STUDENT)
@@ -153,6 +155,10 @@ internal class OnnxAssetModelRepository(context: Context) : Closeable {
             jsonBoolean(release, "trainingAttestationVerified") == true &&
             jsonBoolean(release, "candidateArtifactIntegrityPassed") == true &&
             jsonBoolean(release, "heldOutCorpusIdentityMatchedAcrossEvidence") == true &&
+            jsonBoolean(release, "releaseCorpusScalePassed") == true &&
+            jsonInt(release, "releaseCorpusScalePolicyVersion") ==
+                UltraModelCatalog.RELEASE_CORPUS_SCALE_POLICY_VERSION &&
+            jsonBoolean(release, "releaseCorpusScaleRecomputedAtFinalize") == true &&
             jsonBoolean(release, "semanticAcceptancePolicyLocked") == true &&
             jsonBoolean(release, "semanticAcceptancePolicyEvaluated") == true &&
             jsonBoolean(release, "relativeSemanticAcceptancePassed") == true &&
@@ -171,6 +177,8 @@ internal class OnnxAssetModelRepository(context: Context) : Closeable {
             jsonBoolean(manifest, "releaseReady") == true &&
             jsonInt(manifest, "semanticQualityFloorVersion") ==
                 UltraModelCatalog.SEMANTIC_QUALITY_FLOOR_VERSION &&
+            jsonInt(manifest, "releaseCorpusScalePolicyVersion") ==
+                UltraModelCatalog.RELEASE_CORPUS_SCALE_POLICY_VERSION &&
             jsonString(manifest, "releaseEvidence") == "models/manzl_reconstruction_student.release.json" &&
             jsonString(manifest, "trainingProvenance") == "models/manzl_reconstruction_student.training.json"
 
