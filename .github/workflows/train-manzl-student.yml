@@ -9,6 +9,7 @@ on:
       - 'research/ultra-reconstruction/generate_rights_safe_synthetic.py'
       - 'research/ultra-reconstruction/generate_synthetic_corpus.py'
       - 'research/ultra-reconstruction/render_resplan_training.py'
+      - 'research/ultra-reconstruction/evaluate_student_onnx.py'
       - 'research/ultra-reconstruction/train_student.py'
       - 'research/ultra-reconstruction/build_teacher_consensus.py'
       - '.github/workflows/train-manzl-student.yml'
@@ -39,7 +40,12 @@ jobs:
       - name: Install local-training dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install numpy==1.26.4 onnx==1.17.0 opencv-python-headless==4.10.0.84 shapely==2.0.6
+          python -m pip install \
+            numpy==1.26.4 \
+            onnx==1.17.0 \
+            onnxruntime==1.22.1 \
+            opencv-python-headless==4.10.0.84 \
+            shapely==2.0.6
           python -m pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cpu
 
       - name: Fetch pinned CC-BY ResPlan geometry
@@ -80,33 +86,16 @@ jobs:
           rm -rf /tmp/manzl-train /tmp/manzl-val /tmp/manzl-student
           mkdir -p /tmp/manzl-train /tmp/manzl-val
 
-          # Curriculum A: exact procedural residential layouts from the original Manzl generator.
           python research/ultra-reconstruction/generate_rights_safe_synthetic.py \
-            --output /tmp/manzl-train \
-            --count 80 \
-            --size 512 \
-            --seed 43926
+            --output /tmp/manzl-train --count 80 --size 512 --seed 43926
           python research/ultra-reconstruction/generate_rights_safe_synthetic.py \
-            --output /tmp/manzl-val \
-            --count 24 \
-            --size 512 \
-            --seed 90439
+            --output /tmp/manzl-val --count 24 --size 512 --seed 90439
 
-          # Curriculum B: independent raster renderer with blueprint/scan degradation, arbitrary-angle
-          # walls, openings, columns, stairs, courtyards, shafts and drafting-line distractors.
           python research/ultra-reconstruction/generate_synthetic_corpus.py \
-            --output /tmp/manzl-train \
-            --count 80 \
-            --size 512 \
-            --seed 260901
+            --output /tmp/manzl-train --count 80 --size 512 --seed 260901
           python research/ultra-reconstruction/generate_synthetic_corpus.py \
-            --output /tmp/manzl-val \
-            --count 24 \
-            --size 512 \
-            --seed 260902
+            --output /tmp/manzl-val --count 24 --size 512 --seed 260902
 
-          # Curriculum C: realistic topology/proportions from the geometry-only CC BY 4.0 ResPlan
-          # release. No third-party listing images are downloaded or reproduced.
           python research/ultra-reconstruction/render_resplan_training.py \
             --archive /tmp/ResPlan.zip \
             --split-json /tmp/ResPlan-split.json \
@@ -159,16 +148,19 @@ jobs:
           assert inputs == ['image'], inputs
           assert outputs == ['semantic_logits', 'corner_logits', 'wall_orientation'], outputs
           metadata = json.loads(metadata_path.read_text(encoding='utf-8'))
-          validation = metadata.get('validation') or {}
           assert metadata.get('inputSize') == 512
           assert len(metadata.get('semanticClasses', [])) == 9
           assert model_path.stat().st_size > 100_000
-          print(json.dumps({
-              'bytes': model_path.stat().st_size,
-              'validation': validation,
-              'outputs': outputs,
-          }, indent=2))
+          print(json.dumps({'bytes': model_path.stat().st_size, 'outputs': outputs}, indent=2))
           PY
+
+      - name: Run exported model and measure every semantic class
+        run: |
+          python research/ultra-reconstruction/evaluate_student_onnx.py \
+            --model /tmp/manzl-student/manzl_reconstruction_student.onnx \
+            --data /tmp/manzl-val \
+            --output /tmp/manzl-student/manzl_reconstruction_student.bootstrap-eval.json \
+            --size 512
 
       - name: Create explicit non-release quality attestation
         run: |
@@ -179,10 +171,12 @@ jobs:
 
           model_path = pathlib.Path('/tmp/manzl-student/manzl_reconstruction_student.onnx')
           training_path = pathlib.Path('/tmp/manzl-student/manzl_reconstruction_student.json')
+          evaluation_path = pathlib.Path('/tmp/manzl-student/manzl_reconstruction_student.bootstrap-eval.json')
           training = json.loads(training_path.read_text(encoding='utf-8'))
+          evaluation = json.loads(evaluation_path.read_text(encoding='utf-8'))
           digest = hashlib.sha256(model_path.read_bytes()).hexdigest()
           attestation = {
-              'schema': 3,
+              'schema': 4,
               'model': model_path.name,
               'sha256': digest,
               'bytes': model_path.stat().st_size,
@@ -190,11 +184,12 @@ jobs:
               'trainingSamples': 240,
               'validationSamples': 64,
               'resPlanAttribution': 'research/ultra-reconstruction/RESPLAN_ATTRIBUTION.md',
-              'validation': training.get('validation'),
+              'trainerValidation': training.get('validation'),
+              'generatedValidation': evaluation,
               'proposalOnly': True,
               'realPlanBenchmarkPassed': False,
               'releaseReady': False,
-              'reason': 'The bootstrap student makes the complete offline Ultra runtime executable and includes realistic licensed topology, but generated raster validation is not evidence of Saudi/Arabic real-plan accuracy. Teacher-consensus + real-plan regression gates remain mandatory.'
+              'reason': 'The bootstrap student makes the complete offline Ultra runtime executable and measures each class, but generated raster validation is not evidence of Saudi/Arabic real-plan accuracy. Teacher-consensus + real-plan regression gates remain mandatory.'
           }
           pathlib.Path('/tmp/manzl-student/manzl_reconstruction_student.quality.json').write_text(
               json.dumps(attestation, indent=2), encoding='utf-8'
@@ -208,6 +203,7 @@ jobs:
           path: |
             /tmp/manzl-student/manzl_reconstruction_student.onnx
             /tmp/manzl-student/manzl_reconstruction_student.json
+            /tmp/manzl-student/manzl_reconstruction_student.bootstrap-eval.json
             /tmp/manzl-student/manzl_reconstruction_student.quality.json
           if-no-files-found: error
           retention-days: 14
@@ -215,8 +211,6 @@ jobs:
       - name: Commit rights-safe bootstrap student onto latest feature head
         if: github.event_name == 'push'
         run: |
-          # Development can continue while the CPU trainer runs. Re-anchor the generated model on the
-          # latest remote feature head instead of trying to push an obsolete checkout.
           git fetch origin "${GITHUB_REF_NAME}"
           git reset --hard "origin/${GITHUB_REF_NAME}"
 
@@ -225,6 +219,8 @@ jobs:
             manzl-app/src/main/assets/models/manzl_reconstruction_student.onnx
           cp /tmp/manzl-student/manzl_reconstruction_student.json \
             manzl-app/src/main/assets/models/manzl_reconstruction_student.training.json
+          cp /tmp/manzl-student/manzl_reconstruction_student.bootstrap-eval.json \
+            manzl-app/src/main/assets/models/manzl_reconstruction_student.bootstrap-eval.json
           cp /tmp/manzl-student/manzl_reconstruction_student.quality.json \
             manzl-app/src/main/assets/models/manzl_reconstruction_student.quality.json
 
@@ -243,6 +239,7 @@ jobs:
                   item['releaseReady'] = False
                   item['trainingSource'] = quality['trainingSource']
                   item['attribution'] = quality['resPlanAttribution']
+                  item['generatedValidation'] = 'models/manzl_reconstruction_student.bootstrap-eval.json'
           manifest_path.write_text(json.dumps(manifest, indent=2), encoding='utf-8')
           PY
 
@@ -251,6 +248,7 @@ jobs:
           git add \
             manzl-app/src/main/assets/models/manzl_reconstruction_student.onnx \
             manzl-app/src/main/assets/models/manzl_reconstruction_student.training.json \
+            manzl-app/src/main/assets/models/manzl_reconstruction_student.bootstrap-eval.json \
             manzl-app/src/main/assets/models/manzl_reconstruction_student.quality.json \
             manzl-app/src/main/assets/models/manifest.json
           if git diff --cached --quiet; then
