@@ -181,7 +181,7 @@ def render(plan: dict, size: int, seed: int) -> dict[str, np.ndarray] | None:
     semantic = np.zeros((size, size), dtype=np.int64)
 
     if rng.random() < 0.23:
-        wall_ink = np.asarray([158, 82, 37], dtype=np.uint8)  # BGR blueprint-like structural ink.
+        wall_ink = np.asarray([158, 82, 37], dtype=np.uint8)
         symbol_ink = np.asarray([125, 70, 35], dtype=np.uint8)
     else:
         value = rng.randint(18, 62)
@@ -194,8 +194,6 @@ def render(plan: dict, size: int, seed: int) -> dict[str, np.ndarray] | None:
     image[wall] = wall_ink
     semantic[wall] = WALL
 
-    # Openings and stairs are rendered after walls. Their released vector geometry is the authority
-    # for the semantic mask; they may overlap the wall face in source geometry and intentionally win.
     for key, class_id in (("door", DOOR), ("front_door", DOOR), ("window", WINDOW), ("stair", STAIR)):
         pixels = geometry_mask(plan.get(key), transform, size, line_width=max(2, size // 190))
         if not pixels.any():
@@ -206,7 +204,6 @@ def render(plan: dict, size: int, seed: int) -> dict[str, np.ndarray] | None:
     draw_room_text(image, plan, transform, rng, tuple(int(v) for v in symbol_ink))
     draw_drafting_noise(image, rng, (118, 118, 118))
 
-    # Image-only scanner/screenshot corruption. Geometry supervision remains exact.
     if rng.random() < 0.48:
         sigma = rng.uniform(0.25, 0.85)
         image = cv2.GaussianBlur(image, (3, 3), sigmaX=sigma)
@@ -219,8 +216,6 @@ def render(plan: dict, size: int, seed: int) -> dict[str, np.ndarray] | None:
     supervision = np.ones((size, size), dtype=np.float32)
     semantic_confidence = np.ones((size, size), dtype=np.float32)
 
-    # Wall-face polygons do not encode a unique centre-line orientation/corner target. Mask those two
-    # heads instead of fabricating labels; exact procedural samples supervise them separately.
     corners = np.zeros((size, size), dtype=np.float32)
     corner_mask = np.zeros((size, size), dtype=np.float32)
     orientation = np.zeros((2, size, size), dtype=np.float32)
@@ -265,6 +260,7 @@ def write_split(plans, output: pathlib.Path, count: int, size: int, seed: int) -
         if payload is None:
             continue
         plan_id = str(plan.get("id", index)).replace("/", "_")
+        payload["source_group"] = np.asarray(f"resplan:{plan_id}")
         np.savez_compressed(output / f"resplan_{plan_id}_{written:05d}.npz", **payload)
         written += 1
         if written >= count:
