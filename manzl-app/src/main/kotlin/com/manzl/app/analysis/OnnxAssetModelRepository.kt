@@ -20,6 +20,12 @@ internal object UltraModelCatalog {
     const val MOBILE_SAM_ENCODER = "models/mobile_sam_encoder.onnx"
     const val MOBILE_SAM_DECODER = "models/mobile_sam_decoder.onnx"
 
+    // These hashes are pinned to the same MobileSAM revision verified by fetch_runtime_models.py.
+    const val MOBILE_SAM_ENCODER_SHA256 =
+        "580f5fb648ea1062c0aabc26217aed56921985f03f0cbbd852bba81d760cc749"
+    const val MOBILE_SAM_DECODER_SHA256 =
+        "93915fc7c993ab9d59ab8c9ccd3bce37f7509c81ab4150a74abd4d2abbd8570d"
+
     val requiredForUltraRuntime = listOf(
         MANZL_RECONSTRUCTION_STUDENT,
         MOBILE_SAM_ENCODER,
@@ -28,6 +34,9 @@ internal object UltraModelCatalog {
 
     /** Models whose mere presence is insufficient: they need final held-out release evidence. */
     val releaseAttestedAssets = setOf(MANZL_RECONSTRUCTION_STUDENT)
+
+    /** Every executable model must match the exact artifact that was approved/fetched. */
+    val requiredIntegrityAssets = requiredForUltraRuntime.toSet()
 }
 
 internal data class UltraModelAvailability(
@@ -39,9 +48,8 @@ internal data class UltraModelAvailability(
     val ultraRuntimeReady: Boolean
         get() = onnxRuntimeReady &&
             UltraModelCatalog.requiredForUltraRuntime.all { it in presentAssets } &&
-            UltraModelCatalog.releaseAttestedAssets.all {
-                it in releaseApprovedAssets && it in integrityVerifiedAssets
-            }
+            UltraModelCatalog.releaseAttestedAssets.all { it in releaseApprovedAssets } &&
+            UltraModelCatalog.requiredIntegrityAssets.all { it in integrityVerifiedAssets }
 
     val missingAssets: List<String>
         get() = UltraModelCatalog.requiredForUltraRuntime.filterNot { it in presentAssets }
@@ -52,8 +60,8 @@ internal data class UltraModelAvailability(
         }
 
     val integrityFailedAssets: List<String>
-        get() = UltraModelCatalog.releaseAttestedAssets.filter {
-            it in presentAssets && it in releaseApprovedAssets && it !in integrityVerifiedAssets
+        get() = UltraModelCatalog.requiredIntegrityAssets.filter {
+            it in presentAssets && it !in integrityVerifiedAssets
         }
 }
 
@@ -70,15 +78,28 @@ internal class OnnxAssetModelRepository(context: Context) : Closeable {
         val present = UltraModelCatalog.requiredForUltraRuntime
             .filterTo(LinkedHashSet()) { assetExists(it) }
         val release = studentFinalReleaseAttestation()
+        val integrity = buildSet {
+            if (release.integrityVerified) add(UltraModelCatalog.MANZL_RECONSTRUCTION_STUDENT)
+            if (
+                sha256Asset(UltraModelCatalog.MOBILE_SAM_ENCODER) ==
+                UltraModelCatalog.MOBILE_SAM_ENCODER_SHA256
+            ) {
+                add(UltraModelCatalog.MOBILE_SAM_ENCODER)
+            }
+            if (
+                sha256Asset(UltraModelCatalog.MOBILE_SAM_DECODER) ==
+                UltraModelCatalog.MOBILE_SAM_DECODER_SHA256
+            ) {
+                add(UltraModelCatalog.MOBILE_SAM_DECODER)
+            }
+        }
         return UltraModelAvailability(
             onnxRuntimeReady = environment != null,
             presentAssets = present,
             releaseApprovedAssets = buildSet {
                 if (release.releaseApproved) add(UltraModelCatalog.MANZL_RECONSTRUCTION_STUDENT)
             },
-            integrityVerifiedAssets = buildSet {
-                if (release.integrityVerified) add(UltraModelCatalog.MANZL_RECONSTRUCTION_STUDENT)
-            },
+            integrityVerifiedAssets = integrity,
         )
     }
 
@@ -163,6 +184,19 @@ internal class OnnxAssetModelRepository(context: Context) : Closeable {
         appContext.assets.open(assetPath).bufferedReader(Charsets.UTF_8).use { it.readText() }
     }.getOrNull()
 
+    private fun sha256Asset(assetPath: String): String? = runCatching {
+        val digest = MessageDigest.getInstance("SHA-256")
+        appContext.assets.open(assetPath).use { input ->
+            val buffer = ByteArray(1024 * 1024)
+            while (true) {
+                val count = input.read(buffer)
+                if (count <= 0) break
+                digest.update(buffer, 0, count)
+            }
+        }
+        digest.digest().toHex()
+    }.getOrNull()
+
     @Synchronized
     override fun close() {
         sessions.values.forEach { session -> runCatching { session.close() } }
@@ -208,6 +242,9 @@ internal class OnnxAssetModelRepository(context: Context) : Closeable {
         private fun sha256(bytes: ByteArray): String = MessageDigest
             .getInstance("SHA-256")
             .digest(bytes)
-            .joinToString(separator = "") { byte -> "%02x".format(byte) }
+            .toHex()
+
+        private fun ByteArray.toHex(): String =
+            joinToString(separator = "") { byte -> "%02x".format(byte) }
     }
 }
