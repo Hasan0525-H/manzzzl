@@ -4,18 +4,15 @@ import com.manzl.app.design.ReferenceDrivenDesignEngine
 import com.manzl.app.model.BuildingPlan
 import com.manzl.app.model.DoorHingeSide
 import com.manzl.app.model.DoorSwingSide
+import com.manzl.app.model.VerticalVoidRoomPolicy
 
 /**
  * Stacks independently measured floor-plan meshes at their declared base elevations.
  *
- * No X/Z registration correction is applied here. If two source drawings disagree, their measured
- * geometry remains untouched; StairLevelLinker may describe a semantic connection but cannot move
- * either floor. This keeps the same geometry-authoritative rule used by the single-level pipeline.
- *
- * Verified structural columns are appended as solid prisms to the same structural material stream as
- * measured walls. Door leaves are deliberately suppressed from the static mesh. Frames remain static,
- * while known physical leaves are rendered by DoorLeafMeshBuilder from InteractiveDoorWorld so
- * animation and collision share the exact same runtime pose.
+ * No X/Z registration correction is applied here. Verified structural columns are appended as solid
+ * prisms. Trusted vertical-void room faces (service/elevator shafts) are omitted from floor/ceiling
+ * generation only after ReconstructionReadinessGate has proved they are independent planar faces, so
+ * the omission creates a real hole rather than silently filling the shaft with a rectangular slab.
  */
 internal object BuildingMeshBuilder {
 
@@ -32,8 +29,11 @@ internal object BuildingMeshBuilder {
                     )
                 }
             )
+            val surfacePlan = staticPlan.copy(
+                rooms = staticPlan.rooms.filterNot(VerticalVoidRoomPolicy::isVerticalVoid),
+            )
             val houseMesh = HouseMeshBuilder.build(
-                plan = staticPlan,
+                plan = surfacePlan,
                 wallHeightOverride = design.wallHeightMeters,
                 doorHeightOverride = design.doorHeightMeters,
             )
