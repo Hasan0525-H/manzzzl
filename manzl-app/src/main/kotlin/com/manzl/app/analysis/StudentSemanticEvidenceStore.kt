@@ -32,20 +32,34 @@ internal object StudentSemanticEvidenceStore {
 }
 
 /**
- * Resolves cached source-space class observations against the latest deterministic wall graph.
- * Door/window centres, widths and axes therefore come from final measured gaps, never stale AI output.
+ * Resolves cached source-space class observations against the latest deterministic wall graph and
+ * contributes an independent arbitrary-angle OpenCV stair opinion in the same semantic phase.
+ *
+ * The OpenCV stair path is intentionally available even when the distilled student asset is absent.
+ * This keeps stair reconstruction from silently falling back to the old axis-only detector, while
+ * consensus/fusion still decides whether any observation is strong enough to enter canonical 3D.
  */
 internal object StudentSemanticEvidenceProvider : SemanticEvidenceProvider {
+    private val arbitraryAngleStairExpert = OpenCvStairEvidenceProvider()
+
     override suspend fun analyze(bitmap: Bitmap, structuralPlan: FloorPlan): List<SemanticEvidence> {
         val components = StudentSemanticEvidenceStore.get(bitmap)
-        if (components.isEmpty()) return emptyList()
-        val transform = PlanRasterTransform.forImage(structuralPlan, bitmap.width, bitmap.height)
-        return StudentSemanticEvidenceProjector.project(
-            components = components,
-            seed = structuralPlan,
-            sourceTransform = transform,
-            modelToSource = { x, y -> x to y },
-            detailPass = false,
-        )
+        val studentEvidence = if (components.isEmpty()) {
+            emptyList()
+        } else {
+            val transform = PlanRasterTransform.forImage(structuralPlan, bitmap.width, bitmap.height)
+            StudentSemanticEvidenceProjector.project(
+                components = components,
+                seed = structuralPlan,
+                sourceTransform = transform,
+                modelToSource = { x, y -> x to y },
+                detailPass = false,
+            )
+        }
+
+        val stairEvidence = arbitraryAngleStairExpert.analyze(bitmap, structuralPlan)
+        if (studentEvidence.isEmpty()) return stairEvidence
+        if (stairEvidence.isEmpty()) return studentEvidence
+        return studentEvidence + stairEvidence
     }
 }
