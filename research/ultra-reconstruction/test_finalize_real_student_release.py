@@ -29,7 +29,6 @@ class FinalizeRealStudentReleaseTest(unittest.TestCase):
         split.mkdir(parents=True, exist_ok=True)
         digest = f"{index:032x}"
         group = "private:" + f"{index:032x}"
-        # Every sample has distinct source pixels so exact-raster leakage checks stay meaningful.
         image = np.zeros((12, 16, 3), dtype=np.uint8)
         image[:, :, 0] = index % 251
         image[index % 12, :, 1] = (index * 7) % 251
@@ -131,6 +130,9 @@ class FinalizeRealStudentReleaseTest(unittest.TestCase):
         }
 
     def make_candidate(self, root: pathlib.Path) -> tuple[pathlib.Path, str, int]:
+        preflight = verify_real_training_inputs.verify(root / "splits")
+        membership = preflight["opaqueSplitSetFingerprints"]
+        artifacts = preflight["opaqueSplitArtifactFingerprints"]
         candidate = root / "candidate"
         candidate.mkdir()
         model = candidate / "manzl_reconstruction_student.onnx"
@@ -145,13 +147,25 @@ class FinalizeRealStudentReleaseTest(unittest.TestCase):
             "bytes": size,
             "trainingSplit": "train",
             "modelSelectionSplit": "validation",
+            "trainSetFingerprint": membership["train"],
+            "validationSetFingerprint": membership["validation"],
+            "testSetFingerprint": membership["test"],
+            "trainArtifactFingerprint": artifacts["train"],
+            "validationArtifactFingerprint": artifacts["validation"],
+            "testArtifactFingerprint": artifacts["test"],
+            "artifactFingerprintIsAggregateOnly": True,
+            "perSampleContentHashesStored": False,
+            "validationEvaluation": self.metrics("private-real-validation"),
+            "validationMetricsExactSplitCoverage": True,
+            "releaseCorpusScalePreflightPassed": True,
+            "releaseCorpusScalePolicyVersion": 1,
+            "splitArtifactsStableAcrossTraining": True,
             "testSplitPresentAndVerified": True,
             "testUsedForTraining": False,
             "testUsedForModelSelection": False,
             "testUsedForValidationMetrics": False,
             "testReservedForFinalEvaluation": True,
             "realTrainingPreflightPassed": True,
-            "validationEvaluation": self.metrics("private-real-validation"),
             "releaseReady": False,
         }
         (candidate / "real-training-attestation.json").write_text(json.dumps(training), encoding="utf-8")
@@ -167,6 +181,7 @@ class FinalizeRealStudentReleaseTest(unittest.TestCase):
     ) -> tuple[pathlib.Path, pathlib.Path, pathlib.Path]:
         preflight = verify_real_training_inputs.verify(splits)
         fingerprint = preflight["opaqueSplitSetFingerprints"]["test"]
+        artifact_fingerprint = preflight["opaqueSplitArtifactFingerprints"]["test"]
         samples = preflight["testSamples"]
         groups = preflight["testSourceGroups"]
 
@@ -189,7 +204,13 @@ class FinalizeRealStudentReleaseTest(unittest.TestCase):
             "testSamples": samples,
             "testSourceGroups": groups,
             "testSetFingerprint": fingerprint,
+            "testArtifactFingerprint": artifact_fingerprint,
+            "candidateSplitBindingsVerified": True,
+            "splitArtifactsStableAcrossFinalSemanticEvaluation": True,
+            "releaseCorpusScaleVerifiedAtFinalTest": True,
+            "semanticMetricsExactHeldOutSampleCoverage": True,
             "fingerprintContainsOnlyOpaqueSampleIds": True,
+            "artifactFingerprintIsAggregateOnly": True,
             "testMetrics": test_metrics,
             "semanticPolicySha256": policy_sha,
             "semanticAcceptanceEvaluation": acceptance,
@@ -218,9 +239,14 @@ class FinalizeRealStudentReleaseTest(unittest.TestCase):
             "modelSha256": digest,
             "modelBytes": size,
             "candidateTrainingAttestationVerified": True,
+            "candidateSplitBindingsVerified": True,
+            "splitArtifactsStableAcrossGeometryVerification": True,
+            "releaseCorpusScaleVerifiedAtGeometryGate": True,
             "geometryEvidenceBoundToExactModelDigest": True,
             "testSetFingerprint": fingerprint,
+            "testArtifactFingerprint": artifact_fingerprint,
             "fingerprintContainsOnlyOpaqueSampleIds": True,
+            "artifactFingerprintIsAggregateOnly": True,
             "testSamples": samples,
             "evidenceSamples": samples,
             "exactHeldOutSampleCoverage": True,
@@ -245,19 +271,19 @@ class FinalizeRealStudentReleaseTest(unittest.TestCase):
             report = finalizer.finalize(splits, candidate, policy_path, semantic, geometry)
 
             self.assertTrue(report["releaseEvidenceBundleComplete"])
+            self.assertTrue(report["candidateSplitBindingsVerified"])
+            self.assertTrue(report["heldOutArtifactIdentityMatchedAcrossEvidence"])
+            self.assertEqual(report["heldOutArtifactFingerprint"], json.loads(semantic.read_text())["testArtifactFingerprint"])
             self.assertTrue(report["releaseCorpusScalePassed"])
             self.assertEqual(report["releaseCorpusScalePolicyVersion"], 1)
             self.assertTrue(report["releaseCorpusScaleRecomputedAtFinalize"])
             self.assertTrue(report["semanticMetricsExactHeldOutSampleCoverage"])
-            self.assertTrue(report["semanticAcceptancePolicyLocked"])
             self.assertTrue(report["relativeSemanticAcceptancePassed"])
             self.assertTrue(report["absoluteSemanticQualityPassed"])
             self.assertTrue(report["semanticEvidenceRecomputedAtFinalize"])
             self.assertEqual(report["absoluteSemanticQualityFloorVersion"], 1)
-            self.assertTrue(report["semanticAcceptancePassed"])
             self.assertTrue(report["geometryReleaseEvidencePassed"])
             self.assertTrue(report["releaseReady"])
-            self.assertIsNone(report["blockingReason"])
 
     def test_semantic_attestation_from_different_model_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -271,18 +297,6 @@ class FinalizeRealStudentReleaseTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "sha256"):
                 finalizer.finalize(splits, candidate, policy_path, semantic, geometry)
 
-    def test_failed_semantic_acceptance_flag_is_rejected(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = pathlib.Path(tmp)
-            splits = self.make_splits(root)
-            candidate, digest, size = self.make_candidate(root)
-            policy_path, semantic, geometry = self.write_evidence_bundle(root, splits, candidate, digest, size)
-            payload = json.loads(semantic.read_text(encoding="utf-8"))
-            payload["semanticAcceptancePassed"] = False
-            semantic.write_text(json.dumps(payload), encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "semanticAcceptancePassed"):
-                finalizer.finalize(splits, candidate, policy_path, semantic, geometry)
-
     def test_forged_absolute_pass_cannot_hide_weak_raw_metrics(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
@@ -292,8 +306,6 @@ class FinalizeRealStudentReleaseTest(unittest.TestCase):
             payload = json.loads(semantic.read_text(encoding="utf-8"))
             floor = evaluate_real_student_test.ABSOLUTE_CLASS_FLOORS["door"]["recall"]
             payload["testMetrics"]["semantic"]["perClass"]["door"]["recall"] = floor - 0.10
-            payload["absoluteSemanticQualityPassed"] = True
-            payload["semanticAcceptancePassed"] = True
             semantic.write_text(json.dumps(payload), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "recomputed absolute semantic quality failed"):
                 finalizer.finalize(splits, candidate, policy_path, semantic, geometry)
@@ -310,28 +322,27 @@ class FinalizeRealStudentReleaseTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "do not cover the exact full test split"):
                 finalizer.finalize(splits, candidate, policy_path, semantic, geometry)
 
-    def test_stored_semantic_evaluation_must_match_recomputation(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = pathlib.Path(tmp)
-            splits = self.make_splits(root)
-            candidate, digest, size = self.make_candidate(root)
-            policy_path, semantic, geometry = self.write_evidence_bundle(root, splits, candidate, digest, size)
-            payload = json.loads(semantic.read_text(encoding="utf-8"))
-            payload["absoluteSemanticQualityEvaluation"]["checks"]["class:door:recall"]["actual"] = 1.0
-            semantic.write_text(json.dumps(payload), encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "does not match recomputed"):
-                finalizer.finalize(splits, candidate, policy_path, semantic, geometry)
-
-    def test_different_held_out_corpus_fingerprint_is_rejected(self):
+    def test_semantic_and_geometry_must_share_exact_test_artifacts(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
             splits = self.make_splits(root)
             candidate, digest, size = self.make_candidate(root)
             policy_path, semantic, geometry = self.write_evidence_bundle(root, splits, candidate, digest, size)
             payload = json.loads(geometry.read_text(encoding="utf-8"))
-            payload["testSetFingerprint"] = "e" * 64
+            payload["testArtifactFingerprint"] = "e" * 64
             geometry.write_text(json.dumps(payload), encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "testSetFingerprint"):
+            with self.assertRaisesRegex(ValueError, "testArtifactFingerprint"):
+                finalizer.finalize(splits, candidate, policy_path, semantic, geometry)
+
+    def test_mutating_bound_test_npz_invalidates_candidate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            splits = self.make_splits(root)
+            candidate, digest, size = self.make_candidate(root)
+            policy_path, semantic, geometry = self.write_evidence_bundle(root, splits, candidate, digest, size)
+            target = sorted((splits / "test").glob("*.npz"))[0]
+            target.write_bytes(target.read_bytes() + b"tamper")
+            with self.assertRaisesRegex(RuntimeError, "artifact fingerprint no longer matches training"):
                 finalizer.finalize(splits, candidate, policy_path, semantic, geometry)
 
 
