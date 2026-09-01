@@ -6,12 +6,14 @@ Inputs remain local/private:
 * ``source-groups.local.json`` from ``prepare_private_real_corpus.py``, and
 * the private corpus salt.
 
-The safe ``split-manifest.json`` contains only opaque sample/family IDs. This bridge recomputes each
-sample ID from the consensus source raster, proves the NPZ's embedded ``source_group`` agrees with the
-local operational manifest, then writes opaque filenames into train/validation/test. The test partition
-is materialized but is never an input to the trainer; it is reserved for final held-out evaluation.
+The safe teacher-aligned ``split-manifest.json`` contains only opaque sample/family IDs. This bridge
+recomputes each sample ID from the consensus source raster, proves the NPZ's embedded ``source_group``
+agrees with local provenance, re-verifies every split from the same salt/policy, then writes opaque
+filenames into train/validation/test. The test partition is reserved for final held-out evaluation.
 
-No network code is used and no private source path is written to the output report.
+Materialization is transactional: an existing output is never deleted or overwritten, work is written
+to a temporary sibling directory, and that directory is renamed into place only after every integrity
+check passes. No network code is used and no private source path is written to the output report.
 """
 
 from __future__ import annotations
@@ -20,11 +22,13 @@ import argparse
 import json
 import pathlib
 import shutil
+import tempfile
 
 import numpy as np
 
 import build_real_teacher_consensus as real_consensus
 import prepare_private_real_corpus as private_corpus
+import rekey_private_manifest_to_teacher_raster as rekeyer
 
 SPLITS = ("train", "validation", "test")
 
@@ -126,6 +130,37 @@ def validate_manifest_counts(manifest: dict, records: dict[str, dict]) -> None:
         raise RuntimeError(f"safe split manifest group counts are inconsistent: {expected_groups} != {measured_groups}")
 
 
+def validate_split_assignments(manifest: dict, records: dict[str, dict], salt: str) -> dict:
+    split_policy = rekeyer.validate_split_policy(manifest)
+    for record in records.values():
+        recomputed = private_corpus.group_split(
+            record["sourceGroup"],
+            salt,
+            validation_fraction=float(split_policy["validationFraction"]),
+            test_fraction=float(split_policy["testFraction"]),
+        )
+        if record["split"] != recomputed:
+            raise RuntimeError(
+                "safe manifest split assignment does not match the private corpus salt/policy for "
+                f"{record['sourceGroup']}; manifest={record['split']!r} recomputed={recomputed!r}"
+            )
+    private_corpus.validate_holdout_coverage(manifest)
+    return split_policy
+
+
+def validate_output_location(consensus_root: pathlib.Path, output_root: pathlib.Path) -> None:
+    consensus_resolved = consensus_root.resolve()
+    output_resolved = output_root.resolve()
+    if output_root.exists():
+        raise FileExistsError(
+            f"output root already exists; refusing to delete or overwrite existing data: {output_root}"
+        )
+    if output_resolved == consensus_resolved:
+        raise ValueError("output root must differ from consensus root")
+    if consensus_resolved in output_resolved.parents or output_resolved in consensus_resolved.parents:
+        raise ValueError("output and consensus roots must not contain one another")
+
+
 def materialize(
     consensus_root: pathlib.Path,
     source_groups_path: pathlib.Path,
@@ -138,89 +173,102 @@ def materialize(
     manifest = load_safe_manifest(split_manifest_path)
     manifest_records = parse_manifest_records(manifest)
     validate_manifest_counts(manifest, manifest_records)
+    split_policy = validate_split_assignments(manifest, manifest_records, salt)
 
     samples = sorted(real_consensus.discover_npz(consensus_root))
     local_groups = real_consensus.load_source_groups(source_groups_path, samples)
+    validate_output_location(consensus_root, output_root)
 
-    if output_root.resolve() == consensus_root.resolve():
-        raise ValueError("output root must differ from consensus root")
-    if output_root.exists():
-        shutil.rmtree(output_root)
-    for split in SPLITS:
-        (output_root / split).mkdir(parents=True, exist_ok=True)
-
-    matched: set[str] = set()
-    actual_counts = {split: 0 for split in SPLITS}
-    groups_by_split = {split: set() for split in SPLITS}
-
-    for relative in samples:
-        source = consensus_root / relative
-        with np.load(source, allow_pickle=False) as sample:
-            if "image" not in sample.files:
-                raise ValueError(f"consensus sample is missing image: {relative}")
-            if "source_group" not in sample.files:
-                raise ValueError(f"consensus sample is missing source_group: {relative}")
-            image = real_consensus.normalize_image_for_comparison(np.asarray(sample["image"]), source)
-            embedded_group = normalize_scalar_text(sample["source_group"], "source_group", source)
-
-        expected_local_group = local_groups[relative]
-        if embedded_group != expected_local_group:
-            raise RuntimeError(
-                f"consensus source_group disagrees with local provenance for {relative}; "
-                "refusing a potentially leaked/misjoined sample"
-            )
-
-        pixel_sha256 = private_corpus.raster_digest(image)
-        sample_id = private_corpus.opaque_sample_id(pixel_sha256, salt)
-        record = manifest_records.get(sample_id)
-        if record is None:
-            raise RuntimeError(f"consensus sample is absent from safe split manifest: {sample_id}")
-        if sample_id in matched:
-            raise RuntimeError(f"duplicate consensus raster/sampleId detected: {sample_id}")
-        matched.add(sample_id)
-
-        if record["sourceGroup"] != embedded_group:
-            raise RuntimeError(f"safe manifest sourceGroup mismatch for {sample_id}")
-        if int(record["width"]) != int(image.shape[1]) or int(record["height"]) != int(image.shape[0]):
-            raise RuntimeError(f"safe manifest dimensions mismatch for {sample_id}")
-
-        split = record["split"]
-        destination = output_root / split / opaque_filename(sample_id)
-        shutil.copy2(source, destination)
-        actual_counts[split] += 1
-        groups_by_split[split].add(embedded_group)
-
-    missing = set(manifest_records) - matched
-    if missing:
-        raise RuntimeError(f"safe split manifest contains samples absent from consensus: {sorted(missing)[:10]}")
-
-    # Final independent family-leakage assertion on the materialized result.
-    for first_index, first in enumerate(SPLITS):
-        for second in SPLITS[first_index + 1:]:
-            overlap = groups_by_split[first] & groups_by_split[second]
-            if overlap:
-                raise RuntimeError(f"source families leaked across {first}/{second}: {sorted(overlap)[:10]}")
-
-    if actual_counts != manifest["samplesBySplit"]:
-        raise RuntimeError(f"materialized split counts mismatch: {actual_counts} != {manifest['samplesBySplit']}")
-
-    report = {
-        "schema": 1,
-        "pipeline": "private-real-consensus-to-held-out-splits",
-        "samples": len(matched),
-        "samplesBySplit": actual_counts,
-        "sourceGroupsBySplit": {split: len(groups_by_split[split]) for split in SPLITS},
-        "privatePathsStored": False,
-        "rawRasterHashesStored": False,
-        "opaqueOutputFilenames": True,
-        "testReservedForFinalEvaluation": True,
-        "releaseReady": False,
-        "reason": "Materialization proves provenance/split integrity only; measured held-out reconstruction gates must still pass.",
-    }
-    (output_root / "materialization_report.json").write_text(
-        json.dumps(report, indent=2, sort_keys=True), encoding="utf-8"
+    output_root.parent.mkdir(parents=True, exist_ok=True)
+    staging = pathlib.Path(
+        tempfile.mkdtemp(prefix=f".{output_root.name}.staging-", dir=str(output_root.parent))
     )
-    return report
+    try:
+        for split in SPLITS:
+            (staging / split).mkdir(parents=True, exist_ok=True)
+
+        matched: set[str] = set()
+        actual_counts = {split: 0 for split in SPLITS}
+        groups_by_split = {split: set() for split in SPLITS}
+
+        for relative in samples:
+            source = consensus_root / relative
+            with np.load(source, allow_pickle=False) as sample:
+                if "image" not in sample.files:
+                    raise ValueError(f"consensus sample is missing image: {relative}")
+                if "source_group" not in sample.files:
+                    raise ValueError(f"consensus sample is missing source_group: {relative}")
+                image = real_consensus.normalize_image_for_comparison(np.asarray(sample["image"]), source)
+                embedded_group = normalize_scalar_text(sample["source_group"], "source_group", source)
+
+            expected_local_group = local_groups[relative]
+            if embedded_group != expected_local_group:
+                raise RuntimeError(
+                    f"consensus source_group disagrees with local provenance for {relative}; "
+                    "refusing a potentially leaked/misjoined sample"
+                )
+
+            pixel_sha256 = private_corpus.raster_digest(image)
+            sample_id = private_corpus.opaque_sample_id(pixel_sha256, salt)
+            record = manifest_records.get(sample_id)
+            if record is None:
+                raise RuntimeError(f"consensus sample is absent from safe split manifest: {sample_id}")
+            if sample_id in matched:
+                raise RuntimeError(f"duplicate consensus raster/sampleId detected: {sample_id}")
+            matched.add(sample_id)
+
+            if record["sourceGroup"] != embedded_group:
+                raise RuntimeError(f"safe manifest sourceGroup mismatch for {sample_id}")
+            if int(record["width"]) != int(image.shape[1]) or int(record["height"]) != int(image.shape[0]):
+                raise RuntimeError(f"safe manifest dimensions mismatch for {sample_id}")
+
+            split = record["split"]
+            destination = staging / split / opaque_filename(sample_id)
+            shutil.copy2(source, destination)
+            actual_counts[split] += 1
+            groups_by_split[split].add(embedded_group)
+
+        missing = set(manifest_records) - matched
+        if missing:
+            raise RuntimeError(f"safe split manifest contains samples absent from consensus: {sorted(missing)[:10]}")
+
+        for first_index, first in enumerate(SPLITS):
+            for second in SPLITS[first_index + 1:]:
+                overlap = groups_by_split[first] & groups_by_split[second]
+                if overlap:
+                    raise RuntimeError(f"source families leaked across {first}/{second}: {sorted(overlap)[:10]}")
+
+        if actual_counts != manifest["samplesBySplit"]:
+            raise RuntimeError(f"materialized split counts mismatch: {actual_counts} != {manifest['samplesBySplit']}")
+
+        report = {
+            "schema": 2,
+            "pipeline": "private-real-consensus-to-held-out-splits",
+            "samples": len(matched),
+            "samplesBySplit": actual_counts,
+            "sourceGroupsBySplit": {split: len(groups_by_split[split]) for split in SPLITS},
+            "splitPolicy": split_policy,
+            "splitAssignmentsReverifiedFromSaltAndPolicy": True,
+            "privatePathsStored": False,
+            "rawRasterHashesStored": False,
+            "opaqueOutputFilenames": True,
+            "transactionalMaterialization": True,
+            "existingOutputOverwritten": False,
+            "testReservedForFinalEvaluation": True,
+            "releaseReady": False,
+            "reason": (
+                "Materialization proves provenance/split integrity only; measured held-out reconstruction "
+                "gates must still pass."
+            ),
+        }
+        (staging / "materialization_report.json").write_text(
+            json.dumps(report, indent=2, sort_keys=True), encoding="utf-8"
+        )
+        staging.rename(output_root)
+        return report
+    except Exception:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
 
 
 def parse_args() -> argparse.Namespace:
