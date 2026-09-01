@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Verify the packaged Manzl student is an actual measured release model.
 
-This is the APK boundary. A packaged student is accepted only when the app assets contain the exact
-ONNX artifact referenced by the final real-student release bundle produced after a release-scale real
-benchmark, full held-out semantic measurement, locked relative semantic acceptance, immutable absolute
-semantic quality, and end-to-end geometry PASS.
+This is the Python APK boundary. It requires the exact ONNX digest, modern release-scale/semantic
+contracts, candidate split bindings and one aggregate held-out artifact fingerprint shared by training,
+final release evidence and the runtime manifest.
 """
 
 from __future__ import annotations
@@ -13,11 +12,13 @@ import argparse
 import hashlib
 import json
 import pathlib
+import re
 
 MODEL_NAME = "manzl_reconstruction_student.onnx"
 RELEASE_NAME = "manzl_reconstruction_student.release.json"
 TRAINING_NAME = "manzl_reconstruction_student.training.json"
 MANIFEST_NAME = "manifest.json"
+HEX64 = re.compile(r"^[0-9a-f]{64}$")
 
 
 def _load_json(path: pathlib.Path, label: str) -> dict:
@@ -27,6 +28,13 @@ def _load_json(path: pathlib.Path, label: str) -> dict:
     if not isinstance(payload, dict):
         raise ValueError(f"{label} must be a JSON object")
     return payload
+
+
+def _digest(payload: dict, key: str, label: str) -> str:
+    value = payload.get(key)
+    if not isinstance(value, str) or HEX64.fullmatch(value) is None:
+        raise RuntimeError(f"{label} contains invalid {key}")
+    return value
 
 
 def verify(asset_root: pathlib.Path) -> dict:
@@ -52,7 +60,11 @@ def verify(asset_root: pathlib.Path) -> dict:
         "bytes": size,
         "trainingAttestationVerified": True,
         "candidateArtifactIntegrityPassed": True,
+        "candidateSplitBindingsVerified": True,
+        "splitArtifactsStableAcrossFinalization": True,
         "heldOutCorpusIdentityMatchedAcrossEvidence": True,
+        "heldOutArtifactIdentityMatchedAcrossEvidence": True,
+        "artifactFingerprintIsAggregateOnly": True,
         "releaseCorpusScalePassed": True,
         "releaseCorpusScalePolicyVersion": 1,
         "releaseCorpusScaleRecomputedAtFinalize": True,
@@ -77,6 +89,7 @@ def verify(asset_root: pathlib.Path) -> dict:
                 f"packaged student release contract failed for {key}: "
                 f"{release.get(key)!r} != {expected!r}"
             )
+    heldout = _digest(release, "heldOutArtifactFingerprint", "student release evidence")
 
     training_required = {
         "schema": 1,
@@ -86,6 +99,12 @@ def verify(asset_root: pathlib.Path) -> dict:
         "bytes": size,
         "trainingSplit": "train",
         "modelSelectionSplit": "validation",
+        "validationMetricsExactSplitCoverage": True,
+        "releaseCorpusScalePreflightPassed": True,
+        "releaseCorpusScalePolicyVersion": 1,
+        "splitArtifactsStableAcrossTraining": True,
+        "artifactFingerprintIsAggregateOnly": True,
+        "perSampleContentHashesStored": False,
         "testSplitPresentAndVerified": True,
         "testUsedForTraining": False,
         "testUsedForModelSelection": False,
@@ -100,6 +119,13 @@ def verify(asset_root: pathlib.Path) -> dict:
                 f"packaged student training provenance failed for {key}: "
                 f"{training.get(key)!r} != {expected!r}"
             )
+    for key in (
+        "trainSetFingerprint", "validationSetFingerprint", "testSetFingerprint",
+        "trainArtifactFingerprint", "validationArtifactFingerprint", "testArtifactFingerprint",
+    ):
+        _digest(training, key, "student training provenance")
+    if training["testArtifactFingerprint"] != heldout:
+        raise RuntimeError("packaged training and final release disagree on held-out artifact fingerprint")
 
     required_models = manifest.get("required")
     if not isinstance(required_models, list):
@@ -120,6 +146,7 @@ def verify(asset_root: pathlib.Path) -> dict:
         "trainingProvenance": f"models/{TRAINING_NAME}",
         "semanticQualityFloorVersion": 1,
         "releaseCorpusScalePolicyVersion": 1,
+        "heldOutArtifactFingerprint": heldout,
     }
     for key, expected in manifest_required.items():
         if student.get(key) != expected:
@@ -145,6 +172,9 @@ def verify(asset_root: pathlib.Path) -> dict:
         "model": MODEL_NAME,
         "sha256": digest,
         "bytes": size,
+        "candidateSplitBindingsVerified": True,
+        "heldOutArtifactFingerprint": heldout,
+        "heldOutArtifactIdentityMatchedAcrossEvidence": True,
         "releaseCorpusScalePassed": True,
         "releaseCorpusScalePolicyVersion": 1,
         "releaseCorpusScaleRecomputedAtFinalize": True,
@@ -163,11 +193,7 @@ def verify(asset_root: pathlib.Path) -> dict:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--assets",
-        type=pathlib.Path,
-        default=pathlib.Path("manzl-app/src/main/assets/models"),
-    )
+    parser.add_argument("--assets", type=pathlib.Path, default=pathlib.Path("manzl-app/src/main/assets/models"))
     return parser.parse_args()
 
 
