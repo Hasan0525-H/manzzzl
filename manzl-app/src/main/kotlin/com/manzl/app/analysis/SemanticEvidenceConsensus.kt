@@ -17,8 +17,10 @@ import kotlin.math.sqrt
  * sizes and axes agree within tight tolerances. Conflicting observations remain separate and are
  * left for the geometry guard to accept/reject. Explicit user corrections are never averaged away.
  *
- * This gives the pipeline a stable place to combine future bundled neural-model evidence with the
- * existing OCR/classical-CV providers without letting "more AI" silently rewrite measured topology.
+ * Independence is tracked by [SemanticEvidence.observerId], not merely by the broad evidence family.
+ * This matters for the Ultra reconstruction path: two different CV stair readers should be able to
+ * corroborate one another, while repeated proposals from one detector must never masquerade as two
+ * votes. Legacy evidence without an observer id retains the previous source-family de-duplication.
  */
 internal object SemanticEvidenceConsensus {
 
@@ -39,7 +41,7 @@ internal object SemanticEvidenceConsensus {
                     if (cluster == null) {
                         clusters += Cluster(mutableListOf(evidence))
                     } else {
-                        cluster.addOrReplaceBySource(evidence)
+                        cluster.addOrReplaceByObserver(evidence)
                     }
                 }
             clusters.forEach { result += it.toConsensus() }
@@ -108,6 +110,7 @@ internal object SemanticEvidenceConsensus {
             items.any { it.source == EvidenceSource.LOCAL_AI } -> EvidenceSource.LOCAL_AI
             else -> EvidenceSource.CLASSICAL_CV
         }
+        val observers = items.map(::observerKey).distinct().sorted()
 
         return SemanticEvidence(
             kind = items.first().kind,
@@ -117,9 +120,17 @@ internal object SemanticEvidenceConsensus {
             rotationDegrees = weightedAxisRotation(items),
             polygon = emptyList(),
             label = items.mapNotNull { it.label }.firstOrNull(),
+            countHint = weightedCountHint(items),
             confidence = confidence,
             source = source,
+            observerId = "consensus:${observers.joinToString("+")}",
         )
+    }
+
+    private fun weightedCountHint(items: List<SemanticEvidence>): Int? {
+        val hints = items.mapNotNull { item -> item.countHint?.let { item to it } }
+        if (hints.isEmpty()) return null
+        return hints.maxByOrNull { (item, _) -> sourceWeight(item.source) * item.confidence }?.second
     }
 
     private fun weightedAxisRotation(items: List<SemanticEvidence>): Float? {
@@ -193,13 +204,17 @@ internal object SemanticEvidenceConsensus {
         return sqrt(dx * dx + dz * dz)
     }
 
+    private fun observerKey(evidence: SemanticEvidence): String =
+        evidence.observerId?.takeIf { it.isNotBlank() } ?: "source:${evidence.source.name}"
+
     private data class Cluster(
         val items: MutableList<SemanticEvidence>,
     ) {
         fun representative(): SemanticEvidence = items.maxBy { it.confidence }
 
-        fun addOrReplaceBySource(candidate: SemanticEvidence) {
-            val index = items.indexOfFirst { it.source == candidate.source }
+        fun addOrReplaceByObserver(candidate: SemanticEvidence) {
+            val candidateKey = observerKey(candidate)
+            val index = items.indexOfFirst { observerKey(it) == candidateKey }
             if (index < 0) {
                 items += candidate
             } else if (candidate.confidence > items[index].confidence) {
