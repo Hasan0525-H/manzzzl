@@ -1,5 +1,5 @@
 {
-  "schema": 9,
+  "schema": 10,
   "checkedAt": "2026-09-01",
   "costPolicy": "zero-paid-services",
   "projectUse": "personal-non-commercial",
@@ -76,8 +76,22 @@
         "publishedBoundaryIoUPercent": 85.01,
         "inputSize": 512
       },
+      "runtimeSmoke": {
+        "testedAt": "2026-09-01",
+        "python": "3.11.16",
+        "torch": "2.8.0+cpu",
+        "segmentationModelsPytorch": "0.5.0",
+        "device": "cpu",
+        "inputShape": [256, 256, 3],
+        "outputProbabilityShape": [2, 256, 256],
+        "teacherFormat": "mitunet-wall-probability-v2-pinned",
+        "wallMaxProbability": 1.0,
+        "checkpointVerifiedBeforeLoad": true,
+        "weightsOnlyLoad": true,
+        "passed": true
+      },
       "shipInPublicApk": false,
-      "notes": "Allowed only as a personal/non-commercial development-time teacher. It is never bundled in the APK. If project use becomes commercial, exclude it or retrain equivalent wall supervision from commercial-compatible data."
+      "notes": "Allowed only as a personal/non-commercial development-time teacher. It is never bundled in the APK. The pinned checkpoint has passed real CPU inference on the hardened SHA-verifying adapter using the current official modern runtime. If project use becomes commercial, exclude it or retrain equivalent wall supervision from commercial-compatible data."
     },
     {
       "id": "roomformer",
