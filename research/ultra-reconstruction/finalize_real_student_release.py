@@ -1,15 +1,10 @@
 #!/usr/bin/env python3
-"""Combine Manzl real-student release evidence for one exact ONNX candidate.
+"""Combine Manzl real-student release evidence for one exact ONNX candidate and test corpus.
 
-Release succeeds only when the same model digest and opaque held-out corpus are covered by:
-1) verified real training provenance and a release-scale number of independent homes,
-2) a semantic policy locked from validation before test,
-3) full held-out semantic PASS against both the locked relative policy and immutable absolute floors,
-4) production runtime end-to-end geometry PASS.
-
-The finalizer deliberately recomputes corpus-scale and semantic acceptance from measured evidence. It
-does not trust stored PASS booleans or stored semantic evaluation objects, and raw semantic metrics must
-report the exact full held-out sample count rather than a favorable subset.
+Release succeeds only when training, semantic held-out evidence and production geometry evidence all
+refer to the same exact ONNX digest and the same opaque NPZ artifacts that were bound to the candidate
+at training time. The finalizer re-measures corpus scale, split fingerprints and semantic metrics; it
+never trusts stored PASS booleans by themselves.
 """
 
 from __future__ import annotations
@@ -100,9 +95,12 @@ def finalize(
     preflight = verify_real_training_inputs.verify(splits)
     corpus_scale = release_corpus_scale.require(preflight)
     model_path, training = evaluate_real_student_test.load_candidate(candidate)
+    evaluate_real_student_test.assert_candidate_split_binding(training, preflight)
+
     model_sha256 = training["sha256"]
     model_bytes = model_path.stat().st_size
     test_fingerprint = preflight["opaqueSplitSetFingerprints"]["test"]
+    test_artifact_fingerprint = preflight["opaqueSplitArtifactFingerprints"]["test"]
     test_samples = preflight["testSamples"]
     test_groups = preflight["testSourceGroups"]
 
@@ -124,7 +122,13 @@ def finalize(
             "testSamples": test_samples,
             "testSourceGroups": test_groups,
             "testSetFingerprint": test_fingerprint,
+            "testArtifactFingerprint": test_artifact_fingerprint,
+            "candidateSplitBindingsVerified": True,
+            "splitArtifactsStableAcrossFinalSemanticEvaluation": True,
+            "releaseCorpusScaleVerifiedAtFinalTest": True,
+            "semanticMetricsExactHeldOutSampleCoverage": True,
             "fingerprintContainsOnlyOpaqueSampleIds": True,
+            "artifactFingerprintIsAggregateOnly": True,
             "semanticPolicySha256": policy_sha,
             "relativeSemanticAcceptancePassed": True,
             "absoluteSemanticQualityPassed": True,
@@ -154,9 +158,14 @@ def finalize(
             "modelSha256": model_sha256,
             "modelBytes": model_bytes,
             "candidateTrainingAttestationVerified": True,
+            "candidateSplitBindingsVerified": True,
+            "splitArtifactsStableAcrossGeometryVerification": True,
+            "releaseCorpusScaleVerifiedAtGeometryGate": True,
             "geometryEvidenceBoundToExactModelDigest": True,
             "testSetFingerprint": test_fingerprint,
+            "testArtifactFingerprint": test_artifact_fingerprint,
             "fingerprintContainsOnlyOpaqueSampleIds": True,
+            "artifactFingerprintIsAggregateOnly": True,
             "testSamples": test_samples,
             "evidenceSamples": test_samples,
             "exactHeldOutSampleCoverage": True,
@@ -171,6 +180,16 @@ def finalize(
         "geometry release attestation",
     )
 
+    if semantic["testArtifactFingerprint"] != geometry["testArtifactFingerprint"]:
+        raise ValueError("semantic and geometry evidence were produced from different held-out test artifacts")
+    if semantic["testArtifactFingerprint"] != training["testArtifactFingerprint"]:
+        raise ValueError("held-out evidence artifact fingerprint differs from the candidate training binding")
+
+    postflight = verify_real_training_inputs.verify(splits)
+    evaluate_real_student_test.assert_candidate_split_binding(training, postflight)
+    if postflight["opaqueSplitArtifactFingerprints"] != preflight["opaqueSplitArtifactFingerprints"]:
+        raise RuntimeError("real-plan split artifacts changed while final release evidence was combined")
+
     return {
         "schema": 2,
         "pipeline": "manzl-real-student-release-evidence-bundle",
@@ -182,10 +201,15 @@ def finalize(
         "testSamples": test_samples,
         "testSourceGroups": test_groups,
         "testSetFingerprint": test_fingerprint,
+        "heldOutArtifactFingerprint": test_artifact_fingerprint,
+        "artifactFingerprintIsAggregateOnly": True,
         "semanticPolicySha256": policy_sha,
         "trainingAttestationVerified": True,
         "candidateArtifactIntegrityPassed": True,
+        "candidateSplitBindingsVerified": True,
+        "splitArtifactsStableAcrossFinalization": True,
         "heldOutCorpusIdentityMatchedAcrossEvidence": True,
+        "heldOutArtifactIdentityMatchedAcrossEvidence": True,
         "releaseCorpusScalePassed": True,
         "releaseCorpusScalePolicyVersion": corpus_scale["policyVersion"],
         "releaseCorpusScaleRecomputedAtFinalize": True,
@@ -204,9 +228,9 @@ def finalize(
         "releaseReady": True,
         "blockingReason": None,
         "reason": (
-            "The exact ONNX candidate was measured on a release-scale independent real-plan corpus; semantic "
-            "metrics covered the exact full held-out split; recomputed relative and immutable absolute semantic "
-            "gates passed; and every production end-to-end geometry gate passed. APK packaging is separate."
+            "The exact ONNX candidate passed on the exact release-scale NPZ artifacts bound at training time. "
+            "Semantic and geometry evidence share the same held-out artifact fingerprint, full sample coverage, "
+            "immutable semantic floors and production 2D-to-3D geometry gates."
         ),
     }
 
