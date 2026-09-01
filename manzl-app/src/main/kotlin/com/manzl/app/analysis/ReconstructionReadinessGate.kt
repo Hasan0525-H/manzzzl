@@ -4,23 +4,13 @@ import com.manzl.app.model.DoorEvidenceKind
 import com.manzl.app.model.FloorPlan
 import com.manzl.app.model.RoomRegion
 import com.manzl.app.model.Vec2
+import com.manzl.app.model.VerticalVoidRoomPolicy
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sqrt
 
-/**
- * Final reconstruction gate after semantic opening classification and room topology.
- *
- * Geometry fidelity alone can be high while the resulting house is still visibly wrong: an
- * opening-sized gap can remain unclassified and become a floor-to-ceiling hole, room topology can be
- * too sparse and force a fake rectangular floor slab, or a detected vertical service/elevator shaft
- * can be silently filled because the current mesh path does not yet support polygon holes through a
- * floor slab. This gate blocks those cases before any 3D mesh is exposed to the user.
- *
- * It never invents geometry. It only asks whether the measured geometry has enough evidence to be
- * represented faithfully. Ambiguous cases go back to the 2D review surface.
- */
+/** Final fail-closed gate between reconstructed 2D topology and user-visible 3D. */
 internal object ReconstructionReadinessGate {
 
     data class Report(
@@ -49,13 +39,22 @@ internal object ReconstructionReadinessGate {
         }
 
         val trustedRooms = plan.rooms.filter(::isTrustedRoom)
-        val verticalVoids = trustedRooms.filter(::isUnsupportedVerticalVoid)
-        val coverage = sampledRoomCoverage(plan, trustedRooms)
+        val verticalVoids = trustedRooms.filter(VerticalVoidRoomPolicy::isVerticalVoid)
+        val surfaceRooms = trustedRooms.filterNot(VerticalVoidRoomPolicy::isVerticalVoid)
+        val unsupportedVoids = verticalVoids.filter { void ->
+            // The current mesher can preserve a shaft when it is an independent closed planar face:
+            // simply omit that face from floor/ceiling generation. If its centroid still lies inside
+            // another trusted surface polygon, omission would not create a hole because that surface
+            // would fill underneath it. Fail closed until polygon subtraction handles that topology.
+            val centre = polygonCentroid(void.polygon) ?: return@filter true
+            surfaceRooms.any { room -> pointInsidePolygon(centre, room.polygon) }
+        }
+        val coverage = sampledRoomCoverage(plan, surfaceRooms)
         return Report(
             unresolvedOpenings = unresolved,
-            unsupportedVerticalVoids = verticalVoids,
+            unsupportedVerticalVoids = unsupportedVoids,
             trustedRoomCoverage = coverage,
-            trustedRoomCount = trustedRooms.size,
+            trustedRoomCount = surfaceRooms.size,
         )
     }
 
@@ -66,24 +65,23 @@ internal object ReconstructionReadinessGate {
         if (report.unresolvedOpenings.isNotEmpty()) {
             val strongest = report.unresolvedOpenings.maxByOrNull { it.supportConfidence }
             val widthCm = ((strongest?.widthMeters ?: 0f) * 100f).toInt().coerceAtLeast(1)
-            return "أوقفت تحويل المخطط إلى 3D لأن هناك ${report.unresolvedOpenings.size} فتحة جدار مقاسة لم تُصنّف بثقة كباب أو نافذة. أقوى فتحة بعرض يقارب $widthCm سم. تركها سيُنتج فتحة كاملة في الجدار أو باباً مخترعاً، لذلك لن أعرض منزلاً خاطئاً؛ راجع الفتحات المعلّمة في المخطط."
+            return "أوقفت تحويل المخطط إلى 3D لأن هناك ${report.unresolvedOpenings.size} فتحة جدار مقاسة لم تُصنّف بثقة كباب أو نافذة. أقوى فتحة بعرض يقارب $widthCm سم. لن أخترع باباً أو أترك فتحة خاطئة."
         }
 
         if (report.unsupportedVerticalVoids.isNotEmpty()) {
             val label = report.unsupportedVerticalVoids.first().label?.trim().orEmpty()
             val suffix = if (label.isBlank()) "" else " ($label)"
-            return "أوقفت تحويل المخطط إلى 3D لأنني اكتشفت فراغاً رأسياً/شافتاً موثوقاً$suffix، ومحرك الأرضيات الحالي لا يملك بعد قصّ polygon hole مضموناً عبر البلاطة. ملء هذا الفراغ سيغيّر البيت الحقيقي، لذلك لن أتجاهله أو أغطيه بأرضية وهمية."
+            return "أوقفت تحويل المخطط إلى 3D لأن فراغاً رأسياً موثوقاً$suffix متداخل مع سطح غرفة أخرى؛ حذف وجه الشافت وحده لن يصنع فتحة حقيقية في البلاطة. لن أملأه بأرضية وهمية قبل حل التقاطع هندسياً."
         }
 
         val coverage = (report.trustedRoomCoverage * 100f).toInt().coerceIn(0, 100)
         return if (report.trustedRoomCount == 0) {
-            "أوقفت تحويل المخطط إلى 3D لأن حدود الغرف المغلقة لم تُستخرج بثقة كافية. إنشاء أرضية مستطيلة افتراضية سيغيّر شكل المنزل الحقيقي، لذلك يلزم تحسين استخراج الجدران/الغرف أو مراجعة المخطط قبل بناء 3D."
+            "أوقفت تحويل المخطط إلى 3D لأن حدود الغرف المغلقة لم تُستخرج بثقة كافية. إنشاء أرضية مستطيلة افتراضية سيغيّر شكل المنزل الحقيقي."
         } else {
-            "أوقفت تحويل المخطط إلى 3D لأن تغطية الغرف الموثوقة لا تتجاوز $coverage% من نطاق المخطط. هذه التغطية غير كافية لبناء أرضيات وأسقف مطابقة من دون اختراع مساحات؛ راجع المناطق غير المغلقة أولاً."
+            "أوقفت تحويل المخطط إلى 3D لأن تغطية أسطح الغرف الموثوقة لا تتجاوز $coverage%. هذه التغطية غير كافية لبناء الأرضيات والأسقف بدون اختراع مساحات."
         }
     }
 
-    /** Returns a diagnostic copy that the existing review UI can show as review-required. */
     fun planForReview(plan: FloorPlan): FloorPlan {
         val report = evaluate(plan)
         if (report.ready) return plan
@@ -94,27 +92,14 @@ internal object ReconstructionReadinessGate {
         )
     }
 
-    private fun hasClassifiedOpening(
-        plan: FloorPlan,
-        gap: MeasuredOpeningGapDetector.Gap,
-    ): Boolean {
+    private fun hasClassifiedOpening(plan: FloorPlan, gap: MeasuredOpeningGapDetector.Gap): Boolean {
         val doorMatch = plan.doors.any { door ->
             door.evidenceKind != DoorEvidenceKind.MEASURED_GAP &&
-                openingMatches(
-                    gap = gap,
-                    center = door.center,
-                    widthMeters = door.widthMeters,
-                    rotationDegrees = door.rotationDegrees,
-                )
+                openingMatches(gap, door.center, door.widthMeters, door.rotationDegrees)
         }
         if (doorMatch) return true
         return plan.windows.any { window ->
-            openingMatches(
-                gap = gap,
-                center = window.center,
-                widthMeters = window.widthMeters,
-                rotationDegrees = window.rotationDegrees,
-            )
+            openingMatches(gap, window.center, window.widthMeters, window.rotationDegrees)
         }
     }
 
@@ -132,9 +117,7 @@ internal object ReconstructionReadinessGate {
             min(gap.widthMeters, widthMeters) * OPENING_CENTER_TOLERANCE_RATIO,
         )
         if (centerDistance > centerTolerance) return false
-        if (axisAngleDifference(gap.rotationDegrees, rotationDegrees) > MAX_OPENING_AXIS_DELTA_DEGREES) {
-            return false
-        }
+        if (axisAngleDifference(gap.rotationDegrees, rotationDegrees) > MAX_OPENING_AXIS_DELTA_DEGREES) return false
         val widthTolerance = max(MIN_OPENING_WIDTH_TOLERANCE_METERS, gap.widthMeters * OPENING_WIDTH_TOLERANCE_RATIO)
         return abs(gap.widthMeters - widthMeters) <= widthTolerance
     }
@@ -144,16 +127,6 @@ internal object ReconstructionReadinessGate {
             room.polygon.size >= 3 &&
             polygonArea(room.polygon) >= MIN_TRUSTED_ROOM_AREA_SQ_METERS
 
-    private fun isUnsupportedVerticalVoid(room: RoomRegion): Boolean {
-        val label = room.label?.trim()?.lowercase().orEmpty()
-        if (label.isBlank()) return false
-        return VERTICAL_VOID_LABELS.any { token -> label.contains(token) }
-    }
-
-    /**
-     * Approximate polygon-union coverage on a fixed grid. This avoids double-counting overlapping
-     * room hypotheses and is deterministic/cheap enough for every floor on-device.
-     */
     private fun sampledRoomCoverage(plan: FloorPlan, rooms: List<RoomRegion>): Float {
         if (rooms.isEmpty() || plan.widthMeters <= 0f || plan.depthMeters <= 0f) return 0f
         var inside = 0
@@ -169,6 +142,14 @@ internal object ReconstructionReadinessGate {
             }
         }
         return inside / total.toFloat()
+    }
+
+    private fun polygonCentroid(points: List<Vec2>): Vec2? {
+        if (points.isEmpty()) return null
+        return Vec2(
+            x = points.sumOf { it.x.toDouble() }.toFloat() / points.size,
+            z = points.sumOf { it.z.toDouble() }.toFloat() / points.size,
+        )
     }
 
     private fun pointInsidePolygon(point: Vec2, polygon: List<Vec2>): Boolean {
@@ -211,17 +192,6 @@ internal object ReconstructionReadinessGate {
         return result
     }
 
-    private val VERTICAL_VOID_LABELS = listOf(
-        "shaft",
-        "service shaft",
-        "duct shaft",
-        "elevator shaft",
-        "lift shaft",
-        "شافت",
-        "بئر مصعد",
-        "فتحة مصعد",
-    )
-
     private const val MIN_REVIEW_GAP_METERS = 0.42f
     private const val MAX_REVIEW_GAP_METERS = 4.20f
     private const val MAX_GAP_RESULTS = 96
@@ -234,8 +204,6 @@ internal object ReconstructionReadinessGate {
     private const val MAX_OPENING_AXIS_DELTA_DEGREES = 12f
     private const val MIN_TRUSTED_ROOM_CONFIDENCE = 0.66f
     private const val MIN_TRUSTED_ROOM_AREA_SQ_METERS = 1.2f
-    // Match HouseMeshBuilder's room-floor threshold: if this passes, the renderer never falls back
-    // to a fake full-plan rectangular slab for a partially reconstructed house.
     private const val MIN_TRUSTED_ROOM_COVERAGE = 0.32f
     private const val COVERAGE_GRID = 48
     private const val EPSILON = 0.000001f
