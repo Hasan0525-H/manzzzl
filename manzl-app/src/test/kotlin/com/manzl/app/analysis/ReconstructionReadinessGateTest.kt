@@ -21,7 +21,7 @@ class ReconstructionReadinessGateTest {
         assertTrue(report.ready)
         assertTrue(report.unresolvedOpenings.isEmpty())
         assertTrue(report.unsupportedVerticalVoids.isEmpty())
-        assertTrue(report.trustedRoomCoverage >= 0.32f)
+        assertTrue(report.trustedRoomCoverage >= 0.90f)
     }
 
     @Test
@@ -102,17 +102,34 @@ class ReconstructionReadinessGateTest {
             plan(walls = rectangleWalls(), rooms = listOf(smallRoom))
         )
         assertFalse(report.ready)
-        assertTrue(report.trustedRoomCoverage < 0.32f)
+        assertTrue(report.trustedRoomCoverage < 0.15f)
     }
 
     @Test
-    fun `room coverage below renderer threshold cannot slip through readiness gate`() {
+    fun `forty percent room reconstruction is still blocked`() {
         val mediumRoom = room("medium", -2.5f, -2f, 2.5f, 2f)
         val report = ReconstructionReadinessGate.evaluate(
             plan(walls = rectangleWalls(), rooms = listOf(mediumRoom))
         )
         assertFalse(report.ready)
-        assertTrue(report.trustedRoomCoverage in 0.20f..0.30f)
+        assertTrue(report.trustedRoomCoverage in 0.35f..0.45f)
+    }
+
+    @Test
+    fun `coverage ignores conservative empty padding outside measured wall envelope`() {
+        val report = ReconstructionReadinessGate.evaluate(
+            FloorPlan(
+                widthMeters = 20f,
+                depthMeters = 18f,
+                walls = rectangleWalls(),
+                rooms = listOf(largeRoom()),
+                analysisConfidence = 0.95f,
+                sourceWidthPx = 1600,
+                sourceHeightPx = 1200,
+            )
+        )
+        assertTrue(report.ready)
+        assertTrue(report.trustedRoomCoverage >= 0.90f)
     }
 
     @Test
@@ -134,7 +151,7 @@ class ReconstructionReadinessGateTest {
             plan(walls = rectangleWalls(), rooms = listOf(left, right, shaft))
         )
         assertTrue(report.unsupportedVerticalVoids.isEmpty())
-        assertTrue(report.trustedRoomCoverage >= 0.32f)
+        assertTrue(report.trustedRoomCoverage >= 0.68f)
         assertTrue(report.ready)
     }
 
