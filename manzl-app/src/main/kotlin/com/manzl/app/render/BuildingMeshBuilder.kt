@@ -12,9 +12,10 @@ import com.manzl.app.model.DoorSwingSide
  * geometry remains untouched; StairLevelLinker may describe a semantic connection but cannot move
  * either floor. This keeps the same geometry-authoritative rule used by the single-level pipeline.
  *
- * Door leaves are deliberately suppressed from the static mesh. Frames remain static, while known
- * physical leaves are rendered by DoorLeafMeshBuilder from InteractiveDoorWorld so animation and
- * collision share the exact same runtime pose.
+ * Verified structural columns are appended as solid prisms to the same structural material stream as
+ * measured walls. Door leaves are deliberately suppressed from the static mesh. Frames remain static,
+ * while known physical leaves are rendered by DoorLeafMeshBuilder from InteractiveDoorWorld so
+ * animation and collision share the exact same runtime pose.
  */
 internal object BuildingMeshBuilder {
 
@@ -31,11 +32,18 @@ internal object BuildingMeshBuilder {
                     )
                 }
             )
-            val levelMesh = HouseMeshBuilder.build(
+            val houseMesh = HouseMeshBuilder.build(
                 plan = staticPlan,
                 wallHeightOverride = design.wallHeightMeters,
                 doorHeightOverride = design.doorHeightMeters,
-            ).translatedY(level.baseElevationMeters)
+            )
+            val columnMesh = StructuralColumnMeshBuilder.build(
+                plan = staticPlan,
+                heightOverrideMeters = design.wallHeightMeters,
+            )
+            val levelMesh = houseMesh
+                .append(columnMesh)
+                .translatedY(level.baseElevationMeters)
             combined = combined.append(levelMesh)
         }
         return combined
