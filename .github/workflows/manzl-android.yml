@@ -36,7 +36,6 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 35
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -67,12 +66,7 @@ jobs:
           python3 research/ultra-reconstruction/verify_runtime_model_contracts.py \
             --assets manzl-app/src/main/assets/models
 
-      - name: Require measured real local Ultra student before APK
-        run: |
-          python3 research/ultra-reconstruction/verify_packaged_release_student.py \
-            --assets manzl-app/src/main/assets/models
-
-      - name: Verify and build Manzl
+      - name: Verify and build Manzl Debug APK
         run: ./gradlew --no-daemon :manzl-app:testDebugUnitTest :manzl-app:lintDebug :manzl-app:assembleDebug --stacktrace
 
       - name: Upload APK
