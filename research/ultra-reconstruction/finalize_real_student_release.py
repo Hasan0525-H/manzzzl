@@ -4,11 +4,12 @@
 Release succeeds only when the same model digest and opaque held-out corpus are covered by:
 1) verified real training provenance and a release-scale number of independent homes,
 2) a semantic policy locked from validation before test,
-3) held-out semantic PASS against both the locked relative policy and immutable absolute quality floors,
+3) full held-out semantic PASS against both the locked relative policy and immutable absolute floors,
 4) production runtime end-to-end geometry PASS.
 
 The finalizer deliberately recomputes corpus-scale and semantic acceptance from measured evidence. It
-does not trust stored PASS booleans or stored semantic evaluation objects.
+does not trust stored PASS booleans or stored semantic evaluation objects, and raw semantic metrics must
+report the exact full held-out sample count rather than a favorable subset.
 """
 
 from __future__ import annotations
@@ -45,12 +46,25 @@ def _same_json(left: dict, right: dict) -> bool:
     return real_semantic_policy.canonical_digest(left) == real_semantic_policy.canonical_digest(right)
 
 
-def recompute_semantic_evidence(policy: dict, semantic: dict, model_sha256: str) -> tuple[dict, dict]:
+def recompute_semantic_evidence(
+    policy: dict,
+    semantic: dict,
+    model_sha256: str,
+    expected_test_samples: int,
+) -> tuple[dict, dict]:
     metrics = semantic.get("testMetrics")
     if not isinstance(metrics, dict) or metrics.get("schema") != 2 or metrics.get("domain") != "private-real-held-out-test":
         raise ValueError("semantic final-test attestation contains invalid held-out testMetrics")
     if metrics.get("releaseReady") is not False:
         raise ValueError("raw held-out testMetrics must remain non-release")
+    metric_samples = metrics.get("samples")
+    if isinstance(metric_samples, bool) or not isinstance(metric_samples, int):
+        raise ValueError("raw held-out testMetrics must report an integer samples count")
+    if metric_samples != expected_test_samples:
+        raise ValueError(
+            "raw semantic held-out metrics do not cover the exact full test split: "
+            f"metrics.samples={metric_samples} expected={expected_test_samples}"
+        )
 
     relative = real_semantic_policy.evaluate_metrics(policy, metrics)
     absolute = evaluate_real_student_test.absolute_semantic_quality(metrics)
@@ -128,7 +142,7 @@ def finalize(
         },
         "semantic final-test attestation",
     )
-    _, absolute = recompute_semantic_evidence(policy, semantic, model_sha256)
+    _, absolute = recompute_semantic_evidence(policy, semantic, model_sha256, test_samples)
 
     geometry = load_json_object(geometry_attestation_path, "geometry release attestation")
     require_contract(
@@ -175,6 +189,7 @@ def finalize(
         "releaseCorpusScalePassed": True,
         "releaseCorpusScalePolicyVersion": corpus_scale["policyVersion"],
         "releaseCorpusScaleRecomputedAtFinalize": True,
+        "semanticMetricsExactHeldOutSampleCoverage": True,
         "semanticAcceptancePolicyLocked": True,
         "semanticAcceptancePolicyEvaluated": True,
         "relativeSemanticAcceptancePassed": True,
@@ -189,9 +204,9 @@ def finalize(
         "releaseReady": True,
         "blockingReason": None,
         "reason": (
-            "The exact ONNX candidate was measured on a release-scale independent real-plan corpus, passed "
-            "recomputed relative and immutable absolute semantic gates, and passed every production end-to-end "
-            "geometry gate on the exact opaque held-out corpus. APK packaging remains a separate build step."
+            "The exact ONNX candidate was measured on a release-scale independent real-plan corpus; semantic "
+            "metrics covered the exact full held-out split; recomputed relative and immutable absolute semantic "
+            "gates passed; and every production end-to-end geometry gate passed. APK packaging is separate."
         ),
     }
 
