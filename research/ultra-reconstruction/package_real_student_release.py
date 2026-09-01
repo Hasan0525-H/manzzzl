@@ -83,6 +83,10 @@ def _release_contract(release_path: pathlib.Path, digest: str, size: int) -> dic
         "heldOutCorpusIdentityMatchedAcrossEvidence": True,
         "semanticAcceptancePolicyLocked": True,
         "semanticAcceptancePolicyEvaluated": True,
+        "relativeSemanticAcceptancePassed": True,
+        "absoluteSemanticQualityPassed": True,
+        "absoluteSemanticQualityFloorVersion": 1,
+        "semanticEvidenceRecomputedAtFinalize": True,
         "semanticAcceptancePassed": True,
         "semanticHeldOutMeasurementCompleted": True,
         "geometryReleaseEvidencePassed": True,
@@ -132,6 +136,7 @@ def _release_manifest(manifest: dict, digest: str, size: int, replace: bool) -> 
             "releaseReady": True,
             "releaseEvidence": f"models/{RELEASE_NAME}",
             "trainingProvenance": f"models/{TRAINING_NAME}",
+            "semanticQualityFloorVersion": 1,
         }
     )
     for stale_key in ("generatedValidation", "proposalOnly", "trainingSource", "attribution"):
@@ -165,10 +170,8 @@ def package_release(
             encoding="utf-8",
         )
 
-        # Validate exactly what the APK workflow will validate before touching app assets.
         report = packaged_verifier.verify(staging)
 
-        # Data files first, manifest last. The manifest is the release commit point.
         for name in (MODEL_NAME, TRAINING_NAME, RELEASE_NAME):
             os.replace(staging / name, assets / name)
         stale_quality = assets / STALE_QUALITY_NAME
