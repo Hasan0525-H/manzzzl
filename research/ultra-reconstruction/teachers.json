@@ -1,5 +1,5 @@
 {
-  "schema": 7,
+  "schema": 8,
   "checkedAt": "2026-09-01",
   "costPolicy": "zero-paid-services",
   "projectUse": "personal-non-commercial",
@@ -28,6 +28,7 @@
     {
       "id": "cubicasa-floortrans",
       "repository": "https://github.com/CubiCasa/CubiCasa5k.git",
+      "repositoryRevision": "c34440266665a11f4484eb06cd2e4b7d72ad76c1",
       "checkpointUrl": "https://drive.google.com/file/d/1gRB7ez1e4H7a9Y09lLqRuna0luZO5VRK/view?usp=sharing",
       "codeAndDataLicense": "CC-BY-NC-4.0",
       "inputDomain": "raster-floorplan",
@@ -62,7 +63,7 @@
         "inputSize": 512
       },
       "shipInPublicApk": false,
-      "notes": "Allowed only as a personal/non-commercial development-time teacher. It is never bundled in the APK. If project use becomes commercial, exclude it or retrain equivalent wall supervision from commercially compatible data."
+      "notes": "Allowed only as a personal/non-commercial development-time teacher. It is never bundled in the APK. If project use becomes commercial, exclude it or retrain equivalent wall supervision from commercial-compatible data."
     },
     {
       "id": "roomformer",
