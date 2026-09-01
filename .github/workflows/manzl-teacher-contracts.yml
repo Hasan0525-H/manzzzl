@@ -48,3 +48,99 @@ jobs:
             -s research/ultra-reconstruction \
             -p 'test_*.py' \
             -v
+
+  mitunet-runtime-smoke:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout Manzl
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install official modern CPU runtime
+        run: |
+          python -m pip install --disable-pip-version-check \
+            torch==2.8.0 torchvision==0.23.0 \
+            --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install --disable-pip-version-check \
+            segmentation-models-pytorch==0.5.0 \
+            numpy==2.0.2 \
+            opencv-python-headless==4.10.0.84
+
+      - name: Fetch and verify pinned MitUNet checkpoint
+        run: |
+          python research/ultra-reconstruction/fetch_mitunet_teacher.py \
+            --destination /tmp/mitunet_wall_teacher.pth
+
+      - name: Create rights-safe smoke floorplan
+        run: |
+          mkdir -p /tmp/manzl-mitunet-input /tmp/manzl-mitunet-output
+          python - <<'PY'
+          import cv2
+          import numpy as np
+
+          image = np.full((256, 256, 3), 250, dtype=np.uint8)
+          cv2.rectangle(image, (22, 22), (234, 234), (28, 28, 28), 9)
+          cv2.line(image, (128, 27), (128, 229), (28, 28, 28), 8)
+          cv2.line(image, (27, 128), (229, 128), (28, 28, 28), 8)
+          cv2.rectangle(image, (123, 76), (133, 104), (250, 250, 250), -1)
+          cv2.rectangle(image, (76, 123), (104, 133), (250, 250, 250), -1)
+          if not cv2.imwrite('/tmp/manzl-mitunet-input/plan.png', image):
+              raise SystemExit('failed to write MitUNet smoke input')
+          PY
+
+      - name: Run real MitUNet CPU inference
+        run: |
+          python research/ultra-reconstruction/run_mitunet_teacher.py \
+            --input /tmp/manzl-mitunet-input \
+            --checkpoint /tmp/mitunet_wall_teacher.pth \
+            --output /tmp/manzl-mitunet-output \
+            --size 256 \
+            --device cpu
+
+      - name: Verify consensus-ready output contract
+        run: |
+          python - <<'PY'
+          import json
+          import pathlib
+          import numpy as np
+          import torch
+          import segmentation_models_pytorch as smp
+
+          path = pathlib.Path('/tmp/manzl-mitunet-output/plan.npz')
+          if not path.is_file():
+              raise SystemExit('MitUNet smoke output is missing')
+          with np.load(path, allow_pickle=False) as sample:
+              classes = [str(value) for value in sample['semantic_classes'].tolist()]
+              probs = np.asarray(sample['semantic_probs'], dtype=np.float32)
+              confidence = np.asarray(sample['confidence'], dtype=np.float32)
+              valid = np.asarray(sample['valid_mask'])
+              teacher_format = str(np.asarray(sample['teacher_format']).reshape(-1)[0])
+          if classes != ['background', 'wall_face']:
+              raise SystemExit(f'unexpected classes: {classes}')
+          if probs.shape != (2, 256, 256):
+              raise SystemExit(f'unexpected probability shape: {probs.shape}')
+          if not np.isfinite(probs).all() or not np.isfinite(confidence).all():
+              raise SystemExit('non-finite MitUNet output')
+          if not np.allclose(probs.sum(axis=0), 1.0, atol=1e-6):
+              raise SystemExit('MitUNet probabilities do not sum to one')
+          if valid.shape != (256, 256) or not np.all(valid == 1):
+              raise SystemExit('invalid MitUNet valid-mask contract')
+          print('MITUNET_RUNTIME_SMOKE=' + json.dumps({
+              'torch': torch.__version__,
+              'segmentationModelsPytorch': smp.__version__,
+              'device': 'cpu',
+              'inputShape': [256, 256, 3],
+              'probabilityShape': list(probs.shape),
+              'classes': classes,
+              'teacherFormat': teacher_format,
+              'wallMaxProbability': float(probs[1].max()),
+              'passed': True,
+          }, sort_keys=True))
+          PY
