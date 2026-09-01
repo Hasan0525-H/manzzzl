@@ -1,120 +1,37 @@
 #!/usr/bin/env python3
-"""Convert the pinned Raster2Graph-512 Raster2Seq predictions into Manzl teacher NPZ samples.
+"""Relative-path-safe adapter for pinned Raster2Graph-512 predictions.
 
-The selected Manzl Raster2Seq teacher is **Raster2Graph-512**, not the CubiCasa checkpoint. Its
-published semantic label space contains room/space categories only; notably category 9 is
-``washing_room`` and category 10 is ``PS``. They MUST NOT be interpreted as Window/Door. Earlier
-CubiCasa-style adapters commonly use 9/10 for Window/Door, so this file intentionally locks the
-pinned R2G contract and exports only ``room_boundary`` evidence.
-
-Raster2Seq remains a global topology teacher. Every valid predicted R2G room polygon contributes a
-thin closed boundary, corner heat evidence and tangent orientation. Room interiors, wall faces,
-openings, stairs, columns, courtyards, shafts and background are all true abstentions. CubiCasa and
-other independent experts provide opening/wall semantics.
-
-The output is consumed by ``build_teacher_consensus.py`` and the stricter
-``build_real_teacher_consensus.py``.
+The evidence rasterization contract remains in ``adapt_raster2seq_predictions_impl``. This facade only
+preserves recursive corpus identity: ``jsons/family/plan.json`` reads ``family/plan.png`` and writes
+``family/plan.npz``. That makes Raster2Seq paths align exactly with MitUNet, CubiCasa and the private
+source-group manifest, including when different families reuse the same basename.
 """
-
 from __future__ import annotations
 
 import argparse
 import json
-import math
 import pathlib
 
 import cv2
 import numpy as np
 
-EVIDENCE_CLASSES = ["room_boundary"]
-CLASS = {name: index for index, name in enumerate(EVIDENCE_CLASSES)}
-
-# Official Raster2Graph label mapping at the pinned Raster2Seq source revision:
-# 0 unknown, 1 living_room, 2 kitchen, 3 bedroom, 4 bathroom, 5 restroom,
-# 6 balcony, 7 closet, 8 corridor, 9 washing_room, 10 PS, 11 outside.
-R2G_ROOM_CATEGORY_IDS = frozenset(range(12))
-
-# Legacy CubiCasa ids are retained only so older contract fixtures/importers do not crash while they
-# are migrated. They are NOT opening mappings for the selected Raster2Graph-512 teacher. In this
-# adapter categories 9 and 10 remain ordinary R2G room/space polygons and therefore produce only
-# room_boundary evidence.
-CC5K_WINDOW = 9
-CC5K_DOOR = 10
+import adapt_raster2seq_predictions_impl as _impl
+from adapt_raster2seq_predictions_impl import *  # noqa: F401,F403
 
 
-def polygon_points(raw) -> np.ndarray:
-    array = np.asarray(raw, dtype=np.float32)
-    if array.size < 6:
-        return np.empty((0, 2), dtype=np.float32)
-    array = array.reshape(-1, 2)
-    finite = np.isfinite(array).all(axis=1)
-    return array[finite]
+def _safe_relative(path: pathlib.Path) -> pathlib.Path:
+    path = pathlib.Path(path)
+    if path.is_absolute() or ".." in path.parts or not path.parts:
+        raise ValueError(f"prediction path must be safe and relative: {path}")
+    return path
 
 
-def clipped_int_points(points: np.ndarray, width: int, height: int) -> np.ndarray:
-    result = np.rint(points).astype(np.int32)
-    result[:, 0] = np.clip(result[:, 0], 0, width - 1)
-    result[:, 1] = np.clip(result[:, 1], 0, height - 1)
-    return result
-
-
-def draw_room_boundary(
-    semantic: np.ndarray,
-    valid_mask: np.ndarray,
-    corners: np.ndarray,
-    orientation: np.ndarray,
-    points: np.ndarray,
-    line_width: int,
-) -> None:
-    height, width = semantic.shape
-    integer = clipped_int_points(points, width, height)
-    if len(integer) < 3:
-        return
-
-    cv2.polylines(
-        semantic,
-        [integer],
-        isClosed=True,
-        color=int(CLASS["room_boundary"]),
-        thickness=line_width,
-        lineType=cv2.LINE_8,
-    )
-    cv2.polylines(
-        valid_mask,
-        [integer],
-        isClosed=True,
-        color=1,
-        thickness=line_width,
-        lineType=cv2.LINE_8,
-    )
-    for point in integer:
-        cv2.circle(corners, tuple(point), max(1, line_width), 1.0, thickness=-1, lineType=cv2.LINE_8)
-
-    # Axial tangent orientation on the exact same boundary band. v and -v are equivalent; consensus
-    # uses doubled-angle averaging when another independent orientation source is available.
-    for index in range(len(points)):
-        a = points[index]
-        b = points[(index + 1) % len(points)]
-        dx = float(b[0] - a[0])
-        dy = float(b[1] - a[1])
-        length = math.hypot(dx, dy)
-        if length < 1.0:
-            continue
-        ux, uy = dx / length, dy / length
-        segment_mask = np.zeros((height, width), dtype=np.uint8)
-        p0 = tuple(clipped_int_points(np.asarray([a]), width, height)[0])
-        p1 = tuple(clipped_int_points(np.asarray([b]), width, height)[0])
-        cv2.line(segment_mask, p0, p1, 1, thickness=line_width, lineType=cv2.LINE_8)
-        active = segment_mask.astype(bool)
-        orientation[0, active] = ux
-        orientation[1, active] = uy
-
-
-def load_image(save_root: pathlib.Path, stem: str) -> np.ndarray:
+def load_image(save_root: pathlib.Path, relative_stem: pathlib.Path | str) -> np.ndarray:
+    stem = _safe_relative(pathlib.Path(relative_stem))
     candidates = [
-        save_root / f"{stem}.png",
-        save_root / f"{stem}.jpg",
-        save_root / f"{stem}.jpeg",
+        save_root / stem.with_suffix(".png"),
+        save_root / stem.with_suffix(".jpg"),
+        save_root / stem.with_suffix(".jpeg"),
     ]
     for path in candidates:
         if not path.exists():
@@ -122,7 +39,9 @@ def load_image(save_root: pathlib.Path, stem: str) -> np.ndarray:
         bgr = cv2.imread(str(path), cv2.IMREAD_COLOR)
         if bgr is not None:
             return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-    raise FileNotFoundError(f"No transformed Raster2Seq source image found for {stem} under {save_root}")
+    raise FileNotFoundError(
+        f"No transformed Raster2Seq source image found for {stem.as_posix()} under {save_root}"
+    )
 
 
 def adapt_one(
@@ -132,8 +51,10 @@ def adapt_one(
     confidence: float,
     line_width: int,
 ) -> pathlib.Path:
-    stem = json_path.stem
-    image = load_image(save_root, stem)
+    json_root = (save_root / "jsons").resolve()
+    relative_json = json_path.resolve().relative_to(json_root)
+    relative_stem = _safe_relative(relative_json.with_suffix(""))
+    image = load_image(save_root, relative_stem)
     height, width = image.shape[:2]
     semantic = np.zeros((height, width), dtype=np.uint8)
     valid_mask = np.zeros((height, width), dtype=np.uint8)
@@ -152,14 +73,12 @@ def adapt_one(
             category = int(record.get("category_id", -1))
         except (TypeError, ValueError):
             continue
-        # Fail closed for any label outside the published R2G room label space. In particular there
-        # is no Window/Door mapping in this checkpoint's label contract.
-        if category not in R2G_ROOM_CATEGORY_IDS:
+        if category not in _impl.R2G_ROOM_CATEGORY_IDS:
             continue
-        points = polygon_points(record.get("segmentation", []))
+        points = _impl.polygon_points(record.get("segmentation", []))
         if len(points) < 3:
             continue
-        draw_room_boundary(
+        _impl.draw_room_boundary(
             semantic,
             valid_mask,
             corners,
@@ -178,13 +97,13 @@ def adapt_one(
     orientation *= orientation_mask[None, ...]
     teacher_confidence = np.full((height, width), confidence, dtype=np.float32)
 
-    destination = output_root / f"{stem}.npz"
+    destination = output_root / relative_stem.with_suffix(".npz")
     destination.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
         destination,
         image=image,
         semantic=semantic.astype(np.int64),
-        semantic_classes=np.asarray(EVIDENCE_CLASSES, dtype="U32"),
+        semantic_classes=np.asarray(_impl.EVIDENCE_CLASSES, dtype="U32"),
         confidence=teacher_confidence,
         valid_mask=valid_mask,
         corners=corners,
@@ -202,7 +121,7 @@ def parse_args() -> argparse.Namespace:
         "--prediction-root",
         type=pathlib.Path,
         required=True,
-        help="Raster2Seq save directory containing jsons/ and matching transformed images",
+        help="Raster2Seq save directory containing jsons/** and matching transformed images",
     )
     parser.add_argument("--output", type=pathlib.Path, required=True)
     parser.add_argument("--confidence", type=float, default=0.90)
@@ -220,7 +139,7 @@ def main() -> int:
     json_root = args.prediction_root / "jsons"
     if not json_root.is_dir():
         raise FileNotFoundError(f"Missing Raster2Seq jsons directory: {json_root}")
-    json_files = sorted(json_root.glob("*.json"))
+    json_files = sorted(json_root.rglob("*.json"))
     if not json_files:
         raise RuntimeError(f"No Raster2Seq JSON predictions under {json_root}")
 
@@ -235,6 +154,7 @@ def main() -> int:
         for json_path in json_files
     ]
     print(f"adapted Raster2Seq R2G-512 predictions: {len(written)}")
+    print("relative paths preserved: yes")
     print("semantic classes: room_boundary only; openings are abstentions")
     print("output:", args.output)
     return 0
