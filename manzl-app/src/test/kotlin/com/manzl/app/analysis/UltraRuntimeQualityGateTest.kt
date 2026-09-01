@@ -122,11 +122,15 @@ class UltraRuntimeQualityGateTest {
     }
 
     @Test
-    fun `release evidence parser reads immutable semantic quality fields`() {
+    fun `release evidence parser reads corpus scale and immutable semantic quality fields`() {
         val json = """
             {
               "schema": 2,
               "pipeline": "manzl-real-student-release-evidence-bundle",
+              "releaseCorpusScalePassed": true,
+              "releaseCorpusScalePolicyVersion": 1,
+              "releaseCorpusScaleRecomputedAtFinalize": true,
+              "semanticMetricsExactHeldOutSampleCoverage": true,
               "relativeSemanticAcceptancePassed": true,
               "absoluteSemanticQualityPassed": true,
               "absoluteSemanticQualityFloorVersion": 1,
@@ -142,6 +146,13 @@ class UltraRuntimeQualityGateTest {
             OnnxAssetModelRepository.jsonString(json, "pipeline") ==
                 "manzl-real-student-release-evidence-bundle"
         )
+        assertTrue(OnnxAssetModelRepository.jsonBoolean(json, "releaseCorpusScalePassed") == true)
+        assertTrue(
+            OnnxAssetModelRepository.jsonInt(json, "releaseCorpusScalePolicyVersion") ==
+                UltraModelCatalog.RELEASE_CORPUS_SCALE_POLICY_VERSION
+        )
+        assertTrue(OnnxAssetModelRepository.jsonBoolean(json, "releaseCorpusScaleRecomputedAtFinalize") == true)
+        assertTrue(OnnxAssetModelRepository.jsonBoolean(json, "semanticMetricsExactHeldOutSampleCoverage") == true)
         assertTrue(OnnxAssetModelRepository.jsonBoolean(json, "relativeSemanticAcceptancePassed") == true)
         assertTrue(OnnxAssetModelRepository.jsonBoolean(json, "absoluteSemanticQualityPassed") == true)
         assertTrue(
@@ -155,7 +166,7 @@ class UltraRuntimeQualityGateTest {
     }
 
     @Test
-    fun `legacy release metadata cannot satisfy current immutable floor contract`() {
+    fun `legacy release metadata cannot satisfy current corpus and semantic contracts`() {
         val legacy = """
             {
               "schema": 2,
@@ -166,6 +177,13 @@ class UltraRuntimeQualityGateTest {
             }
         """.trimIndent()
 
+        assertFalse(OnnxAssetModelRepository.jsonBoolean(legacy, "releaseCorpusScalePassed") == true)
+        assertFalse(
+            OnnxAssetModelRepository.jsonInt(legacy, "releaseCorpusScalePolicyVersion") ==
+                UltraModelCatalog.RELEASE_CORPUS_SCALE_POLICY_VERSION
+        )
+        assertFalse(OnnxAssetModelRepository.jsonBoolean(legacy, "releaseCorpusScaleRecomputedAtFinalize") == true)
+        assertFalse(OnnxAssetModelRepository.jsonBoolean(legacy, "semanticMetricsExactHeldOutSampleCoverage") == true)
         assertFalse(OnnxAssetModelRepository.jsonBoolean(legacy, "absoluteSemanticQualityPassed") == true)
         assertFalse(
             OnnxAssetModelRepository.jsonInt(legacy, "absoluteSemanticQualityFloorVersion") ==
