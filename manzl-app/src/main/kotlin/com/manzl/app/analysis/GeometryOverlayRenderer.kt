@@ -20,8 +20,9 @@ import kotlin.math.sin
  * Renders the extracted geometry directly over the uploaded plan.
  *
  * This is a development/user trust surface, not a decorative preview: if a wall/column is missing,
- * shifted or stops just short of a real junction, the mismatch is visible before the user is allowed
- * into 3D. The source bitmap is never modified.
+ * shifted, stops just short of a real junction, leaves an unresolved opening, or a room polygon has
+ * an invented unsupported side, the exact problem is visible before the user is allowed into 3D.
+ * The source bitmap is never modified.
  */
 internal object GeometryOverlayRenderer {
 
@@ -104,6 +105,11 @@ internal object GeometryOverlayRenderer {
                 paint = windowPaint,
             )
         }
+
+        // Final reconstruction diagnostics are drawn last. These are the exact topology reasons that
+        // can block 3D even when aggregate wall fidelity is high, so they must never be hidden beneath
+        // ordinary green/amber geometry.
+        drawReconstructionIssues(canvas, plan, transform, pixelsPerMeter)
 
         if (scaled !== source && !scaled.isRecycled) scaled.recycle()
         return output
@@ -243,6 +249,92 @@ internal object GeometryOverlayRenderer {
         }
     }
 
+    private fun drawReconstructionIssues(
+        canvas: Canvas,
+        plan: FloorPlan,
+        transform: PlanRasterTransform,
+        pixelsPerMeter: Float,
+    ) {
+        val report = ReconstructionReadinessGate.evaluate(plan)
+        if (report.ready) return
+
+        val unresolvedOpeningPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeCap = Paint.Cap.ROUND
+            strokeWidth = max(4f, pixelsPerMeter * 0.055f)
+            color = Color.argb(245, 226, 35, 120)
+        }
+        val unresolvedOpeningRing = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = max(2.5f, pixelsPerMeter * 0.035f)
+            color = Color.argb(245, 226, 35, 120)
+        }
+        report.unresolvedOpenings.forEach { gap ->
+            drawOpeningAxis(
+                canvas = canvas,
+                transform = transform,
+                center = gap.center,
+                widthMeters = gap.widthMeters,
+                rotationDegrees = gap.rotationDegrees,
+                paint = unresolvedOpeningPaint,
+            )
+            val center = transform.planToImage(gap.center)
+            canvas.drawCircle(
+                center.first,
+                center.second,
+                max(8f, pixelsPerMeter * RECONSTRUCTION_MARKER_RADIUS_METERS),
+                unresolvedOpeningRing,
+            )
+        }
+
+        val unsupportedBoundaryPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeCap = Paint.Cap.ROUND
+            strokeWidth = max(4.5f, pixelsPerMeter * 0.06f)
+            color = Color.argb(250, 238, 76, 32)
+        }
+        val boundaryHaloPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeCap = Paint.Cap.ROUND
+            strokeWidth = max(8f, pixelsPerMeter * 0.105f)
+            color = Color.argb(88, 255, 171, 64)
+        }
+        report.unsupportedRoomBoundaries.forEach { issue ->
+            val room = plan.rooms.firstOrNull { it.id == issue.roomId } ?: return@forEach
+            if (room.polygon.size < 3 || issue.weakestEdgeIndex !in room.polygon.indices) return@forEach
+            val a = room.polygon[issue.weakestEdgeIndex]
+            val b = room.polygon[(issue.weakestEdgeIndex + 1) % room.polygon.size]
+            val pa = transform.planToImage(a)
+            val pb = transform.planToImage(b)
+            canvas.drawLine(pa.first, pa.second, pb.first, pb.second, boundaryHaloPaint)
+            canvas.drawLine(pa.first, pa.second, pb.first, pb.second, unsupportedBoundaryPaint)
+        }
+
+        val voidFill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.FILL
+            color = Color.argb(56, 196, 34, 82)
+        }
+        val voidStroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeJoin = Paint.Join.ROUND
+            strokeWidth = max(3f, pixelsPerMeter * 0.04f)
+            color = Color.argb(238, 196, 34, 82)
+        }
+        report.unsupportedVerticalVoids.forEach { room ->
+            if (room.polygon.size < 3) return@forEach
+            val path = Path()
+            val first = transform.planToImage(room.polygon.first())
+            path.moveTo(first.first, first.second)
+            room.polygon.drop(1).forEach { point ->
+                val pixel = transform.planToImage(point)
+                path.lineTo(pixel.first, pixel.second)
+            }
+            path.close()
+            canvas.drawPath(path, voidFill)
+            canvas.drawPath(path, voidStroke)
+        }
+    }
+
     private fun projectOntoSegment(point: Vec2, wall: WallSegment): Vec2 {
         val vx = wall.end.x - wall.start.x
         val vz = wall.end.z - wall.start.z
@@ -281,4 +373,5 @@ internal object GeometryOverlayRenderer {
     private const val MIN_ENDPOINT_RADIUS_PX = 2.2f
     private const val MIN_COLUMN_OVERLAY_CONFIDENCE = 0.74f
     private const val TOPOLOGY_MARKER_RADIUS_METERS = 0.08f
+    private const val RECONSTRUCTION_MARKER_RADIUS_METERS = 0.095f
 }
