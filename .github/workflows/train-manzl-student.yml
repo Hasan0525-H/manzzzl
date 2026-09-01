@@ -12,6 +12,8 @@ on:
       - 'research/ultra-reconstruction/evaluate_student_onnx.py'
       - 'research/ultra-reconstruction/train_student.py'
       - 'research/ultra-reconstruction/build_teacher_consensus.py'
+      - 'research/ultra-reconstruction/verify_dataset_split.py'
+      - 'research/ultra-reconstruction/test_verify_dataset_split.py'
       - '.github/workflows/train-manzl-student.yml'
 
 permissions:
@@ -133,6 +135,13 @@ jobs:
           assert len(val) == 128, len(val)
           print(f'train samples: {len(train)}; val samples: {len(val)}')
           PY
+
+      - name: Verify train validation source independence
+        run: |
+          python research/ultra-reconstruction/verify_dataset_split.py \
+            --train /tmp/manzl-train \
+            --validation /tmp/manzl-val \
+            --output /tmp/manzl-split-integrity.json
 
       - name: Train stronger proposal-only student
         run: |
