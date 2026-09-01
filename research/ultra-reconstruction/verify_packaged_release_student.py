@@ -2,9 +2,9 @@
 """Verify the packaged Manzl student is an actual measured release model.
 
 This is the APK boundary. A packaged student is accepted only when the app assets contain the exact
-ONNX artifact referenced by the final real-student release bundle produced after locked relative
-semantic acceptance, immutable absolute semantic quality, and end-to-end geometry PASS. The verifier
-never upgrades an artifact or infers readiness from a training file.
+ONNX artifact referenced by the final real-student release bundle produced after a release-scale real
+benchmark, locked relative semantic acceptance, immutable absolute semantic quality, and end-to-end
+geometry PASS. The verifier never upgrades an artifact or infers readiness from a training file.
 """
 
 from __future__ import annotations
@@ -53,6 +53,9 @@ def verify(asset_root: pathlib.Path) -> dict:
         "trainingAttestationVerified": True,
         "candidateArtifactIntegrityPassed": True,
         "heldOutCorpusIdentityMatchedAcrossEvidence": True,
+        "releaseCorpusScalePassed": True,
+        "releaseCorpusScalePolicyVersion": 1,
+        "releaseCorpusScaleRecomputedAtFinalize": True,
         "semanticAcceptancePolicyLocked": True,
         "semanticAcceptancePolicyEvaluated": True,
         "relativeSemanticAcceptancePassed": True,
@@ -115,6 +118,7 @@ def verify(asset_root: pathlib.Path) -> dict:
         "releaseEvidence": f"models/{RELEASE_NAME}",
         "trainingProvenance": f"models/{TRAINING_NAME}",
         "semanticQualityFloorVersion": 1,
+        "releaseCorpusScalePolicyVersion": 1,
     }
     for key, expected in manifest_required.items():
         if student.get(key) != expected:
@@ -140,6 +144,9 @@ def verify(asset_root: pathlib.Path) -> dict:
         "model": MODEL_NAME,
         "sha256": digest,
         "bytes": size,
+        "releaseCorpusScalePassed": True,
+        "releaseCorpusScalePolicyVersion": 1,
+        "releaseCorpusScaleRecomputedAtFinalize": True,
         "relativeSemanticAcceptancePassed": True,
         "absoluteSemanticQualityPassed": True,
         "absoluteSemanticQualityFloorVersion": 1,
