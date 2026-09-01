@@ -18,6 +18,23 @@ data class WallSegment(
 )
 
 /**
+ * A compact structural mass measured from the source plan rather than approximated as a wall line.
+ *
+ * Columns are kept separate from [WallSegment] so a 40×40 cm column is rendered/collided as a solid
+ * oriented rectangle instead of four hollow wall strips. Neural evidence may propose one, but only a
+ * source-raster verification pass is allowed to add it to the canonical [FloorPlan].
+ */
+@Immutable
+data class StructuralColumn(
+    val center: Vec2,
+    val widthMeters: Float,
+    val depthMeters: Float,
+    val rotationDegrees: Float = 0f,
+    val heightMeters: Float = 3.0f,
+    val confidence: Float,
+)
+
+/**
  * Hinge endpoint relative to the opening axis defined by [DoorOpening.rotationDegrees].
  * AXIS_START is centre - axis * width/2, AXIS_END is centre + axis * width/2.
  */
@@ -99,6 +116,7 @@ data class FloorPlan(
     val widthMeters: Float,
     val depthMeters: Float,
     val walls: List<WallSegment>,
+    val columns: List<StructuralColumn> = emptyList(),
     val doors: List<DoorOpening> = emptyList(),
     val windows: List<WindowOpening> = emptyList(),
     val stairs: List<Staircase> = emptyList(),
