@@ -22,6 +22,9 @@ import kotlin.math.sqrt
  * walls. This expert pairs compatible edge runs, derives a physical centreline and thickness, then
  * asks the independent raster fidelity evaluator whether replacing/adding that measured wall actually
  * improves reconstruction. It has no authority to force a candidate into the house.
+ *
+ * Runtime failures are reported as unavailable. They must never be disguised as a valid expert that
+ * merely found zero improvements, because the Ultra ensemble is fail-closed on expert dropout.
  */
 internal object OpenCvWallFaceExpert {
 
@@ -149,7 +152,7 @@ internal object OpenCvWallFaceExpert {
                 runtimeAvailable = true,
             )
         } catch (_: RuntimeException) {
-            Result(seed, 0, 0, 0, 0, true)
+            Result(seed, 0, 0, 0, 0, false)
         } finally {
             rgba.release()
             gray.release()
