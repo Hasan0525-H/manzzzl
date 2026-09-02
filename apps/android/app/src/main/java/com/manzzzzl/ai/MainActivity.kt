@@ -15,6 +15,7 @@ import com.manzzzl.ai.design.DesignQuestionnaire
 import com.manzzzl.ai.design.DesignSessionBuilder
 import com.manzzzl.ai.design.SaudiCityProfile
 import com.manzzzl.ai.design.SmartDesignQuestionEngine
+import com.manzzzl.ai.threeD.FloorPlanModelGenerator
 import com.manzzzl.ai.threeD.model.ThreeDModel
 import com.manzzzl.ai.ui.CreateProjectScreen
 import com.manzzzl.ai.ui.FloorPlanUploadScreen
@@ -61,7 +62,7 @@ fun ManzzzlApp() {
                             facadePreference = answers["نوع الواجهة"]
                         )
 
-                        generatedModel = ThreeDModel()
+                        generatedModel = FloorPlanModelGenerator.generate()
                         designSession = DesignSessionBuilder.build(
                             questionnaire,
                             generatedModel ?: ThreeDModel(),
