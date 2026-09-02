@@ -2,6 +2,7 @@ package com.manzzzl.ai.screens
 
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -28,6 +29,7 @@ fun SceneModelView(
     val context = LocalContext.current
     val localModelPath = remember { mutableStateOf<String?>(null) }
     val loadingError = remember { mutableStateOf<String?>(null) }
+    val resetCamera = remember { mutableStateOf(false) }
 
     LaunchedEffect(modelUrl) {
         try {
@@ -40,13 +42,14 @@ fun SceneModelView(
 
     val engine = rememberEngine()
     val modelLoader = rememberModelLoader(engine)
+    val cameraManipulator = rememberCameraManipulator()
 
     Box(modifier = Modifier.fillMaxSize()) {
         SceneView(
             modifier = Modifier.fillMaxSize(),
             engine = engine,
             modelLoader = modelLoader,
-            cameraManipulator = rememberCameraManipulator()
+            cameraManipulator = cameraManipulator
         ) {
             localModelPath.value?.let { path ->
                 rememberModelInstance(modelLoader, path)?.let { instance ->
@@ -66,12 +69,18 @@ fun SceneModelView(
                     modifier = Modifier.align(Alignment.Center)
                 )
             }
-
             localModelPath.value == null -> {
                 CircularProgressIndicator(
                     modifier = Modifier.align(Alignment.Center)
                 )
             }
+        }
+
+        Button(
+            onClick = { resetCamera.value = !resetCamera.value },
+            modifier = Modifier.align(Alignment.BottomCenter)
+        ) {
+            Text("إعادة ضبط الكاميرا")
         }
     }
 }
