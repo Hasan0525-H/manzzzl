@@ -5,13 +5,13 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import com.manzzzl.ai.ui.CreateProjectScreen
+import com.manzzzl.ai.ui.FloorPlanUploadScreen
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -32,7 +32,10 @@ fun ManzzzlApp() {
                 "create" -> CreateProjectScreen {
                     step = "upload"
                 }
-                else -> Text("رفع المخطط وتحليله قريباً")
+                "upload" -> FloorPlanUploadScreen {
+                    step = "analysis"
+                }
+                else -> androidx.compose.material3.Text("جاري تحليل المخطط")
             }
         }
     }
