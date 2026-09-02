@@ -11,6 +11,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import com.manzzzl.ai.ui.CreateProjectScreen
+import com.manzzzl.ai.ui.FloorPlanUploadScreen
 import com.manzzzl.ai.ui.ProcessingScreen
 
 class MainActivity : ComponentActivity() {
@@ -30,6 +31,9 @@ fun ManzzzlApp() {
 
             when (step) {
                 "create" -> CreateProjectScreen {
+                    step = "upload"
+                }
+                "upload" -> FloorPlanUploadScreen {
                     step = "processing"
                 }
                 "processing" -> ProcessingScreen()
