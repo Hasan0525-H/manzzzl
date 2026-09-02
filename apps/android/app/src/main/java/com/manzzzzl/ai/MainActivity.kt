@@ -10,15 +10,17 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import com.manzzzl.ai.design.DesignGenerationSession
 import com.manzzzl.ai.design.DesignQuestionnaire
 import com.manzzzl.ai.design.DesignSessionBuilder
-import com.manzzzl.ai.design.SmartDesignQuestionEngine
 import com.manzzzl.ai.design.SaudiCityProfile
+import com.manzzzl.ai.design.SmartDesignQuestionEngine
 import com.manzzzl.ai.ui.CreateProjectScreen
 import com.manzzzl.ai.ui.FloorPlanUploadScreen
 import com.manzzzl.ai.ui.ProcessingScreen
 import com.manzzzl.ai.ui.SmartQuestionsScreen
 import com.manzzzl.ai.ui.ThreeDViewerScreen
+import com.manzzzl.ai.threeD.model.ThreeDModel
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -33,7 +35,7 @@ fun ManzzzlApp() {
         Surface {
             var step by remember { mutableStateOf("create") }
             var answers by remember { mutableStateOf(emptyMap<String, String>()) }
-            var sessionReady by remember { mutableStateOf(false) }
+            var designSession by remember { mutableStateOf<DesignGenerationSession?>(null) }
 
             val questions = SmartDesignQuestionEngine.missingQuestions(
                 hasFloors = answers.containsKey("عدد الأدوار"),
@@ -57,16 +59,20 @@ fun ManzzzlApp() {
                             streetDirection = answers["اتجاه الشارع"],
                             facadePreference = answers["نوع الواجهة"]
                         )
-                        val session = DesignSessionBuilder.build(
+                        designSession = DesignSessionBuilder.build(
                             questionnaire,
-                            com.manzzzl.ai.threeD.model.ThreeDModel(),
+                            ThreeDModel(),
                             SaudiCityProfile(questionnaire.city ?: "")
                         )
-                        sessionReady = session != null
-                        step = if (sessionReady) "viewer" else "questions"
+                        step = if (designSession != null) "viewer" else "questions"
                     }
                 )
-                "viewer" -> if (sessionReady) ThreeDViewerScreen()
+                "viewer" -> designSession?.let {
+                    ThreeDViewerScreen(
+                        model = ThreeDModel(),
+                        session = it
+                    )
+                }
             }
         }
     }
