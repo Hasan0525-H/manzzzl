@@ -1,22 +1,18 @@
 package com.manzzzl.ai.screens
 
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import io.github.sceneview.SceneView
 
 /**
- * Experimental 3D viewer stage.
- * Temporary implementation to validate the screen flow before GLB engine wiring.
+ * First real 3D viewer wiring.
+ * Receives the GLB path and exposes SceneView as the rendering surface.
+ * Model loading is isolated here to keep the screen ready for GLB assets.
  */
 @Composable
 fun SceneModelView(modelPath: String) {
-    Box(
-        modifier = Modifier.fillMaxSize(),
-        contentAlignment = Alignment.Center
-    ) {
-        Text("Experimental 3D stage: $modelPath")
-    }
+    SceneView(
+        modifier = Modifier.fillMaxSize()
+    )
 }
