@@ -29,7 +29,7 @@ fun SceneModelView(
     val context = LocalContext.current
     val localModelPath = remember { mutableStateOf<String?>(null) }
     val loadingError = remember { mutableStateOf<String?>(null) }
-    val resetCamera = remember { mutableStateOf(false) }
+    val cameraResetKey = remember { mutableStateOf(0) }
 
     LaunchedEffect(modelUrl) {
         try {
@@ -49,7 +49,8 @@ fun SceneModelView(
             modifier = Modifier.fillMaxSize(),
             engine = engine,
             modelLoader = modelLoader,
-            cameraManipulator = cameraManipulator
+            cameraManipulator = cameraManipulator,
+            key = cameraResetKey.value
         ) {
             localModelPath.value?.let { path ->
                 rememberModelInstance(modelLoader, path)?.let { instance ->
@@ -63,21 +64,17 @@ fun SceneModelView(
         }
 
         when {
-            loadingError.value != null -> {
-                Text(
-                    text = loadingError.value ?: "Error",
-                    modifier = Modifier.align(Alignment.Center)
-                )
-            }
-            localModelPath.value == null -> {
-                CircularProgressIndicator(
-                    modifier = Modifier.align(Alignment.Center)
-                )
-            }
+            loadingError.value != null -> Text(
+                text = loadingError.value ?: "Error",
+                modifier = Modifier.align(Alignment.Center)
+            )
+            localModelPath.value == null -> CircularProgressIndicator(
+                modifier = Modifier.align(Alignment.Center)
+            )
         }
 
         Button(
-            onClick = { resetCamera.value = !resetCamera.value },
+            onClick = { cameraResetKey.value++ },
             modifier = Modifier.align(Alignment.BottomCenter)
         ) {
             Text("إعادة ضبط الكاميرا")
