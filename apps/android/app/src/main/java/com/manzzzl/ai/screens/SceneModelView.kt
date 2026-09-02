@@ -1,31 +1,41 @@
 package com.manzzzl.ai.screens
 
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import io.github.sceneview.SceneView
+import io.github.sceneview.node.ModelNode
+import io.github.sceneview.rememberCameraManipulator
+import io.github.sceneview.rememberEngine
+import io.github.sceneview.rememberModelInstance
+import io.github.sceneview.rememberModelLoader
 
 /**
- * GLB viewer entry point.
- *
- * The model path is now treated as the source for the future renderer.
- * Keeping this boundary isolated allows the SceneView implementation
- * to be attached without changing the screen flow.
+ * Real 3D GLB viewer.
+ * Loads a GLB model and renders it inside SceneView.
  */
 @Composable
 fun SceneModelView(modelPath: String) {
-    val glbPath = resolveGlbPath(modelPath)
+    val engine = rememberEngine()
+    val modelLoader = rememberModelLoader(engine)
+    val assetPath = resolveAssetPath(modelPath)
 
-    Box(
+    SceneView(
         modifier = Modifier.fillMaxSize(),
-        contentAlignment = Alignment.Center
+        engine = engine,
+        modelLoader = modelLoader,
+        cameraManipulator = rememberCameraManipulator()
     ) {
-        Text("GLB model ready: $glbPath")
+        rememberModelInstance(modelLoader, assetPath)?.let { instance ->
+            ModelNode(
+                modelInstance = instance,
+                scaleToUnits = 1.0f,
+                autoAnimate = true
+            )
+        }
     }
 }
 
-private fun resolveGlbPath(path: String): String {
-    return if (path.startsWith("glb://")) path else "glb://$path"
+private fun resolveAssetPath(path: String): String {
+    return path.removePrefix("glb://")
 }
