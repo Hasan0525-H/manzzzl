@@ -1,10 +1,14 @@
 package com.manzzzl.ai.screens
 
-/**
- * Initial setup screen placeholder.
- * User selects:
- * - Saudi city
- * - One or two floors
- * - Project details
- */
-class HouseSetupScreen
+import androidx.compose.material3.Button
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+
+@Composable
+fun HouseSetupScreen(onContinue: () -> Unit = {}) {
+    Text("إعداد المنزل")
+    Text("اختر المدينة وعدد الأدوار")
+    Button(onClick = onContinue) {
+        Text("متابعة")
+    }
+}
