@@ -30,6 +30,7 @@ fun SceneModelView(
     val localModelPath = remember { mutableStateOf<String?>(null) }
     val loadingError = remember { mutableStateOf<String?>(null) }
     val cameraResetKey = remember { mutableStateOf(0) }
+    val modelReady = remember { mutableStateOf(false) }
 
     LaunchedEffect(modelUrl) {
         try {
@@ -58,7 +59,11 @@ fun SceneModelView(
                         modelInstance = instance,
                         scaleToUnits = 1.0f,
                         autoAnimate = true
-                    )
+                    ).also {
+                        if (!modelReady.value) {
+                            modelReady.value = true
+                        }
+                    }
                 }
             }
         }
@@ -68,7 +73,7 @@ fun SceneModelView(
                 text = loadingError.value ?: "Error",
                 modifier = Modifier.align(Alignment.Center)
             )
-            localModelPath.value == null -> CircularProgressIndicator(
+            localModelPath.value == null || !modelReady.value -> CircularProgressIndicator(
                 modifier = Modifier.align(Alignment.Center)
             )
         }
