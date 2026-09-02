@@ -8,15 +8,24 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 
 /**
- * Stable 3D viewer entry point.
- * The renderer implementation will be attached here.
+ * GLB viewer entry point.
+ *
+ * The model path is now treated as the source for the future renderer.
+ * Keeping this boundary isolated allows the SceneView implementation
+ * to be attached without changing the screen flow.
  */
 @Composable
 fun SceneModelView(modelPath: String) {
+    val glbPath = resolveGlbPath(modelPath)
+
     Box(
         modifier = Modifier.fillMaxSize(),
         contentAlignment = Alignment.Center
     ) {
-        Text("3D viewer placeholder: $modelPath")
+        Text("GLB model ready: $glbPath")
     }
+}
+
+private fun resolveGlbPath(path: String): String {
+    return if (path.startsWith("glb://")) path else "glb://$path"
 }
