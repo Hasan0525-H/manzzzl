@@ -32,14 +32,16 @@ class ProjectViewModel {
             updateProject { it.copy(analysisStatus = "ANALYZING") }
             updateProgress(30)
 
+            val result = pipeline.generate(project)
+
             updateProject { it.copy(analysisStatus = "GENERATING_3D") }
             updateProgress(70)
 
-            val result = pipeline.generate(project)
+            val generatedModelId = "geometry://${result.geometry.roomCount}rooms-${result.geometry.wallCount}walls"
 
             updateProject {
                 it.copy(
-                    modelPath = "geometry://${result.geometry.roomCount}rooms-${result.geometry.wallCount}walls",
+                    modelPath = generatedModelId,
                     analysisStatus = "COMPLETED"
                 )
             }
