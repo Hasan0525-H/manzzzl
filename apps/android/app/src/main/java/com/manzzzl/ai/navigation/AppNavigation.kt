@@ -6,6 +6,7 @@ package com.manzzzl.ai.navigation
  * Splash -> Login -> Dashboard -> Create Project -> Upload Plan -> Processing -> Result
  */
 object AppNavigation {
+    const val SPLASH = "splash"
     const val LOGIN = "login"
     const val DASHBOARD = "dashboard"
     const val CREATE_PROJECT = "create_project"
