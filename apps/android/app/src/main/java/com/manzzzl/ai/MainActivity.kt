@@ -11,6 +11,7 @@ import com.manzzzl.ai.screens.CreateHomeProjectScreen
 import com.manzzzl.ai.screens.HomeQuestionsScreen
 import com.manzzzl.ai.screens.HomeScreen
 import com.manzzzl.ai.screens.PlanUploadScreen
+import com.manzzzl.ai.screens.ProcessingScreen
 import com.manzzzl.ai.viewmodel.HomeProjectViewModel
 
 class MainActivity : ComponentActivity() {
@@ -40,12 +41,7 @@ fun ManzzzlApp() {
             ProjectStep.UPLOAD_PLAN -> PlanUploadScreen {
                 projectViewModel.moveTo(ProjectStep.ANALYSIS)
             }
-            ProjectStep.ANALYSIS -> {
-                // Analysis pipeline will be connected here
-                PlanUploadScreen {
-                    projectViewModel.moveTo(ProjectStep.ANALYSIS)
-                }
-            }
+            ProjectStep.ANALYSIS -> ProcessingScreen()
         }
     }
 }
