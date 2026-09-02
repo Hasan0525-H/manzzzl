@@ -15,12 +15,12 @@ import com.manzzzl.ai.design.DesignQuestionnaire
 import com.manzzzl.ai.design.DesignSessionBuilder
 import com.manzzzl.ai.design.SaudiCityProfile
 import com.manzzzl.ai.design.SmartDesignQuestionEngine
+import com.manzzzl.ai.threeD.model.ThreeDModel
 import com.manzzzl.ai.ui.CreateProjectScreen
 import com.manzzzl.ai.ui.FloorPlanUploadScreen
 import com.manzzzl.ai.ui.ProcessingScreen
 import com.manzzzl.ai.ui.SmartQuestionsScreen
 import com.manzzzl.ai.ui.ThreeDViewerScreen
-import com.manzzzl.ai.threeD.model.ThreeDModel
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -36,6 +36,7 @@ fun ManzzzlApp() {
             var step by remember { mutableStateOf("create") }
             var answers by remember { mutableStateOf(emptyMap<String, String>()) }
             var designSession by remember { mutableStateOf<DesignGenerationSession?>(null) }
+            var generatedModel by remember { mutableStateOf<ThreeDModel?>(null) }
 
             val questions = SmartDesignQuestionEngine.missingQuestions(
                 hasFloors = answers.containsKey("عدد الأدوار"),
@@ -59,17 +60,20 @@ fun ManzzzlApp() {
                             streetDirection = answers["اتجاه الشارع"],
                             facadePreference = answers["نوع الواجهة"]
                         )
+
+                        generatedModel = ThreeDModel()
                         designSession = DesignSessionBuilder.build(
                             questionnaire,
-                            ThreeDModel(),
+                            generatedModel ?: ThreeDModel(),
                             SaudiCityProfile(questionnaire.city ?: "")
                         )
+
                         step = if (designSession != null) "viewer" else "questions"
                     }
                 )
                 "viewer" -> designSession?.let {
                     ThreeDViewerScreen(
-                        model = ThreeDModel(),
+                        model = generatedModel,
                         session = it
                     )
                 }
