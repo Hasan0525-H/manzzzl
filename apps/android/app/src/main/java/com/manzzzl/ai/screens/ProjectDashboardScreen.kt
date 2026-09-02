@@ -1,12 +1,18 @@
 package com.manzzzl.ai.screens
 
-// First dashboard structure for user projects.
-// Future: connect to backend projects API.
+import androidx.compose.material3.Button
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
 
-class ProjectDashboardScreen {
-    val actions = listOf(
-        "create_home_project",
-        "upload_plan",
-        "view_results"
-    )
+/**
+ * Dashboard for user projects.
+ */
+@Composable
+fun ProjectDashboardScreen(
+    onCreateProject: () -> Unit = {}
+) {
+    Text("المشاريع")
+    Button(onClick = onCreateProject) {
+        Text("إنشاء منزل جديد")
+    }
 }
