@@ -3,7 +3,7 @@ name: Android CI
 on:
   workflow_dispatch:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "hasan0525-h-fix-3d-viewer" ]
     paths:
       - 'apps/android/**'
       - '.github/workflows/android.yml'
@@ -47,8 +47,13 @@ jobs:
       - name: Build debug APK
         run: gradle assembleDebug --stacktrace --no-daemon
 
+      - name: Verify APK output
+        run: ls -la app/build/outputs/apk/debug/
+
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: manzzzl-debug-apk
           path: apps/android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 7
