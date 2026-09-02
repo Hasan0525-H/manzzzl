@@ -10,10 +10,17 @@ import com.manzzzl.ai.model.ModelRenderer
  */
 @Composable
 fun ModelViewerScreen(modelPath: String? = null) {
+    val renderer = ModelRenderer()
+    val result = modelPath?.let { renderer.prepare(it) }
+
     Text("عارض النموذج ثلاثي الأبعاد")
 
-    val renderer = ModelRenderer()
-    val result = renderer.prepare(modelPath)
-
-    Text(result)
+    when {
+        result == null -> Text("لم يتم إنشاء نموذج بعد")
+        result.ready -> {
+            Text("النموذج ${result.format} جاهز")
+            Text("تدوير - تكبير - استكشاف")
+        }
+        else -> Text("النموذج غير جاهز للعرض")
+    }
 }
