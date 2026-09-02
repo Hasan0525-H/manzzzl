@@ -25,9 +25,7 @@ fun NavigationGraph(navController: NavHostController) {
         }
 
         composable(AppRoutes.CREATE_PROJECT) {
-            CreateHomeProjectScreen {
-                navController.navigate(AppRoutes.UPLOAD_PLAN)
-            }
+            CreateHomeProjectScreen()
         }
 
         composable(AppRoutes.UPLOAD_PLAN) {
