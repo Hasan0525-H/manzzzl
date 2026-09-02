@@ -19,5 +19,7 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: gradle/gradle-build-action@v3
+        with:
+          gradle-version: '8.7'
       - name: Build debug APK
-        run: ./gradlew assembleDebug
+        run: gradle assembleDebug
