@@ -1,5 +1,6 @@
 package com.manzzzl.ai.pipeline
 
+import com.manzzzl.ai.analysis.GeneratedGeometry
 import com.manzzzl.ai.analysis.GeometryGenerator
 import com.manzzzl.ai.analysis.PlanAnalyzer
 import com.manzzzl.ai.model.FloorPlanAnalysis
@@ -14,7 +15,7 @@ class ProjectPipeline(
 ) {
     data class Result(
         val analysis: FloorPlanAnalysis,
-        val geometry: GeometryGenerator.GeneratedGeometry
+        val geometry: GeneratedGeometry
     )
 
     fun generate(project: HouseProject): Result {
