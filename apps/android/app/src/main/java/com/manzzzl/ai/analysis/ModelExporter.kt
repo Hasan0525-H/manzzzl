@@ -14,7 +14,7 @@ class ModelExporter {
         val ready: Boolean
     )
 
-    fun export(geometry: GeometryGenerator.GeneratedGeometry): ExportedModel {
+    fun export(geometry: GeneratedGeometry): ExportedModel {
         return ExportedModel(
             format = "glb",
             modelId = "house-${geometry.roomCount}-${geometry.wallCount}",
