@@ -1,12 +1,7 @@
 package com.manzzzl.ai.model
 
 /**
- * First version of home project model.
+ * Backward compatibility alias.
+ * The project model is now unified in HouseProject.
  */
-data class HomeProject(
-    val name: String,
-    val city: String,
-    val floors: Int,
-    val hasGarden: Boolean = false,
-    val hasAnnex: Boolean = false
-)
+typealias HomeProject = HouseProject
