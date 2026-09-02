@@ -18,6 +18,7 @@ import io.github.sceneview.rememberCameraManipulator
 import io.github.sceneview.rememberEngine
 import io.github.sceneview.rememberModelInstance
 import io.github.sceneview.rememberModelLoader
+import com.manzzzl.ai.model3d.ModelBoundsCalculator
 
 private const val DEFAULT_HOUSE_MODEL_URL =
     "https://pub-08eacaf5a9fd4334815774c96664ac02.r2.dev/house.glb"
@@ -31,6 +32,7 @@ fun SceneModelView(
     val loadingError = remember { mutableStateOf<String?>(null) }
     val cameraResetKey = remember { mutableStateOf(0) }
     val modelReady = remember { mutableStateOf(false) }
+    val currentModelNode = remember { mutableStateOf<ModelNode?>(null) }
 
     LaunchedEffect(modelUrl) {
         try {
@@ -38,6 +40,12 @@ fun SceneModelView(
             localModelPath.value = file.absolutePath
         } catch (e: Exception) {
             loadingError.value = e.message ?: "Failed to load model"
+        }
+    }
+
+    LaunchedEffect(currentModelNode.value) {
+        currentModelNode.value?.let { modelNode ->
+            ModelBoundsCalculator.calculate(modelNode)
         }
     }
 
@@ -59,7 +67,8 @@ fun SceneModelView(
                         modelInstance = instance,
                         scaleToUnits = 1.0f,
                         autoAnimate = true
-                    ).also {
+                    ).also { node ->
+                        currentModelNode.value = node
                         if (!modelReady.value) {
                             modelReady.value = true
                         }
