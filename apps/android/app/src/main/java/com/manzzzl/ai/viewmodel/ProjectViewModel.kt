@@ -14,6 +14,15 @@ class ProjectViewModel {
         store.save(project)
     }
 
+    fun setPlan(path: String) {
+        val project = currentProject ?: HouseProject()
+        currentProject = project.copy(
+            floorPlanPath = path,
+            analysisStatus = "UPLOADED"
+        )
+        store.save(currentProject!!)
+    }
+
     fun current(): HouseProject? = currentProject ?: store.get()
 
     fun updateProgress(value: Int) {
@@ -22,8 +31,17 @@ class ProjectViewModel {
 
     fun generationProgress(): Int = progress
 
+    fun startAnalysis() {
+        val project = currentProject ?: return
+        currentProject = project.copy(analysisStatus = "ANALYZING")
+        store.save(currentProject!!)
+    }
+
     fun markGenerated(): Boolean {
         progress = 100
+        val project = currentProject ?: return false
+        currentProject = project.copy(analysisStatus = "COMPLETED")
+        store.save(currentProject!!)
         return true
     }
 }
