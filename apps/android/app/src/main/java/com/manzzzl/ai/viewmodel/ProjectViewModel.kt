@@ -26,22 +26,25 @@ class ProjectViewModel {
     }
 
     fun generateProject(): Boolean {
-        val project = currentProject ?: return false
+        val project = currentProject ?: store.get() ?: return false
 
         return try {
             updateProject { it.copy(analysisStatus = "ANALYZING") }
+            updateProgress(30)
+
             updateProject { it.copy(analysisStatus = "GENERATING_3D") }
+            updateProgress(70)
 
             val result = pipeline.generate(project)
 
             updateProject {
                 it.copy(
-                    modelPath = result.geometry.toString(),
+                    modelPath = "geometry://${result.geometry.roomCount}rooms-${result.geometry.wallCount}walls",
                     analysisStatus = "COMPLETED"
                 )
             }
 
-            progress = 100
+            updateProgress(100)
             true
         } catch (e: Exception) {
             fail()
@@ -62,7 +65,7 @@ class ProjectViewModel {
     }
 
     private fun updateProject(transform: (HouseProject) -> HouseProject) {
-        val project = currentProject ?: return
+        val project = currentProject ?: store.get() ?: return
         currentProject = transform(project)
         store.save(currentProject!!)
     }
