@@ -15,7 +15,7 @@ class ProjectPipeline(
 ) {
     data class Result(
         val analysis: FloorPlanAnalysis,
-        val modelPath: String
+        val geometry: Any
     )
 
     fun generate(project: HouseProject): Result {
@@ -23,11 +23,11 @@ class ProjectPipeline(
             ?: error("Floor plan is required")
 
         val analysis = analyzer.analyze(planPath)
-        val model = geometryGenerator.generate(analysis)
+        val geometry = geometryGenerator.generate(analysis)
 
         return Result(
             analysis = analysis,
-            modelPath = model.path
+            geometry = geometry
         )
     }
 }
