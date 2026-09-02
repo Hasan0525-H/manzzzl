@@ -1,9 +1,10 @@
 package com.manzzzl.ai.screens
 
-// First version placeholder for exterior 3D viewer.
-// Future:
-// - 360 rotation
-// - zoom
-// - realistic renders
-// - indoor exploration
-class ModelViewerScreen
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+
+@Composable
+fun ModelViewerScreen() {
+    Text("عارض النموذج ثلاثي الأبعاد")
+    Text("تدوير - تكبير - استكشاف")
+}
