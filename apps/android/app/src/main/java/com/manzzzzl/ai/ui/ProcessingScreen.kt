@@ -9,10 +9,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.material3.Button
 import androidx.compose.ui.Modifier
 
 @Composable
-fun ProcessingScreen() {
+fun ProcessingScreen(onComplete: () -> Unit = {}) {
     var progress by remember { mutableStateOf(0.35f) }
 
     Column {
@@ -22,5 +23,8 @@ fun ProcessingScreen() {
             progress = { progress },
             modifier = Modifier.fillMaxWidth()
         )
+        Button(onClick = onComplete) {
+            Text("عرض النموذج ثلاثي الأبعاد")
+        }
     }
 }
