@@ -19,4 +19,9 @@ class SmartQuestionIntegration {
             hasBasement = answer.hasBasement ?: questionnaire.hasBasement
         )
     }
+
+    fun isReadyForDesign(questionnaire: DesignQuestionnaire): Boolean {
+        return questionnaire.city != null &&
+            questionnaire.floors != null
+    }
 }
