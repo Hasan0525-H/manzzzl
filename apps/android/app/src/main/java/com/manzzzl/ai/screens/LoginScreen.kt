@@ -1,10 +1,16 @@
 package com.manzzzl.ai.screens
 
+import androidx.compose.material3.Button
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+
 /**
- * First version login screen placeholder.
- * Product rule: simple entry button first; account expansion later.
+ * First login screen.
  */
-class LoginScreen {
-    val title = "منزلي AI"
-    val action = "دخول"
+@Composable
+fun LoginScreen(onLogin: () -> Unit = {}) {
+    Text("منزلي AI")
+    Button(onClick = onLogin) {
+        Text("دخول")
+    }
 }
