@@ -5,12 +5,23 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 
 @Composable
-fun Result3DScreen(onOpenModel: () -> Unit = {}) {
+fun Result3DScreen(
+    modelPath: String? = null,
+    onOpenModel: () -> Unit = {}
+) {
     Text("نتيجة تصميم المنزل 3D")
 
-    Text("العرض الخارجي جاهز")
+    Text(
+        if (modelPath.isNullOrBlank()) {
+            "النموذج قيد التجهيز"
+        } else {
+            "العرض الخارجي جاهز"
+        }
+    )
 
-    Button(onClick = onOpenModel) {
-        Text("فتح النموذج")
+    if (!modelPath.isNullOrBlank()) {
+        Button(onClick = onOpenModel) {
+            Text("فتح النموذج")
+        }
     }
 }
