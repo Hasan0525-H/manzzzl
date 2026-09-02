@@ -10,4 +10,10 @@ class HouseModelController {
     }
 
     fun getNode(): ModelNode? = modelNode
+
+    fun getBounds(): ModelBoundsCalculator.BoundsResult? {
+        return modelNode?.let {
+            ModelBoundsCalculator.calculate(it)
+        }
+    }
 }
