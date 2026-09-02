@@ -1,26 +1,22 @@
 package com.manzzzl.ai.screens
 
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
-import com.manzzzl.ai.model.ModelRenderer
+import androidx.compose.ui.Modifier
 
 /**
- * MVP 3D viewer boundary.
- * Keeps the screen ready for the real GLB renderer integration.
+ * Stable 3D viewer entry point.
+ * The renderer implementation will be attached here.
  */
 @Composable
 fun SceneModelView(modelPath: String) {
-    val format = ModelRenderer().prepare(modelPath).format
-
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
+    Box(
+        modifier = Modifier.fillMaxSize(),
+        contentAlignment = Alignment.Center
     ) {
-        Text("نموذج المنزل ثلاثي الأبعاد")
-        Text("الصيغة: $format")
-        Text("المرحلة القادمة: تحميل GLB داخل محرك العرض")
+        Text("3D viewer placeholder: $modelPath")
     }
 }
