@@ -10,6 +10,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import com.manzzzl.ai.design.DesignGenerationValidator
+import com.manzzzl.ai.design.DesignQuestionnaire
 import com.manzzzl.ai.design.SmartDesignQuestionEngine
 import com.manzzzl.ai.ui.CreateProjectScreen
 import com.manzzzl.ai.ui.FloorPlanUploadScreen
@@ -52,8 +54,14 @@ fun ManzzzlApp() {
                         answers = answers + (question to value)
                     },
                     onComplete = {
-                        designReady = true
-                        step = "viewer"
+                        val questionnaire = DesignQuestionnaire(
+                            city = answers["المدينة"],
+                            streetDirection = answers["اتجاه الشارع"],
+                            facadePreference = answers["نوع الواجهة"],
+                            floors = answers["عدد الأدوار"]?.toIntOrNull()
+                        )
+                        designReady = DesignGenerationValidator.validate(questionnaire)
+                        step = if (designReady) "viewer" else "questions"
                     }
                 )
                 "viewer" -> if (designReady) {
