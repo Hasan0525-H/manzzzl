@@ -13,6 +13,7 @@ import androidx.compose.runtime.setValue
 import com.manzzzl.ai.ui.CreateProjectScreen
 import com.manzzzl.ai.ui.FloorPlanUploadScreen
 import com.manzzzl.ai.ui.ProcessingScreen
+import com.manzzzl.ai.ui.SmartQuestionsScreen
 import com.manzzzl.ai.ui.ThreeDViewerScreen
 
 class MainActivity : ComponentActivity() {
@@ -38,6 +39,9 @@ fun ManzzzlApp() {
                     step = "processing"
                 }
                 "processing" -> ProcessingScreen {
+                    step = "questions"
+                }
+                "questions" -> SmartQuestionsScreen {
                     step = "viewer"
                 }
                 "viewer" -> ThreeDViewerScreen()
