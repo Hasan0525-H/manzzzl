@@ -1,5 +1,6 @@
 package com.manzzzl.ai.viewmodel
 
+import com.manzzzl.ai.analysis.ModelExporter
 import com.manzzzl.ai.data.LocalProjectStore
 import com.manzzzl.ai.model.HouseProject
 import com.manzzzl.ai.pipeline.ProjectPipeline
@@ -10,6 +11,7 @@ import com.manzzzl.ai.pipeline.ProjectPipeline
 class ProjectViewModel {
     private val store = LocalProjectStore()
     private val pipeline = ProjectPipeline()
+    private val exporter = ModelExporter()
 
     private var currentProject: HouseProject? = null
     private var progress: Int = 0
@@ -37,11 +39,11 @@ class ProjectViewModel {
             updateProject { it.copy(analysisStatus = "GENERATING_3D") }
             updateProgress(70)
 
-            val generatedModelId = "geometry://${result.geometry.roomCount}rooms-${result.geometry.wallCount}walls"
+            val model = exporter.export(result.geometry)
 
             updateProject {
                 it.copy(
-                    modelPath = generatedModelId,
+                    modelPath = "${model.format}://${model.modelId}",
                     analysisStatus = "COMPLETED"
                 )
             }
