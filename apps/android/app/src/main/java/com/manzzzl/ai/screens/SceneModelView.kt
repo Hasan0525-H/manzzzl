@@ -1,1 +1,52 @@
-cGFja2FnZSBjb20ubWFuenp6bC5haS5zY3JlZW5zCgppbXBvcnQgYW5kcm9pZHguY29tcG9zZS5mb3VuZGF0aW9uLmxheW91dC5maWxsTWF4U2l6ZQppbXBvcnQgYW5kcm9pZHguY29tcG9zZS5ydW50aW1lLkNvbXBvc2FibGUKaW1wb3J0IGFuZHJvaWR4LmNvbXBvc2UudWkuTW9kaWZpZXIKaW1wb3J0IGlvLmdpdGh1Yi5zY2VuZXZpZXcuU2NlbmVWaWV3CmltcG9ydCBpby5naXRodWIuc2NlbmV2aWV3Lm5vZGUuTW9kZWxOb2RlCmltcG9ydCBpby5naXRodWIuc2NlbmV2aWV3LnJlbWVtYmVyQ2FtZXJhTWFuaXB1bGF0b3IKaW1wb3J0IGlvLmdpdGh1Yi5zY2VuZXZpZXcucmVtZW1iZXJFbmdpbmUKaW1wb3J0IGlvLmdpdGh1Yi5zY2VuZXZpZXcucmVtZW1iZXJNb2RlbEluc3RhbmNlCmltcG9ydCBpby5naXRodWIuc2NlbmV2aWV3LnJlbWVtYmVyTW9kZWxMb2FkZXIKCi8qKgogKiBSZWFsIDNEIEdMQiB2aWV3ZXIuCiAqIExvYWRzIGhvdXNlLmdsYiBieSBkZWZhdWx0IGFuZCByZW5kZXJzIGl0IGluc2lkZSBTY2VuZVZpZXcuCiAqLwpAQ29tcG9zYWJsZQpmdW4gU2NlbmVNb2RlbFZpZXcobW9kZWxQYXRoOiBTdHJpbmcgPSAiaG91c2UuZ2xiIikgewogICAgdmFsIGVuZ2luZSA9IHJlbWVtYmVyRW5naW5lKCkKICAgIHZhbCBtb2RlbExvYWRlciA9IHJlbWVtYmVyTW9kZWxMb2FkZXIoZW5naW5lKQogICAgdmFsIGFzc2V0UGF0aCA9IHJlc29sdmVBc3NldFBhdGgobW9kZWxQYXRoKQoKICAgIFNjZW5lVmlldygKICAgICAgICBtb2RpZmllciA9IE1vZGlmaWVyLmZpbGxNYXhTaXplKCksCiAgICAgICAgZW5naW5lID0gZW5naW5lLAogICAgICAgIG1vZGVsTG9hZGVyID0gbW9kZWxMb2FkZXIsCiAgICAgICAgY2FtZXJhTWFuaXB1bGF0b3IgPSByZW1lbWJlckNhbWVyYU1hbmlwdWxhdG9yKCkKICAgICkgewogICAgICAgIHJlbWVtYmVyTW9kZWxJbnN0YW5jZShtb2RlbExvYWRlciwgYXNzZXRQYXRoKT8ubGV0IHsgaW5zdGFuY2UgLT4KICAgICAgICAgICAgTW9kZWxOb2RlKAogICAgICAgICAgICAgICAgbW9kZWxJbnN0YW5jZSA9IGluc3RhbmNlLAogICAgICAgICAgICAgICAgc2NhbGVUb1VuaXRzID0gMS4wZiwKICAgICAgICAgICAgICAgIGF1dG9BbmltYXRlID0gdHJ1ZQogICAgICAgICAgICApCiAgICAgICAgfQogICAgfQp9Cgpwcml2YXRlIGZ1biByZXNvbHZlQXNzZXRQYXRoKHBhdGg6IFN0cmluZyk6IFN0cmluZyB7CiAgICByZXR1cm4gcGF0aC5yZW1vdmVQcmVmaXgoImdsYjovLyIpCn0K
+package com.manzzzl.ai.screens
+
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import io.github.sceneview.SceneView
+import io.github.sceneview.node.ModelNode
+import io.github.sceneview.rememberCameraManipulator
+import io.github.sceneview.rememberEngine
+import io.github.sceneview.rememberModelInstance
+import io.github.sceneview.rememberModelLoader
+
+/**
+ * Remote GLB viewer.
+ * Downloads a GLB model, caches it locally, then renders it with SceneView.
+ */
+@Composable
+fun SceneModelView(
+    modelUrl: String
+) {
+    val context = LocalContext.current
+    val localModelPath = remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(modelUrl) {
+        val file = ModelRepository.getModelFile(context, modelUrl)
+        localModelPath.value = file.absolutePath
+    }
+
+    val engine = rememberEngine()
+    val modelLoader = rememberModelLoader(engine)
+
+    SceneView(
+        modifier = Modifier.fillMaxSize(),
+        engine = engine,
+        modelLoader = modelLoader,
+        cameraManipulator = rememberCameraManipulator()
+    ) {
+        localModelPath.value?.let { path ->
+            rememberModelInstance(modelLoader, path)?.let { instance ->
+                ModelNode(
+                    modelInstance = instance,
+                    scaleToUnits = 1.0f,
+                    autoAnimate = true
+                )
+            }
+        }
+    }
+}
