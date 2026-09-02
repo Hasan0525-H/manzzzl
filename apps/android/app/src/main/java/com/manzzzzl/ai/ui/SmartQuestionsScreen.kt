@@ -21,6 +21,10 @@ fun SmartQuestionsScreen(
     onAnswerChanged: (String, String) -> Unit = { _, _ -> },
     onComplete: () -> Unit = {}
 ) {
+    val isComplete = questions.all { question ->
+        !answers[question].isNullOrBlank()
+    }
+
     Column {
         questions.forEach { question ->
             OutlinedTextField(
@@ -33,7 +37,10 @@ fun SmartQuestionsScreen(
             Spacer(modifier = Modifier.height(12.dp))
         }
 
-        Button(onClick = onComplete) {
+        Button(
+            enabled = isComplete,
+            onClick = onComplete
+        ) {
             Text("متابعة التصميم")
         }
     }
