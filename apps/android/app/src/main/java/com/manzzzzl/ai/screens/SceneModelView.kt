@@ -8,10 +8,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 
 /**
- * MVP 3D viewer entry point.
- *
- * This replaces the old information-only screen and keeps one stable place
- * for the real GLB renderer integration.
+ * Experimental 3D viewer stage.
+ * Temporary implementation to validate the screen flow before GLB engine wiring.
  */
 @Composable
 fun SceneModelView(modelPath: String) {
@@ -19,6 +17,6 @@ fun SceneModelView(modelPath: String) {
         modifier = Modifier.fillMaxSize(),
         contentAlignment = Alignment.Center
     ) {
-        Text("3D Viewer Ready: $modelPath")
+        Text("Experimental 3D stage: $modelPath")
     }
 }
