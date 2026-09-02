@@ -79,7 +79,9 @@ fun SceneModelView(
         }
 
         Button(
-            onClick = { cameraResetKey.value++ },
+            onClick = {
+                cameraResetKey.value++
+            },
             modifier = Modifier.align(Alignment.BottomCenter)
         ) {
             Text("إعادة ضبط الكاميرا")
