@@ -3,15 +3,14 @@ package com.manzzzl.ai.threeD
 import com.manzzzl.ai.threeD.model.ThreeDModel
 
 /**
- * First bridge between analyzed 2D plans and the 3D model layer.
+ * Bridge between extracted 2D geometry and the 3D model layer.
  * Geometry generation stays independent from Saudi visual styling.
  */
 object FloorPlanModelGenerator {
     fun generate(
-        floorPlanData: String? = null
+        extractedGeometry: String? = null
     ): ThreeDModel {
-        // Placeholder until the image analysis engine provides geometry.
-        // Keeps the pipeline ready for the real 2D parser.
+        // Real wall/room/opening reconstruction will consume extracted geometry here.
         return ThreeDModel()
     }
 }
