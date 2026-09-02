@@ -1,13 +1,12 @@
 package com.manzzzl.ai.pipeline
 
-import com.manzzzl.ai.analysis.PlanAnalyzer
-import com.manzzzl.ai.model.HouseProject
-import com.manzzzl.ai.model.FloorPlanAnalysis
 import com.manzzzl.ai.analysis.GeometryGenerator
+import com.manzzzl.ai.analysis.PlanAnalyzer
+import com.manzzzl.ai.model.FloorPlanAnalysis
+import com.manzzzl.ai.model.HouseProject
 
 /**
- * Coordinates the complete project generation flow.
- * Keeps upload -> analysis -> geometry generation in one place.
+ * Single coordinator for upload -> analysis -> geometry generation.
  */
 class ProjectPipeline(
     private val analyzer: PlanAnalyzer = PlanAnalyzer(),
@@ -15,7 +14,7 @@ class ProjectPipeline(
 ) {
     data class Result(
         val analysis: FloorPlanAnalysis,
-        val geometry: Any
+        val geometry: GeometryGenerator.GeneratedGeometry
     )
 
     fun generate(project: HouseProject): Result {
