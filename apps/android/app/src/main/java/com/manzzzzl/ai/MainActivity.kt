@@ -32,6 +32,7 @@ fun ManzzzlApp() {
         Surface {
             var step by remember { mutableStateOf("create") }
             var answers by remember { mutableStateOf(emptyMap<String, String>()) }
+            var designReady by remember { mutableStateOf(false) }
 
             val questions = SmartDesignQuestionEngine.missingQuestions(
                 hasFloors = answers.containsKey("عدد الأدوار"),
@@ -50,9 +51,14 @@ fun ManzzzlApp() {
                     onAnswerChanged = { question, value ->
                         answers = answers + (question to value)
                     },
-                    onComplete = { step = "viewer" }
+                    onComplete = {
+                        designReady = true
+                        step = "viewer"
+                    }
                 )
-                "viewer" -> ThreeDViewerScreen()
+                "viewer" -> if (designReady) {
+                    ThreeDViewerScreen()
+                }
             }
         }
     }
