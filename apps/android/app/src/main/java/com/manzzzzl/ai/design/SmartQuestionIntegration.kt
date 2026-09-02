@@ -1,4 +1,4 @@
-package com.manzzzz l.ai.design
+package com.manzzzz.ai.design
 
 /**
  * Connects smart question answers with the design pipeline.
