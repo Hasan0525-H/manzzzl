@@ -5,12 +5,12 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.manzzzl.ai.screens.CreateHomeProjectScreen
 import com.manzzzl.ai.screens.HomeQuestionsScreen
 import com.manzzzl.ai.screens.HomeScreen
 import com.manzzzl.ai.screens.PlanUploadScreen
+import com.manzzzl.ai.viewmodel.HomeProjectViewModel
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -24,19 +24,20 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun ManzzzlApp() {
     MaterialTheme {
-        val screen = remember { mutableStateOf("home") }
-
-        when (screen.value) {
-            "home" -> HomeScreen {
-                screen.value = "create"
+        val projectViewModel: HomeProjectViewModel = viewModel()
+        androidx.compose.runtime.key(projectViewModel.state.currentStage) {
+            when (projectViewModel.state.currentStage.name) {
+                "HOME" -> HomeScreen {
+                    projectViewModel.moveTo(com.manzzzl.ai.data.ProjectStage.CREATE_PROJECT)
+                }
+                "CREATE_PROJECT" -> CreateHomeProjectScreen {
+                    projectViewModel.moveTo(com.manzzzl.ai.data.ProjectStage.QUESTIONS)
+                }
+                "QUESTIONS" -> HomeQuestionsScreen {
+                    projectViewModel.moveTo(com.manzzzl.ai.data.ProjectStage.UPLOAD_PLAN)
+                }
+                else -> PlanUploadScreen()
             }
-            "create" -> CreateHomeProjectScreen {
-                screen.value = "questions"
-            }
-            "questions" -> HomeQuestionsScreen {
-                screen.value = "upload"
-            }
-            else -> PlanUploadScreen()
         }
     }
 }
