@@ -6,6 +6,7 @@ import androidx.activity.compose.setContent
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.manzzzl.ai.data.ProjectStep
 import com.manzzzl.ai.screens.CreateHomeProjectScreen
 import com.manzzzl.ai.screens.HomeQuestionsScreen
 import com.manzzzl.ai.screens.HomeScreen
@@ -25,19 +26,19 @@ class MainActivity : ComponentActivity() {
 fun ManzzzlApp() {
     MaterialTheme {
         val projectViewModel: HomeProjectViewModel = viewModel()
-        androidx.compose.runtime.key(projectViewModel.state.currentStage) {
-            when (projectViewModel.state.currentStage.name) {
-                "HOME" -> HomeScreen {
-                    projectViewModel.moveTo(com.manzzzl.ai.data.ProjectStage.CREATE_PROJECT)
-                }
-                "CREATE_PROJECT" -> CreateHomeProjectScreen {
-                    projectViewModel.moveTo(com.manzzzl.ai.data.ProjectStage.QUESTIONS)
-                }
-                "QUESTIONS" -> HomeQuestionsScreen {
-                    projectViewModel.moveTo(com.manzzzl.ai.data.ProjectStage.UPLOAD_PLAN)
-                }
-                else -> PlanUploadScreen()
+
+        when (projectViewModel.state.currentStep) {
+            ProjectStep.HOME -> HomeScreen {
+                projectViewModel.moveTo(ProjectStep.CREATE_PROJECT)
             }
+            ProjectStep.CREATE_PROJECT -> CreateHomeProjectScreen {
+                projectViewModel.moveTo(ProjectStep.QUESTIONS)
+            }
+            ProjectStep.QUESTIONS -> HomeQuestionsScreen {
+                projectViewModel.moveTo(ProjectStep.UPLOAD_PLAN)
+            }
+            ProjectStep.UPLOAD_PLAN -> PlanUploadScreen()
+            ProjectStep.ANALYSIS -> PlanUploadScreen()
         }
     }
 }
