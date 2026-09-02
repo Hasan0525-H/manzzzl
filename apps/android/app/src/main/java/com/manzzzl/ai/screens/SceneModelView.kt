@@ -14,13 +14,16 @@ import io.github.sceneview.rememberEngine
 import io.github.sceneview.rememberModelInstance
 import io.github.sceneview.rememberModelLoader
 
+private const val DEFAULT_HOUSE_MODEL_URL =
+    "https://pub-08eacaf5a9fd4334815774c96664ac02.r2.dev/house.glb"
+
 /**
  * Remote GLB viewer.
  * Downloads a GLB model, caches it locally, then renders it with SceneView.
  */
 @Composable
 fun SceneModelView(
-    modelUrl: String
+    modelUrl: String = DEFAULT_HOUSE_MODEL_URL
 ) {
     val context = LocalContext.current
     val localModelPath = remember { mutableStateOf<String?>(null) }
