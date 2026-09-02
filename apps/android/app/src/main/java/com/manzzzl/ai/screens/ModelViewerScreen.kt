@@ -21,9 +21,7 @@ fun ModelViewerScreen(modelPath: String? = null) {
             Text("لم يتم إنشاء نموذج بعد")
         }
         renderModel.ready -> {
-            Text("النموذج ${renderModel.format} جاهز")
-            Text("جاهز للربط مع محرك العرض")
-            Text("تدوير - تكبير - استكشاف")
+            SceneModelView(renderModel.source)
         }
         else -> {
             Text("النموذج غير جاهز للعرض")
