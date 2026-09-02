@@ -2,12 +2,14 @@ package com.manzzzl.ai.viewmodel
 
 import com.manzzzl.ai.data.LocalProjectStore
 import com.manzzzl.ai.model.HouseProject
+import com.manzzzl.ai.pipeline.ProjectPipeline
 
 /**
  * Single controller for upload -> analysis -> generation flow.
  */
 class ProjectViewModel {
     private val store = LocalProjectStore()
+    private val pipeline = ProjectPipeline()
 
     private var currentProject: HouseProject? = null
     private var progress: Int = 0
@@ -19,40 +21,35 @@ class ProjectViewModel {
 
     fun setPlan(path: String) {
         updateProject {
-            it.copy(
-                floorPlanPath = path,
-                analysisStatus = "UPLOADED"
-            )
+            it.copy(floorPlanPath = path, analysisStatus = "UPLOADED")
         }
     }
 
-    fun startAnalysis() {
-        updateProject {
-            it.copy(analysisStatus = "ANALYZING")
+    fun generateProject(): Boolean {
+        val project = currentProject ?: return false
+
+        return try {
+            updateProject { it.copy(analysisStatus = "ANALYZING") }
+            updateProject { it.copy(analysisStatus = "GENERATING_3D") }
+
+            val result = pipeline.generate(project)
+
+            updateProject {
+                it.copy(
+                    modelPath = result.geometry.toString(),
+                    analysisStatus = "COMPLETED"
+                )
+            }
+
+            progress = 100
+            true
+        } catch (e: Exception) {
+            fail()
+            false
         }
     }
 
-    fun startGeneration() {
-        updateProject {
-            it.copy(analysisStatus = "GENERATING_3D")
-        }
-    }
-
-    fun setModel(path: String) {
-        updateProject {
-            it.copy(
-                modelPath = path,
-                analysisStatus = "COMPLETED"
-            )
-        }
-        progress = 100
-    }
-
-    fun fail() {
-        updateProject {
-            it.copy(analysisStatus = "FAILED")
-        }
-    }
+    fun current(): HouseProject? = currentProject ?: store.get()
 
     fun updateProgress(value: Int) {
         progress = value.coerceIn(0, 100)
@@ -60,7 +57,9 @@ class ProjectViewModel {
 
     fun generationProgress(): Int = progress
 
-    fun current(): HouseProject? = currentProject ?: store.get()
+    fun fail() {
+        updateProject { it.copy(analysisStatus = "FAILED") }
+    }
 
     private fun updateProject(transform: (HouseProject) -> HouseProject) {
         val project = currentProject ?: return
