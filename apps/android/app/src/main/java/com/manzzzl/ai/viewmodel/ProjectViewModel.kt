@@ -3,6 +3,9 @@ package com.manzzzl.ai.viewmodel
 import com.manzzzl.ai.data.LocalProjectStore
 import com.manzzzl.ai.model.HouseProject
 
+/**
+ * Single controller for upload -> analysis -> generation flow.
+ */
 class ProjectViewModel {
     private val store = LocalProjectStore()
 
@@ -10,20 +13,46 @@ class ProjectViewModel {
     private var progress: Int = 0
 
     fun create(project: HouseProject) {
-        currentProject = project
-        store.save(project)
-    }
-
-    fun setPlan(path: String) {
-        val project = currentProject ?: HouseProject()
-        currentProject = project.copy(
-            floorPlanPath = path,
-            analysisStatus = "UPLOADED"
-        )
+        currentProject = project.copy(analysisStatus = "DRAFT")
         store.save(currentProject!!)
     }
 
-    fun current(): HouseProject? = currentProject ?: store.get()
+    fun setPlan(path: String) {
+        updateProject {
+            it.copy(
+                floorPlanPath = path,
+                analysisStatus = "UPLOADED"
+            )
+        }
+    }
+
+    fun startAnalysis() {
+        updateProject {
+            it.copy(analysisStatus = "ANALYZING")
+        }
+    }
+
+    fun startGeneration() {
+        updateProject {
+            it.copy(analysisStatus = "GENERATING_3D")
+        }
+    }
+
+    fun setModel(path: String) {
+        updateProject {
+            it.copy(
+                modelPath = path,
+                analysisStatus = "COMPLETED"
+            )
+        }
+        progress = 100
+    }
+
+    fun fail() {
+        updateProject {
+            it.copy(analysisStatus = "FAILED")
+        }
+    }
 
     fun updateProgress(value: Int) {
         progress = value.coerceIn(0, 100)
@@ -31,17 +60,11 @@ class ProjectViewModel {
 
     fun generationProgress(): Int = progress
 
-    fun startAnalysis() {
-        val project = currentProject ?: return
-        currentProject = project.copy(analysisStatus = "ANALYZING")
-        store.save(currentProject!!)
-    }
+    fun current(): HouseProject? = currentProject ?: store.get()
 
-    fun markGenerated(): Boolean {
-        progress = 100
-        val project = currentProject ?: return false
-        currentProject = project.copy(analysisStatus = "COMPLETED")
+    private fun updateProject(transform: (HouseProject) -> HouseProject) {
+        val project = currentProject ?: return
+        currentProject = transform(project)
         store.save(currentProject!!)
-        return true
     }
 }
