@@ -3,8 +3,7 @@ package com.manzzzl.ai.screens
 import kotlin.math.max
 
 /**
- * Calculates a safe camera distance from model dimensions.
- * The actual bounds are supplied after the GLB instance is created.
+ * Calculates camera framing values from GLB model bounds.
  */
 object ModelBoundsCalculator {
     fun calculateCameraDistance(
@@ -14,5 +13,20 @@ object ModelBoundsCalculator {
     ): Float {
         val largest = max(width, max(height, depth))
         return largest * 2.5f
+    }
+
+    fun calculateCenter(
+        minX: Float,
+        maxX: Float,
+        minY: Float,
+        maxY: Float,
+        minZ: Float,
+        maxZ: Float
+    ): FloatArray {
+        return floatArrayOf(
+            (minX + maxX) / 2f,
+            (minY + maxY) / 2f,
+            (minZ + maxZ) / 2f
+        )
     }
 }
