@@ -13,6 +13,7 @@ import androidx.compose.runtime.setValue
 import com.manzzzl.ai.ui.CreateProjectScreen
 import com.manzzzl.ai.ui.FloorPlanUploadScreen
 import com.manzzzl.ai.ui.ProcessingScreen
+import com.manzzzl.ai.ui.ThreeDViewerScreen
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -36,7 +37,10 @@ fun ManzzzlApp() {
                 "upload" -> FloorPlanUploadScreen {
                     step = "processing"
                 }
-                "processing" -> ProcessingScreen()
+                "processing" -> ProcessingScreen {
+                    step = "viewer"
+                }
+                "viewer" -> ThreeDViewerScreen()
             }
         }
     }
