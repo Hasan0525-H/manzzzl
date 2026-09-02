@@ -1,10 +1,10 @@
 package com.manzzzl.ai.navigation
 
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import com.manzzzl.ai.screens.*
 
 @Composable
 fun NavigationGraph(navController: NavHostController) {
@@ -13,31 +13,55 @@ fun NavigationGraph(navController: NavHostController) {
         startDestination = AppRoutes.LOGIN
     ) {
         composable(AppRoutes.LOGIN) {
-            Text("منزلي AI - دخول")
+            LoginScreen {
+                navController.navigate(AppRoutes.DASHBOARD)
+            }
         }
+
         composable(AppRoutes.DASHBOARD) {
-            Text("المشاريع")
+            ProjectDashboardScreen {
+                navController.navigate(AppRoutes.CREATE_PROJECT)
+            }
         }
+
         composable(AppRoutes.CREATE_PROJECT) {
-            Text("إنشاء منزل")
+            CreateHomeProjectScreen {
+                navController.navigate(AppRoutes.UPLOAD_PLAN)
+            }
         }
+
         composable(AppRoutes.UPLOAD_PLAN) {
-            Text("رفع المخطط")
+            PlanUploadScreen {
+                navController.navigate(AppRoutes.PLAN_REVIEW)
+            }
         }
+
         composable(AppRoutes.PLAN_REVIEW) {
-            Text("مراجعة المخطط")
+            PlanReviewScreen {
+                navController.navigate(AppRoutes.HOUSE_SETUP)
+            }
         }
+
         composable(AppRoutes.HOUSE_SETUP) {
-            Text("إعداد المنزل")
+            HouseSetupScreen {
+                navController.navigate(AppRoutes.PROCESSING)
+            }
         }
+
         composable(AppRoutes.PROCESSING) {
-            Text("جاري المعالجة")
+            ProcessingScreen {
+                navController.navigate(AppRoutes.RESULT_3D)
+            }
         }
+
         composable(AppRoutes.RESULT_3D) {
-            Text("نتيجة 3D")
+            Result3DScreen {
+                navController.navigate(AppRoutes.MODEL_VIEWER)
+            }
         }
+
         composable(AppRoutes.MODEL_VIEWER) {
-            Text("عارض النموذج")
+            ModelViewerScreen()
         }
     }
 }
