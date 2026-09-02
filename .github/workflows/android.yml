@@ -2,32 +2,39 @@ name: Android CI
 
 on:
   workflow_dispatch:
+
   push:
-    branches: [ "main" ]
+    branches:
+      - main
+      - hasan0525-h-fix-3d-viewer
     paths:
       - 'apps/android/**'
       - '.github/workflows/android.yml'
+
   pull_request:
-    branches: [ "main" ]
+    branches:
+      - main
 
 jobs:
   build:
     runs-on: ubuntu-latest
+
     defaults:
       run:
         working-directory: apps/android
 
     steps:
+
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Verify GLB assets
         run: |
-          if [ ! -f app/src/main/assets/house.glb ]; then
-            echo "ERROR: house.glb is missing from Android assets"
-            exit 1
-          fi
+          test -f app/src/main/assets/house.glb
           echo "GLB asset found"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
 
       - name: Set up JDK 17
         uses: actions/setup-java@v5
@@ -41,14 +48,14 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Run Android lint
+      - name: Run lint
         run: gradle lintDebug --stacktrace --no-daemon
 
-      - name: Build debug APK
+      - name: Build APK
         run: gradle assembleDebug --stacktrace --no-daemon
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: manzzzl-debug-apk
-          path: apps/android/app/build/outputs/apk/debug/*.apk
+          path: app/build/outputs/apk/debug/*.apk
