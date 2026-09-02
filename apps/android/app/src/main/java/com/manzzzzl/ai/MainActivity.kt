@@ -30,6 +30,7 @@ fun ManzzzlApp() {
     MaterialTheme {
         Surface {
             var step by remember { mutableStateOf("create") }
+            var answers by remember { mutableStateOf(emptyMap<String, String>()) }
 
             when (step) {
                 "create" -> CreateProjectScreen {
@@ -41,9 +42,21 @@ fun ManzzzlApp() {
                 "processing" -> ProcessingScreen {
                     step = "questions"
                 }
-                "questions" -> SmartQuestionsScreen {
-                    step = "viewer"
-                }
+                "questions" -> SmartQuestionsScreen(
+                    questions = listOf(
+                        "المدينة",
+                        "عدد الأدوار",
+                        "اتجاه الشارع",
+                        "نوع الواجهة"
+                    ),
+                    answers = answers,
+                    onAnswerChanged = { question, value ->
+                        answers = answers + (question to value)
+                    },
+                    onComplete = {
+                        step = "viewer"
+                    }
+                )
                 "viewer" -> ThreeDViewerScreen()
             }
         }
