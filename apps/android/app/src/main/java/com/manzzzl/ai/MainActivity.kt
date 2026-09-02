@@ -37,8 +37,15 @@ fun ManzzzlApp() {
             ProjectStep.QUESTIONS -> HomeQuestionsScreen {
                 projectViewModel.moveTo(ProjectStep.UPLOAD_PLAN)
             }
-            ProjectStep.UPLOAD_PLAN -> PlanUploadScreen()
-            ProjectStep.ANALYSIS -> PlanUploadScreen()
+            ProjectStep.UPLOAD_PLAN -> PlanUploadScreen {
+                projectViewModel.moveTo(ProjectStep.ANALYSIS)
+            }
+            ProjectStep.ANALYSIS -> {
+                // Analysis pipeline will be connected here
+                PlanUploadScreen {
+                    projectViewModel.moveTo(ProjectStep.ANALYSIS)
+                }
+            }
         }
     }
 }
